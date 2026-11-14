@@ -27,6 +27,7 @@ import {
   resolveBlockHandleUnits,
   type BlockActionBasis,
 } from '../nav/block-handle'
+import type { BlockHandleUnit } from '../nav/source-block-index'
 
 interface BlockActionDeps {
   settleInput(): void
@@ -36,10 +37,20 @@ interface BlockActionDeps {
    * Resolves `null` when no proof of the live rendering exists; the request then declines. */
   acquireExactAuthority(opts: {
     publish: true
+    lazyRendering?: boolean
   }): Promise<{ exact: string; rendered: string } | null>
   setApplying(value: boolean): void
   /** Adopt host-confirmed special-block bytes before a later save serializes the DOM. */
   reown?(markdown: string): void
+  /** Task 733 / 010 (Q-31): apply `after` by units and post it as a delta; 'fallback' changed nothing. */
+  applyExactText?(
+    after: string,
+    opts?: { rollback?: { restore(): void } },
+  ): 'applied' | 'fallback'
+  /** Task 733 / 010 (Q-79 OQ-1): the confirmed model units while the model owns the text. */
+  modelUnits?(): { exact: string; units: BlockHandleUnit[] } | undefined
+  /** The confirmed model text (after a drain, nothing dirty), or undefined: a cheap owner check (010-R F12). */
+  modelText?(): string | undefined
   onError(error: unknown): void
 }
 
@@ -59,6 +70,8 @@ interface PendingAction {
   nativeState?: HistoryEntryToken
   renderedAfter?: string
   undoSnapshot?: ReturnType<typeof snapshotTableUndoForRollback>
+  /** Planned on the confirmed model units: the apply route, with no whole-document read. */
+  modelRoute: boolean
   timeout: number
   resolve(value: boolean): void
 }
@@ -89,8 +102,36 @@ function currentOwner(record: PendingAction): boolean {
       record.editor.isConnected &&
       record.editor.getAttribute('contenteditable') !== 'false' &&
       deps.snapshotExactMarkdown() === record.before &&
-      record.outer.getValue() === record.renderedBefore,
+      // On the model route the confirmed model text is the rendering's source: it is undefined while a
+      // unit is dirty after a drain, so unpublished typing declines the action (010-R F1).
+      (record.modelRoute
+        ? (deps.modelText ? deps.modelText() : deps.modelUnits?.()?.exact) ===
+          record.before
+        : record.outer.getValue() === record.renderedBefore),
   )
+}
+
+/** Puts the caret at the start of the model unit that holds `offset` (no whole-document read). */
+function restoreModelBlock(record: PendingAction, offset: number): boolean {
+  const unit = deps
+    ?.modelUnits?.()
+    ?.units.find((block) => offset >= block.start && offset <= block.end)
+  if (!unit) return false
+  const walker = document.createTreeWalker(unit.element, NodeFilter.SHOW_TEXT)
+  const text = walker.nextNode() as Text | null
+  if (!text) return true
+  const range = document.createRange()
+  range.setStart(text, 0)
+  range.collapse(true)
+  // Deliberate: the action places the caret at the changed block, as the host reply does.
+  writeSelection(range)
+  record.editor.focus({ preventScroll: true })
+  const scroller = findScroller(record.editor)
+  scroller.scrollTop = Math.min(
+    record.scrollTop,
+    Math.max(0, scroller.scrollHeight - scroller.clientHeight),
+  )
+  return true
 }
 
 function restoreLogicalBlock(
@@ -195,7 +236,12 @@ export async function requestBlockAction(
   acquiring = true
   let pair: { exact: string; rendered: string } | null
   try {
-    pair = await deps.acquireExactAuthority({ publish: true })
+    // While the model owns the text the plan needs no rendering (Q-79 OQ-1).
+    pair = await deps.acquireExactAuthority(
+      deps.modelText?.() === undefined
+        ? { publish: true }
+        : { publish: true, lazyRendering: true },
+    )
   } finally {
     acquiring = false
   }
@@ -235,13 +281,18 @@ function planAndRequest(
   before: string,
 ): Promise<boolean> {
   const { outer, inner, editor, mode } = context
-  const renderedBefore = outer.getValue()
-  const units = resolveBlockHandleUnits(
-    editor,
-    before,
-    renderedBefore,
-    currentBlockProjection(),
-  )
+  // Q-79 OQ-1: while the model owns the text its confirmed units are the units of `before`.
+  const model = mode === 'ir' ? deps?.modelUnits?.() : undefined
+  const modelRoute = model?.exact === before
+  const renderedBefore = modelRoute ? before : outer.getValue()
+  const units = modelRoute
+    ? model?.units
+    : resolveBlockHandleUnits(
+        editor,
+        before,
+        renderedBefore,
+        currentBlockProjection(),
+      )
   if (
     !units?.some((unit) => unit.start === action.sourceStart) ||
     (action.kind === 'move' &&
@@ -274,6 +325,7 @@ function planAndRequest(
       mode,
       caretOffset: plan.caretOffset,
       scrollTop: findScroller(editor).scrollTop,
+      modelRoute,
       timeout: window.setTimeout(() => {
         const active = pending.get(requestId)
         if (active) {
@@ -312,6 +364,7 @@ export function prepareBlockAction(
     return
   }
   const undoSnapshot = snapshotTableUndoForRollback(record.inner)
+  if (record.modelRoute && settledOnModelRoute(record, undoSnapshot)) return
   deps!.setApplying(true)
   try {
     checkpointEditorUndo(record.inner)
@@ -357,6 +410,75 @@ export function prepareBlockAction(
     before: message.before,
     after: message.after,
   })
+}
+
+/** The model route: applied by units, or declined; false sends the record down today's route. */
+function settledOnModelRoute(
+  record: PendingAction,
+  undoSnapshot: ReturnType<typeof snapshotTableUndoForRollback>,
+): boolean {
+  if (applyByUnits(record, undoSnapshot)) return true
+  if (reproveForFallback(record)) return false
+  countBlockActionDecline('prepare-model')
+  cancel(record)
+  return true
+}
+
+/**
+ * Shared rules 3.7: a fallback of the apply by units runs today's route, but only on a rendering proven
+ * to be `before` (Q-82): `setValue(after)` must not replace typing the planned bytes lack (010-R F1,
+ * N2). True: the record now takes today's route.
+ */
+function reproveForFallback(record: PendingAction): boolean {
+  const renderedBefore = record.outer.getValue()
+  if (
+    !resolveBlockHandleUnits(
+      record.editor,
+      record.before,
+      renderedBefore,
+      currentBlockProjection(),
+    )
+  )
+    return false
+  record.renderedBefore = renderedBefore
+  record.modelRoute = false
+  return true
+}
+
+/**
+ * Task 733 / 010 (Q-31): applies `after` by units and posts it as a delta; the host binding is
+ * cancelled, so no `apply-block-action` and no outcome follow. False: nothing changed, the caller
+ * runs the existing route.
+ */
+function applyByUnits(
+  record: PendingAction,
+  undoSnapshot: ReturnType<typeof snapshotTableUndoForRollback>,
+): boolean {
+  const apply = deps?.applyExactText
+  if (!apply) return false
+  // Not inside `setApplying`: that window suppresses posts, and this route posts the delta itself.
+  // No setValue runs here, so no rebuild's records need hiding. The checkpoint before closes the
+  // history interval, so the one after holds the move alone (an Undo restores the order, DR1); a
+  // fallback leaves it empty, and today's route takes its own.
+  checkpointEditorUndo(record.inner)
+  const outcome = apply(record.after, {
+    rollback: {
+      restore: () => restoreTableUndoForRollback(record.inner, undoSnapshot),
+    },
+  })
+  if (outcome !== 'applied') return false
+  checkpointEditorUndo(record.inner)
+  // Without confirmed model units (a new table committed opaque) the caret comes from the plan.
+  if (!restoreModelBlock(record, record.caretOffset))
+    restoreLogicalBlock(record, record.after, record.caretOffset)
+  pending.delete(record.requestId)
+  window.clearTimeout(record.timeout)
+  vscode.postMessage({
+    command: 'cancel-block-action',
+    requestId: record.requestId,
+  })
+  record.resolve(true)
+  return true
 }
 
 /** Commit exact undo metadata only after the host confirms its one guarded model edit. */

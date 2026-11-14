@@ -542,6 +542,17 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
           : { exact: pair.exact, rendered: pair.rendered }
       },
       acquireExactAuthority: acquireBlockActionAuthority,
+      // Task 733 / 010 (Q-79 OQ-1): the keyboard move plans on the confirmed model units while the
+      // model owns the text (the subscribed IR session only), so it reads no whole document.
+      modelUnits: () => {
+        const session = sessionState.modelSession
+        return session &&
+          session === modelSessionAtInit &&
+          innerVditor()?.currentMode === 'ir' &&
+          session.ownsText()
+          ? modelBlockUnits(session)
+          : undefined
+      },
       move: (sourceStart, targetStart, placement, basis) =>
         requestBlockAction(
           { kind: 'move', sourceStart, targetStart, placement },

@@ -607,6 +607,86 @@ describe('installMessageRouter — routing', () => {
     expect(onRestoreBaseline).toHaveBeenCalledWith(restore)
   })
 
+  // Task 733 / 010 (Q-79 OQ-4): a refused exact delta rolls back after the editor shows the host text.
+  it('tells the delta publisher after the update was applied', () => {
+    const order: string[] = []
+    sessionState.deltaSync = {
+      onUpdate: () => order.push('delta-update'),
+      afterUpdate: (shown: boolean) =>
+        order.push(shown ? 'delta-after-update' : 'delta-dropped'),
+    } as any
+    ;(window as any).vditor = {
+      getValue: () => 'OLD',
+      setValue: () => order.push('setValue'),
+      clearStack: vi.fn(),
+    }
+    sessionState.editSync = {
+      reseed: vi.fn(),
+      reportDocMode: vi.fn(),
+      flushHistoryInput: vi.fn(() => false),
+    } as any
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'update', content: 'NEW', epoch: 2, afterSequence: 0 },
+      }),
+    )
+    // Earlier tests leave their router listeners on the window, so the triple may repeat.
+    expect(order.slice(0, 3)).toEqual([
+      'delta-update',
+      'setValue',
+      'delta-after-update',
+    ])
+    sessionState.editSync = null
+  })
+
+  it('tells the delta publisher after the update even when applying it throws, and not while streaming (010-R F9)', () => {
+    const afterUpdate = vi.fn()
+    sessionState.deltaSync = { onUpdate: vi.fn(), afterUpdate } as any
+    ;(window as any).vditor = {
+      getValue: () => 'OLD',
+      setValue: () => {
+        throw new Error('setValue failed')
+      },
+      clearStack: vi.fn(),
+    }
+    sessionState.editSync = {
+      reseed: vi.fn(),
+      reportDocMode: vi.fn(),
+      flushHistoryInput: vi.fn(() => false),
+    } as any
+    installMessageRouter(window)
+    const errors: unknown[] = []
+    const onError = (event: ErrorEvent) => {
+      errors.push(event.error)
+      event.preventDefault()
+    }
+    window.addEventListener('error', onError)
+    try {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { command: 'update', content: 'NEW', epoch: 2 },
+        }),
+      )
+    } catch {
+      // jsdom may rethrow the listener's error.
+    }
+    // The update threw: the rollback is dropped, never run later (010-R pass 2).
+    expect(afterUpdate).toHaveBeenCalledWith(false)
+    expect(afterUpdate).not.toHaveBeenCalledWith(true)
+    afterUpdate.mockClear()
+    sessionState.streaming = true
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { command: 'update', content: 'NEW', epoch: 3 },
+      }),
+    )
+    expect(afterUpdate).toHaveBeenCalledWith(false)
+    expect(afterUpdate).not.toHaveBeenCalledWith(true)
+    window.removeEventListener('error', onError)
+    sessionState.editSync = null
+  })
+
   it('hands update and rebind to the delta publisher before the session', () => {
     const order: string[] = []
     sessionState.deltaSync = {
@@ -1231,6 +1311,336 @@ describe('handleUpdate — external update (non-init)', () => {
     handleUpdate({ command: 'update', content: 'SAME' } as any)
     expect(h.preserveCaretAndScroll).not.toHaveBeenCalled()
     expect(h.cancelAutoWrap).not.toHaveBeenCalled()
+  })
+})
+
+// Task 733 / 010-T: while the text model owns the text, a host update is compared with the model text
+// and applied by units (shared rules 3.7); Q-62: a same-revision update during a table command that is
+// not published yet must not rebuild the DOM and drop that change.
+describe('handleUpdate — model owns the text (Task 733 / 010)', () => {
+  const MODEL = 'intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n'
+  function owning(options: { applied?: boolean } = {}) {
+    const setValue = vi.fn()
+    // The live DOM holds a table row the model has not published yet.
+    const getValue = vi.fn(() => `${MODEL}| 3 | 4 |\n`)
+    ;(window as any).vditor = { getValue, setValue, clearStack: vi.fn() }
+    const flushHistoryInput = vi.fn(() => false)
+    sessionState.editSync = {
+      reseed: vi.fn(),
+      reportDocMode: vi.fn(),
+      flushHistoryInput,
+    } as any
+    const onHostText = vi.fn()
+    const applyText = vi.fn(() =>
+      options.applied === false
+        ? { kind: 'fallback', reason: 'dirty-overlap' }
+        : { kind: 'applied' },
+    )
+    sessionState.modelSession = {
+      ownsText: () => true,
+      isLive: () => true,
+      deltaPort: () => ({ modelText: () => MODEL, epoch: () => 1 }),
+      applyText,
+      onHostText,
+    } as any
+    sessionState.hostRevision = 4
+    return { setValue, getValue, flushHistoryInput, onHostText, applyText }
+  }
+  afterEach(() => {
+    sessionState.modelSession = null
+    sessionState.editSync = null
+  })
+
+  it('Q-62: a same-revision update equal to the model text keeps the unpublished DOM change', () => {
+    const t = owning()
+    handleUpdate({
+      command: 'update',
+      content: MODEL,
+      epoch: 2,
+      afterSequence: 1,
+      revision: 4,
+    } as any)
+    expect(t.setValue).not.toHaveBeenCalled()
+    expect(t.flushHistoryInput).not.toHaveBeenCalled()
+    expect(t.onHostText).toHaveBeenCalledExactlyOnceWith(MODEL, 2, {
+      sameDom: true,
+    })
+    expect(t.getValue).not.toHaveBeenCalled()
+  })
+
+  it('applies a different host text by units without setValue', () => {
+    const t = owning()
+    const content = MODEL.replace('intro', 'INTRO')
+    handleUpdate({
+      command: 'update',
+      content,
+      epoch: 2,
+      afterSequence: 1,
+      revision: 5,
+    } as any)
+    expect(t.applyText).toHaveBeenCalledExactlyOnceWith(
+      [{ from: 0, to: 5, insert: 'INTRO' }],
+      'host',
+    )
+    expect(t.setValue).not.toHaveBeenCalled()
+    expect(sessionState.hostRevision).toBe(5)
+    for (const call of t.onHostText.mock.calls)
+      expect(call[2]).toEqual({ sameDom: true })
+    expect(t.getValue).not.toHaveBeenCalled()
+  })
+
+  it('keeps caret and scroll, cancels auto-wrap and reseeds edit sync around an apply by units (010-R F6, N3)', () => {
+    const t = owning()
+    // A caret outside the replaced units stays where it is: no offset from the document start.
+    const outside = document.createElement('p')
+    outside.textContent = 'caret here'
+    document.body.append(outside)
+    const range = document.createRange()
+    range.setStart(outside.firstChild as Text, 3)
+    range.collapse(true)
+    document.getSelection()?.removeAllRanges()
+    document.getSelection()?.addRange(range)
+    const content = MODEL.replace('intro', 'INTRO')
+    handleUpdate({
+      command: 'update',
+      content,
+      epoch: 2,
+      afterSequence: 1,
+      revision: 5,
+    } as any)
+    expect(h.preserveCaretAndScroll).not.toHaveBeenCalled()
+    expect(document.getSelection()?.anchorNode).toBe(outside.firstChild)
+    expect(document.getSelection()?.anchorOffset).toBe(3)
+    outside.remove()
+    expect(h.cancelAutoWrap).toHaveBeenCalledTimes(1)
+    expect((sessionState.editSync as any).reseed).toHaveBeenCalledWith(
+      undefined,
+      content,
+    )
+    expect((sessionState.editSync as any).reportDocMode).toHaveBeenCalledTimes(
+      1,
+    )
+    expect(t.setValue).not.toHaveBeenCalled()
+  })
+
+  it('turns the model off and runs the whole path when the apply throws (010-R F10)', () => {
+    const t = owning()
+    const turnOff = vi.fn()
+    ;(sessionState.modelSession as any).turnOff = turnOff
+    t.applyText.mockImplementation(() => {
+      throw new Error('render failed')
+    })
+    const content = MODEL.replace('intro', 'INTRO')
+    handleUpdate({
+      command: 'update',
+      content,
+      epoch: 2,
+      afterSequence: 1,
+      revision: 5,
+    } as any)
+    expect(turnOff).toHaveBeenCalledWith('sync-error')
+    expect(t.setValue).toHaveBeenCalledExactlyOnceWith(content, true)
+  })
+
+  // DR1 (G5): typing the model has not taken yet stays and is published after the host change.
+  it('takes pending typing into the model, applies the host change beside it and publishes the typing', () => {
+    const t = owning()
+    const typedAt = MODEL.length - 1
+    const prepareDelta = vi.fn(() => ({
+      kind: 'changes',
+      before: MODEL,
+      changes: [{ from: typedAt, to: typedAt, insert: 'x' }],
+    }))
+    ;(sessionState.modelSession as any).deltaPort = () => ({
+      modelText: () => MODEL,
+      epoch: () => 1,
+      hasDirty: () => true,
+      prepareDelta,
+    })
+    const publishApplied = vi.fn(() => ({ kind: 'delta', sequence: 1 }))
+    sessionState.deltaSync = { publishApplied } as any
+    const content = MODEL.replace('intro', 'INTRODUCTION')
+    handleUpdate({
+      command: 'update',
+      content,
+      epoch: 2,
+      afterSequence: 1,
+      revision: 5,
+    } as any)
+    expect(prepareDelta).toHaveBeenCalledTimes(1)
+    expect(t.applyText).toHaveBeenCalledExactlyOnceWith(
+      [{ from: 0, to: 5, insert: 'INTRODUCTION' }],
+      'host',
+    )
+    expect(publishApplied).toHaveBeenCalledExactlyOnceWith(content, [
+      { from: typedAt + 7, to: typedAt + 7, insert: 'x' },
+    ])
+    expect(t.setValue).not.toHaveBeenCalled()
+    sessionState.deltaSync = null
+  })
+
+  it('lets the host text win when pending typing touches the host change', () => {
+    const t = owning()
+    const reopenTyping = vi.fn()
+    ;(sessionState.modelSession as any).reopenTyping = reopenTyping
+    ;(sessionState.modelSession as any).deltaPort = () => ({
+      modelText: () => MODEL,
+      epoch: () => 1,
+      hasDirty: () => true,
+      prepareDelta: () => ({
+        kind: 'changes',
+        before: MODEL,
+        changes: [{ from: 2, to: 2, insert: 'x' }],
+      }),
+    })
+    const content = MODEL.replace('intro', 'INTRODUCTION')
+    handleUpdate({
+      command: 'update',
+      content,
+      epoch: 2,
+      afterSequence: 1,
+      revision: 5,
+    } as any)
+    expect(t.applyText).not.toHaveBeenCalled()
+    // DR2: the taken typing is given back before today's path flushes it.
+    expect(reopenTyping).toHaveBeenCalledExactlyOnceWith(MODEL)
+    expect(reopenTyping.mock.invocationCallOrder[0]).toBeLessThan(
+      t.setValue.mock.invocationCallOrder[0],
+    )
+    expect(t.setValue).toHaveBeenCalledExactlyOnceWith(content, true)
+  })
+
+  it('gives the typing back when the apply by units falls back after taking it (DR2)', () => {
+    const t = owning({ applied: false })
+    const reopenTyping = vi.fn()
+    ;(sessionState.modelSession as any).reopenTyping = reopenTyping
+    ;(sessionState.modelSession as any).deltaPort = () => ({
+      modelText: () => MODEL,
+      epoch: () => 1,
+      hasDirty: () => true,
+      prepareDelta: () => ({
+        kind: 'changes',
+        before: MODEL,
+        changes: [
+          { from: MODEL.length - 1, to: MODEL.length - 1, insert: 'x' },
+        ],
+      }),
+    })
+    handleUpdate({
+      command: 'update',
+      content: MODEL.replace('intro', 'INTRO'),
+      epoch: 2,
+      afterSequence: 1,
+      revision: 5,
+    } as any)
+    expect(reopenTyping).toHaveBeenCalledExactlyOnceWith(MODEL)
+    expect(t.setValue).toHaveBeenCalledTimes(1)
+  })
+
+  it('makes the typing pending again when its delta cannot be posted (DR2)', () => {
+    const t = owning()
+    const reopenTyping = vi.fn()
+    ;(sessionState.modelSession as any).reopenTyping = reopenTyping
+    ;(sessionState.modelSession as any).deltaPort = () => ({
+      modelText: () => MODEL,
+      epoch: () => 1,
+      hasDirty: () => true,
+      prepareDelta: () => ({
+        kind: 'changes',
+        before: MODEL,
+        changes: [
+          { from: MODEL.length - 1, to: MODEL.length - 1, insert: 'x' },
+        ],
+      }),
+    })
+    sessionState.deltaSync = {
+      publishApplied: vi.fn(() => ({
+        kind: 'fallback',
+        reason: 'awaiting-rebind',
+      })),
+    } as any
+    const schedule = vi.fn()
+    ;(sessionState.editSync as any).schedule = schedule
+    const content = MODEL.replace('intro', 'INTRO')
+    handleUpdate({
+      command: 'update',
+      content,
+      epoch: 2,
+      afterSequence: 1,
+      revision: 5,
+    } as any)
+    expect(t.setValue).not.toHaveBeenCalled()
+    expect(reopenTyping).toHaveBeenCalledExactlyOnceWith(content)
+    expect(schedule).toHaveBeenCalled()
+    sessionState.deltaSync = null
+  })
+
+  // DR3 (Q-62): the command's delta went out on the old epoch after the host started a new one; the
+  // update answers only the text before it. The change stays and is posted on the new epoch.
+  it('keeps the changes an epoch-ending update did not answer and posts them on the new epoch', () => {
+    const t = owning()
+    const base = MODEL.replace('| 1 | 2 |', '| 1 |')
+    const publishApplied = vi.fn(() => ({ kind: 'delta', sequence: 1 }))
+    sessionState.deltaSync = {
+      takeRefusedBase: () => base,
+      publishApplied,
+    } as any
+    handleUpdate({
+      command: 'update',
+      content: base,
+      epoch: 2,
+      afterSequence: 2,
+      revision: 4,
+    } as any)
+    expect(t.setValue).not.toHaveBeenCalled()
+    expect(t.applyText).not.toHaveBeenCalled()
+    const from = base.indexOf('| 1 |') + 5
+    expect(publishApplied).toHaveBeenCalledExactlyOnceWith(base, [
+      { from, to: from, insert: ' 2 |' },
+    ])
+    sessionState.deltaSync = null
+  })
+
+  it('applies an outside change beside the unanswered changes', () => {
+    const t = owning()
+    const base = MODEL.replace('| 1 | 2 |', '| 1 |')
+    const publishApplied = vi.fn(() => ({ kind: 'delta', sequence: 1 }))
+    sessionState.deltaSync = {
+      takeRefusedBase: () => base,
+      publishApplied,
+    } as any
+    const content = base.replace('intro', 'INTRODUCTION')
+    handleUpdate({
+      command: 'update',
+      content,
+      epoch: 2,
+      afterSequence: 2,
+      revision: 5,
+    } as any)
+    expect(t.applyText).toHaveBeenCalledExactlyOnceWith(
+      [{ from: 0, to: 5, insert: 'INTRODUCTION' }],
+      'host',
+    )
+    const from = base.indexOf('| 1 |') + 5 + 7
+    expect(publishApplied).toHaveBeenCalledExactlyOnceWith(content, [
+      { from, to: from, insert: ' 2 |' },
+    ])
+    expect(t.setValue).not.toHaveBeenCalled()
+    sessionState.deltaSync = null
+  })
+
+  it("falls back to today's setValue when the apply falls back", () => {
+    const t = owning({ applied: false })
+    const content = MODEL.replace('intro', 'INTRO')
+    handleUpdate({
+      command: 'update',
+      content,
+      epoch: 2,
+      afterSequence: 1,
+      revision: 5,
+    } as any)
+    expect(t.applyText).toHaveBeenCalledTimes(1)
+    expect(t.setValue).toHaveBeenCalledExactlyOnceWith(content, true)
   })
 })
 

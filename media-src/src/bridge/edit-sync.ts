@@ -24,6 +24,7 @@ import { registerQuietObserver } from '../util/mutation-impact'
 import { trackedEditorRange } from '../editing/editor-caret'
 import { svSourceDerivesFrom } from './sv-source-relation'
 import type { ModelSession } from './model-session'
+import { singleSpanDiff } from './change-set'
 import {
   createDeltaSync,
   type DeltaFallbackReason,
@@ -96,6 +97,8 @@ export interface EditSync {
   acquireExactAuthority(opts?: {
     publish?: boolean
     background?: boolean
+    /** Task 733 / 010: the caller reads `rendered` only off the model route; it is read on first use. */
+    lazyRendering?: boolean
   }): Promise<{ exact: string; rendered: string } | null>
   /** Task 607: an exact action's own apply window (its setValue before `postExact`). Only here
    * does a rendering change keep the owned base; streaming and host updates are not this window.
@@ -122,6 +125,10 @@ export interface EditSync {
    * the host bytes it replaces (`before`, default: the last owned base); without one the host
    * refuses it. A refusal rolls the DOM back unless `rollback` is `false`. */
   postExact(content: string, opts?: PostExactOptions): void
+  /** Task 733 / 010 (shared rules 3.7): while the model owns the text, apply `after` by units and post
+   * the change as one `edit-delta`. 'fallback': nothing was changed; the caller runs its setValue and
+   * `postExact`. 'applied': the DOM holds `after` and the host was told (a delta, or the whole text). */
+  applyExactText(after: string, opts?: PostExactOptions): 'applied' | 'fallback'
   /** Drop the incremental IR cache when the DOM is rebuilt outside the edit path
    *  (external setValue / streaming) so the next serialize rebaselines cleanly. */
   invalidate(): void
@@ -191,6 +198,8 @@ interface EditSyncDeps {
         | 'onWholeTextPublished'
         | 'recordFallback'
         | 'markExplicitAtCaret'
+        | 'applyText'
+        | 'rebuildAfterExact'
       >
     >
   /** An IME composition is running (the delta publisher publishes nothing then, except for a flush). */
@@ -1698,15 +1707,34 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   // only while the rendering it was requested for is still live, nothing was typed since, and that
   // rendering is the projection of the host's bytes.
   const acquireExactAuthority = (
-    opts: { publish?: boolean; background?: boolean } = {},
+    opts: {
+      publish?: boolean
+      background?: boolean
+      lazyRendering?: boolean
+    } = {},
   ): Promise<{ exact: string; rendered: string } | null> => {
     // Task 733 (007-B): the model holds the host bytes plus typing, so there is nothing to ask the host.
     const modelExact = liveExactText()
-    if (modelExact !== null)
+    if (modelExact !== null && !opts.lazyRendering)
       return Promise.resolve({
         exact: modelExact,
         rendered: snapshotMarkdown(),
       })
+    if (modelExact !== null) {
+      // Task 733 / 010 (DR1, DR2): every other caller pins the acquire-time rendering (a later proof
+      // compares against it). The block action's model route plans on the model units and reads it
+      // only when it re-derives on the existing route, so it makes no whole-document read.
+      const pair = { exact: modelExact } as { exact: string; rendered: string }
+      let rendered: string | undefined
+      Object.defineProperty(pair, 'rendered', {
+        enumerable: true,
+        get: () => {
+          rendered ??= snapshotMarkdown()
+          return rendered
+        },
+      })
+      return Promise.resolve(pair)
+    }
     return acquireExactFromHost(opts)
   }
   const acquireExactFromHost = (opts: {
@@ -1888,6 +1916,102 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (seedStartRequested) startIncrementalSeed()
   }
 
+  /** Today's whole-text exact post (Task 607): the host writes it only while it holds `before`. */
+  const postWholeExact = (content: string, opts?: PostExactOptions): void => {
+    // Task 607 rule 7: the host writes the edit only while it still holds `before`. Pending
+    // typing is cancelled, not flushed, so a rebased action (D3) posts its typing with it.
+    const before = opts?.before ?? ownedBase
+    releaseAuthorityRequest()
+    pendingEdit.cancel()
+    deferredPlainPost = false
+    cancelRendererPerf()
+    // The exact transaction supersedes the triggering input. Clear this before starting the
+    // seed so delayed setValue mutations are recognized as the same exact rebuild, not a new edit.
+    userInputPending = false
+    exactTransactionMarkdown = content
+    exactTransactionRendered = null
+    editBeforeAnchor = false
+    remembered = null
+    lastRebase = null
+    // The cancelled typing never publishes; this post owns the document instead.
+    settleBackgroundWaiters(null)
+    advanceSourceRevision()
+    replaceIncrementalSeed(seedFromExactMarkdown(content))
+    if (isSuppressed()) return
+    hostBase = content
+    hostReference = hostBase
+    const requestId = newRequestId()
+    latestExact = { requestId, rollback: opts?.rollback, plainAfter: false }
+    // Task 733 (decision 1): the exact post changes the host bytes, so it is never predicted; it
+    // takes a sequence only when the model asks the host for the bytes. The host ignores an exact
+    // edit's sequence for plain ordering, and `lastPlainPost` stays the last plain post.
+    const sequence = ++plainSequence
+    const shadow = shadowPost(sequence, { predict: false, requestId })
+    vscode.postMessage({
+      command: 'edit',
+      content,
+      exact: true,
+      ...(before === null ? {} : { before }),
+      ...(opts?.history ? { history: opts.history } : {}),
+      requestId,
+      ...(shadow ? { sequence, ...shadow } : {}),
+    })
+    syncUndoDelay()
+  }
+  // Task 733 / 010 (shared rules 3.7): the exact post as one `edit-delta` while the model owns the
+  // text. Whole-text instead for a history replay (Task 685) and while an answer is awaited.
+  const ownsExactDelta = (opts?: PostExactOptions): boolean =>
+    !opts?.history &&
+    deltaSync !== null &&
+    liveSession?.ownsText?.() === true &&
+    !composing() &&
+    deltaPort?.awaiting() !== true &&
+    deltaPort?.modelText() !== undefined
+  const rollbackOf = (opts?: PostExactOptions): ExactRollback | undefined =>
+    opts?.rollback === false ? undefined : opts?.rollback
+  /** The bookkeeping of an exact post that went out as a delta; the host holds `content` after it. */
+  const afterExactDelta = (content: string): void => {
+    releaseAuthorityRequest()
+    deferredPlainPost = false
+    cancelRendererPerf()
+    // The delta carries the action's span only: typing outside it stays pending and publishes on its
+    // own (010-R F7); with nothing left the pending publication has nothing to post.
+    if (deltaPort?.hasDirty()) pendingEdit.schedule()
+    else {
+      pendingEdit.cancel()
+      userInputPending = false
+    }
+    settleBackgroundWaiters(null)
+    hostBase = null
+    hostReference = content
+    ownedBase = null
+    syncUndoDelay()
+  }
+  const applyExactText = (
+    after: string,
+    opts?: PostExactOptions,
+  ): 'applied' | 'fallback' => {
+    if (!deltaSync || !liveSession?.applyText || !ownsExactDelta(opts))
+      return 'fallback'
+    const before = deltaPort?.modelText() as string
+    const target = normalizeEol(after)
+    const diff = singleSpanDiff(before, target)
+    if (!diff) return 'applied'
+    const outcome = shadowCall(() => liveSession.applyText?.([diff], 'exact'))
+    if (outcome?.kind !== 'applied') return 'fallback'
+    // The DOM holds `after` now; re-read the publisher's state (R-1) through its own gates.
+    const posted = shadowCall(() =>
+      deltaSync.publishApplied(before, [diff], rollbackOf(opts)),
+    )
+    if (posted?.kind === 'delta') {
+      afterExactDelta(target)
+      return 'applied'
+    }
+    // Q-79 OQ-5: the change is in the DOM but cannot go as a delta: post the whole text instead, so
+    // the caller never runs its setValue a second time.
+    postWholeExact(target, { ...opts, before })
+    return 'applied'
+  }
   const sync: EditSync = {
     deltaSync,
     resumeDeferredInput: () => {
@@ -2060,47 +2184,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
         pendingEdit.flush()
       actionApplying = applying
     },
-    postExact: (content, opts) => {
-      // Task 607 rule 7: the host writes the edit only while it still holds `before`. Pending
-      // typing is cancelled, not flushed, so a rebased action (D3) posts its typing with it.
-      const before = opts?.before ?? ownedBase
-      releaseAuthorityRequest()
-      pendingEdit.cancel()
-      deferredPlainPost = false
-      cancelRendererPerf()
-      // The exact transaction supersedes the triggering input. Clear this before starting the
-      // seed so delayed setValue mutations are recognized as the same exact rebuild, not a new edit.
-      userInputPending = false
-      exactTransactionMarkdown = content
-      exactTransactionRendered = null
-      editBeforeAnchor = false
-      remembered = null
-      lastRebase = null
-      // The cancelled typing never publishes; this post owns the document instead.
-      settleBackgroundWaiters(null)
-      advanceSourceRevision()
-      replaceIncrementalSeed(seedFromExactMarkdown(content))
-      if (isSuppressed()) return
-      hostBase = content
-      hostReference = hostBase
-      const requestId = newRequestId()
-      latestExact = { requestId, rollback: opts?.rollback, plainAfter: false }
-      // Task 733 (decision 1): the exact post changes the host bytes, so it is never predicted; it
-      // takes a sequence only when the model asks the host for the bytes. The host ignores an exact
-      // edit's sequence for plain ordering, and `lastPlainPost` stays the last plain post.
-      const sequence = ++plainSequence
-      const shadow = shadowPost(sequence, { predict: false, requestId })
-      vscode.postMessage({
-        command: 'edit',
-        content,
-        exact: true,
-        ...(before === null ? {} : { before }),
-        ...(opts?.history ? { history: opts.history } : {}),
-        requestId,
-        ...(shadow ? { sequence, ...shadow } : {}),
-      })
-      syncUndoDelay()
-    },
+    // Task 733 / 010 (DR1): a caller that ran its own setValue keeps today's whole-text exact post. Its
+    // `before` guard refuses an edit on a host the editor never saw (Task 607/630); a delta's epoch
+    // guard did not stop it there. Block actions apply by units through `applyExactText` instead.
+    postExact: (content, opts) => postWholeExact(content, opts),
+    applyExactText,
     acquireExactAuthority,
     receiveExactAuthority,
     receiveExactRefusal,

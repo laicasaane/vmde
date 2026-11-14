@@ -77,7 +77,8 @@ import {
 import { refreshVisiblePreviewAfterHostUpdate } from '../editing/preview-state'
 import { stripAnsi } from '../clipboard/paste-transform'
 import { renderDiffMarkers, clearDiffMarkers } from '../chrome/diff-markers'
-import { invalidateCaret } from '../editing/caret'
+import { invalidateCaret, writeSelection } from '../editing/caret'
+import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { preserveCaretAndScroll } from '../editing/caret-preserve'
 import { restoreEditorCaretIfLost } from '../editing/editor-caret'
 import {
@@ -120,6 +121,7 @@ import {
 import { scrollToHeadingIndex } from '../nav/outline'
 import { type LineRevealRequest, revealLineOnSurface } from './line-reveal'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
+import { singleSpanDiff } from './change-set'
 import {
   openFindReplace,
   runFindWidgetAction,
@@ -430,6 +432,234 @@ function adoptInlineInitEpoch(msg: UpdateMessage): void {
   session?.onHostText(content, epoch, { sameDom: true })
 }
 
+// Task 733 / 010 (shared rules 3.7): while the text model owns the text, an update is compared with
+// the model text, not the DOM's serialization: the DOM can hold typing (or a table command) that is
+// not published yet, and replacing it with the host text would drop that change silently (Q-62).
+// A different text is applied by units; 'fallback' sends the update down today's whole path.
+type HostApply = 'same' | 'applied' | 'fallback'
+
+/** The caret as its top-level block's index and a text offset inside that block (O(block), 010-R N3). */
+interface UnitCaret {
+  readonly anchor: Node
+  readonly index: number
+  readonly offset: number
+}
+
+function captureUnitCaret(root: HTMLElement): UnitCaret | undefined {
+  const selection = document.getSelection()
+  const anchor = selection?.anchorNode
+  if (!selection || !anchor || !root.contains(anchor) || anchor === root)
+    return undefined
+  let top: Node = anchor
+  while (top.parentNode && top.parentNode !== root) top = top.parentNode
+  const index = Array.prototype.indexOf.call(root.children, top)
+  if (index < 0) return undefined
+  let offset = anchor.nodeType === Node.TEXT_NODE ? selection.anchorOffset : 0
+  const walker = document.createTreeWalker(top, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node && node !== anchor; )
+    if (!node.contains(anchor)) {
+      offset += (node as Text).length
+      node = walker.nextNode()
+    } else break
+  return { anchor, index, offset }
+}
+
+/** Keeps a caret outside the replaced units; puts one inside them back at its offset in the new block. */
+function restoreUnitCaret(
+  root: HTMLElement,
+  caret: UnitCaret | undefined,
+): void {
+  if (!caret || caret.anchor.isConnected) return
+  const top = root.children[caret.index]
+  if (!top) return
+  const walker = document.createTreeWalker(top, NodeFilter.SHOW_TEXT)
+  let left = caret.offset
+  let last: Text | undefined
+  for (let node = walker.nextNode() as Text | null; node; ) {
+    last = node
+    if (left <= node.length) break
+    left -= node.length
+    node = walker.nextNode() as Text | null
+  }
+  if (!last) return
+  const range = document.createRange()
+  range.setStart(last, Math.min(left, last.length))
+  range.collapse(true)
+  // Deliberate: the caret stays in the block the host change replaced.
+  writeSelection(range)
+}
+/**
+ * Applies the host change by units with caret and scroll kept (010-R N3). A throw after the render
+ * wrote the DOM leaves units the model cannot trust (010-R F10): the model turns off and the caller
+ * runs today's whole path.
+ */
+function applyKeepingCaret(
+  session: NonNullable<
+    ReturnType<typeof getRouterDeps>['sessionState']['modelSession']
+  >,
+  diff: { from: number; to: number; insert: string },
+): boolean {
+  const root = window.vditor ? activeModeElement(window.vditor) : null
+  // The live selection stays when it is outside the replaced units; no read from the document start.
+  const caret = root ? captureUnitCaret(root) : undefined
+  const scroller = root ? findScroller(root) : undefined
+  const scrollTop = scroller?.scrollTop
+  try {
+    const applied = session.applyText?.([diff], 'host').kind === 'applied'
+    if (applied && root) restoreUnitCaret(root, caret)
+    if (scroller && scrollTop !== undefined) scroller.scrollTop = scrollTop
+    return applied
+  } catch (error) {
+    reportError(error, 'host update by units')
+    try {
+      session.turnOff('sync-error')
+    } catch {
+      // The session is unusable; the whole path still runs.
+    }
+    return false
+  }
+}
+
+type Change = { from: number; to: number; insert: string }
+
+/** Changes of pending typing against the model text, taken into the model; [] when none; undefined: not takeable. */
+function takePendingTyping(
+  session: NonNullable<
+    ReturnType<typeof getRouterDeps>['sessionState']['modelSession']
+  >,
+): readonly Change[] | undefined {
+  const port = session.deltaPort?.()
+  if (!port?.hasDirty?.()) return []
+  // The sequence only stamps `changedAt`; the typing is posted after the host change.
+  const prepared = port.prepareDelta(1)
+  return prepared.kind === 'changes' ? prepared.changes : undefined
+}
+
+/**
+ * The host change shifted past the typing before it, and the typing shifted past the host change for
+ * the host text; undefined when they touch (the host text then wins).
+ */
+/** The changes from `base` to the model text now, as one span (the deltas the host did not answer). */
+function unansweredSince(
+  session: NonNullable<
+    ReturnType<typeof getRouterDeps>['sessionState']['modelSession']
+  >,
+  base: string,
+): readonly Change[] {
+  const now = session.deltaPort?.().modelText()
+  const change = now === undefined ? null : singleSpanDiff(base, now)
+  return change ? [change] : []
+}
+
+function rebaseHostChange(
+  host: Change,
+  typed: readonly Change[],
+): { host?: Change; typing: Change[] } | undefined {
+  let before = 0
+  const hostDelta = host.insert.length - (host.to - host.from)
+  const typing: Change[] = []
+  for (const change of typed) {
+    const delta = change.insert.length - (change.to - change.from)
+    if (
+      change.to < host.from ||
+      (change.to === host.from && change.from < host.from)
+    ) {
+      before += delta
+      typing.push(change)
+    } else if (
+      change.from > host.to ||
+      (change.from === host.to && change.to > host.to)
+    )
+      typing.push({
+        from: change.from + hostDelta,
+        to: change.to + hostDelta,
+        insert: change.insert,
+      })
+    else return undefined
+  }
+  return {
+    host: {
+      from: host.from + before,
+      to: host.to + before,
+      insert: host.insert,
+    },
+    typing,
+  }
+}
+
+/** The bookkeeping of a host update applied by units: revision, history, epoch, edit sync, typing. */
+function finishHostApply(
+  msg: UpdateMessage,
+  session: NonNullable<
+    ReturnType<typeof getRouterDeps>['sessionState']['modelSession']
+  >,
+  content: string,
+  hostChanged: boolean,
+  typing: readonly Change[],
+): void {
+  const { sessionState } = getRouterDeps()
+  sessionState.hostRevision = msg.revision
+  // The Undo history follows today's rule: cleared unless an owned checkbox transaction (Task 603). An
+  // update that changes no text beyond our unanswered deltas is no outside change: history stays.
+  if (hostChanged && !ownedCheckboxHistory(msg))
+    historyStoreOf(innerVditor())?.reset()
+  // Q-80: the units stay; only the host text, epoch and revision move.
+  session.adoptHostEpoch?.(content, msg.epoch ?? 0)
+  // Host-originated bytes (as `applyHostUpdate`): edit sync's anchors restart from them (010-R F6).
+  if (hostChanged) sessionState.editSync?.reseed(msg.incrementalSeed, content)
+  sessionState.editSync?.reportDocMode()
+  // G5: typing outside the window was kept; publish it on the new epoch.
+  if (
+    typing.length > 0 &&
+    sessionState.deltaSync?.publishApplied?.(content, typing)?.kind !== 'delta'
+  )
+    // Not posted (awaiting, latched, limits): the host holds `content`, so the typing is pending
+    // again against it and the scheduled publication takes it (DR2).
+    session.reopenTyping?.(content)
+  sessionState.editSync?.schedule?.()
+  if (!refreshVisiblePreviewAfterHostUpdate(msg.content))
+    (window as any).__vmdeInvalidatePreview?.('content')
+  setTimeout(() => {
+    if (window.vditor && lastDiffChanges.length)
+      renderDiffMarkers(window.vditor, lastDiffChanges)
+  }, 0)
+}
+
+function applyHostUpdateByUnits(msg: UpdateMessage): HostApply {
+  const session = getRouterDeps().sessionState.modelSession
+  if (!session?.ownsText?.()) return 'fallback'
+  const modelText = session.deltaPort?.().modelText()
+  if (modelText === undefined) return 'fallback'
+  const content = (msg.raw ?? msg.content).replace(/\r\n?/gu, '\n')
+  if (content === modelText) return 'same'
+  const { sessionState } = getRouterDeps()
+  // DR3: an update that ended the epoch below deltas posted in it answers the text before them; those
+  // changes are re-applied on the new epoch past the host change, as pending typing is.
+  const refusedBase = sessionState.deltaSync?.takeRefusedBase?.()
+  const base = refusedBase ?? modelText
+  // Typing the model has not taken yet (a Vditor block spin marks the root structure, which no apply
+  // window can bound) is taken into the model first; the host change is applied beside it and the
+  // typing is published on the new epoch (G5, DR1). On overlap the host text wins (today's path).
+  const taken = takePendingTyping(session)
+  if (taken === undefined) return 'fallback'
+  const typed =
+    refusedBase === undefined ? taken : unansweredSince(session, base)
+  // A fallback after the typing was taken gives it back first, so today's path flushes it (DR2).
+  const giveBack = (): 'fallback' => {
+    if (taken.length > 0 || refusedBase !== undefined)
+      session.reopenTyping?.(modelText)
+    return 'fallback'
+  }
+  const diff = singleSpanDiff(base, content)
+  const rebased = diff ? rebaseHostChange(diff, typed) : { typing: [...typed] }
+  if (!rebased) return giveBack()
+  getRouterDeps().cancelAutoWrap()
+  if (rebased.host && !applyKeepingCaret(session, rebased.host))
+    return giveBack()
+  finishHostApply(msg, session, content, diff !== null, rebased.typing)
+  return 'applied'
+}
+
 const isInlineInitEcho = (msg: UpdateMessage): boolean =>
   msg.type === 'init' &&
   inlineInitedContent !== null &&
@@ -487,18 +717,27 @@ export function handleUpdate(msg: UpdateMessage) {
     // the stream ends; nothing re-sends an outside change that arrives during the stream.
     getRouterDeps().sessionState.deferredHostUpdate = msg
     return
-  } else if (vditor.getValue() !== msg.content) {
-    applyHostUpdate(msg)
   } else {
-    // The webview already shows this text: it still holds the host's revision from now on.
-    adoptRevision()
-    // Task 733: the same DOM may come with a new epoch, so the model builds again.
-    getRouterDeps().sessionState.modelSession?.onHostText(
-      msg.raw ?? msg.content,
-      msg.epoch ?? 0,
-      { sameDom: true },
-    )
+    applyLiveUpdate(msg, adoptRevision)
   }
+}
+
+/** A non-init update outside a deferred view and a stream: by units, by setValue, or the same text. */
+function applyLiveUpdate(msg: UpdateMessage, adoptRevision: () => void): void {
+  const byUnits = applyHostUpdateByUnits(msg)
+  if (byUnits === 'applied') return
+  if (byUnits === 'fallback' && vditor.getValue() !== msg.content) {
+    applyHostUpdate(msg)
+    return
+  }
+  // The webview already shows this text: it still holds the host's revision from now on.
+  adoptRevision()
+  // Task 733: the same DOM may come with a new epoch, so the model builds again.
+  getRouterDeps().sessionState.modelSession?.onHostText(
+    msg.raw ?? msg.content,
+    msg.epoch ?? 0,
+    { sameDom: true },
+  )
 }
 
 function handleSetTheme(msg: Extract<HostMessage, { command: 'set-theme' }>) {
@@ -1253,7 +1492,18 @@ const messageHandlers: HostMessageHandlers = {
     // The inline-init echo is handled in `adoptInlineInitEpoch`, which tells the publisher itself.
     if (!isInlineInitEcho(msg))
       getRouterDeps().sessionState.deltaSync?.onUpdate(msg)
-    handleUpdate(msg)
+    const { sessionState } = getRouterDeps()
+    // A deferred view or a stream keeps the update for later: the host text is not shown yet.
+    const shownNow = !sessionState.deferredEditView && !sessionState.streaming
+    let shown = false
+    try {
+      handleUpdate(msg)
+      shown = shownNow
+    } finally {
+      // Task 733 / 010 (G9): a refused exact delta rolls back once the editor shows the host text; an
+      // update that threw or is kept for later drops it.
+      sessionState.deltaSync?.afterUpdate?.(shown)
+    }
   },
   'set-theme': handleSetTheme,
   'emoji-recents': handleEmojiRecents,

@@ -9,13 +9,16 @@ import type {
   PrepareResult,
 } from './delta-sync'
 import { installModelSync } from './model-structure'
+import type { TextChange } from './change-set'
 import {
+  type ApplyFallbackReason,
   createTextModel,
+  type HostUnit,
   type SyncResult,
   type TextModel,
   type Unit,
 } from './text-model'
-import { createUnitDom, type UnitDomControl } from './unit-dom'
+import { createUnitDom } from './unit-dom'
 import {
   createUnitSchedule,
   installPreTouchListeners,
@@ -38,6 +41,19 @@ import type { UnitLute } from './unit-lute'
 type U = Unit<HTMLElement>
 type RebindMessage = Extract<HostMessage, { command: 'rebind' }>
 type OffReason = NonNullable<TextModel<HTMLElement>['offReason']>
+
+/** Who asks for an apply (shared rules 3.7): an exact action, a host update, a refusal rollback. */
+type ApplyOrigin = 'exact' | 'host' | 'rollback'
+export type ApplyOutcome =
+  | { kind: 'applied' }
+  | { kind: 'fallback'; reason: ApplyFallbackReason }
+
+const APPLIED: ApplyOutcome = { kind: 'applied' }
+const applyFallback = (reason: ApplyFallbackReason): ApplyOutcome => ({
+  kind: 'fallback',
+  reason,
+})
+const APPLY_OFF = applyFallback('model-off')
 
 /** The part of an outcome message (block action, outline move) the session reads. */
 interface HostWriteOutcome {
@@ -124,6 +140,21 @@ export interface ModelSession {
    * awaited one (its `requestId` names it), or when the refusal names no request.
    */
   onExactRefused(requestId?: string): void
+  /**
+   * Task 733 / 010: writes `changes` (against the model text) into the IR DOM unit by unit and commits
+   * them to the model; no post, no build, same epoch. A fallback leaves the DOM unchanged.
+   */
+  applyText(changes: readonly TextChange[], origin: ApplyOrigin): ApplyOutcome
+  /**
+   * Task 733 / 010 (DR2): typing that a `prepareDelta` took into the model was not published: the model
+   * text goes back to `text` (same DOM) and the next publication or flush posts the whole text, which
+   * carries the typing.
+   */
+  reopenTyping(text: string): void
+  /** Task 733 / 010 (Q-80): a host update was applied by units: take its text and epoch, keep every unit (no rescan). */
+  adoptHostEpoch(text: string, epoch: number): void
+  /** Task 733 / 010: a caller's setValue rebuilt the DOM for `text`: build on the next frame, same epoch and sequence. */
+  rebuildAfterExact(text: string): void
   /** Rule 4.1: a request that makes the host write by itself (block action, outline move, checkbox) was posted. */
   onHostWriteRequested(): void
   /** A host-write request ended without an `update` to follow (refused, stale, failed). */
@@ -403,7 +434,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let host: { text: string; epoch: number } | undefined
   let domComplete = false
   let model: TextModel<HTMLElement> | undefined
-  let dom: UnitDomControl | undefined
+  let dom: ReturnType<typeof createUnitDom> | undefined
   let modelLute: UnitLute | undefined
   let schedule: UnitSchedule | undefined
   let removeListeners: (() => void) | undefined
@@ -430,6 +461,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let pendingStructure: Set<'root' | Unit<HTMLElement>> | undefined
   let feedFrame: number | undefined
   const fallbacks: Partial<Record<DeltaFallbackReason, number>> = {}
+  /** A sync with a sequence may have set `changedAt` since the last reset: only then is a reset walk due (010-R F12). */
+  let changedAtSet = false
   const shadow: ShadowCounters = {
     compared: 0,
     equal: 0,
@@ -475,6 +508,44 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       cause: 'sync',
       whole: result.kind === 'fallback',
       changed: [],
+      structural: [],
+    })
+  }
+
+  /** An apply replaced units: the new ones are the changed ones (the apply's own marks are dropped). */
+  /** The live units of `elements` that the model lists (rendered members or neighbours). */
+  const liveUnitsOf = (
+    elements: readonly (Element | null | undefined)[],
+    root: HTMLElement | null,
+  ): LiveUnit[] => {
+    const out: LiveUnit[] = []
+    for (const el of elements) {
+      const unit = el instanceof HTMLElement ? model?.unitOf(el) : undefined
+      if (unit) out.push(toLiveUnit(unit, root))
+    }
+    return out
+  }
+
+  const emitApplied = (
+    rendered: readonly HostUnit<HTMLElement>[],
+    table: U | undefined,
+    neighbours: readonly (Element | null | undefined)[],
+  ): void => {
+    cancelFeedFrame()
+    const root = deps.getRoot()
+    // A row apply changed its table (its rows are no top-level units, 010-R F11); a deletion renders
+    // nothing, so the units beside the removed ones name the place it changed.
+    let changed = table
+      ? [toLiveUnit(table, root)]
+      : liveUnitsOf(
+          rendered.map((listed) => listed.members[0]),
+          root,
+        )
+    if (changed.length === 0) changed = liveUnitsOf(neighbours, root)
+    emit({
+      cause: 'sync',
+      whole: changed.length === 0,
+      changed,
       structural: [],
     })
   }
@@ -574,7 +645,12 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       Md2VditorIRDOM: lute.Md2VditorIRDOM.bind(lute),
     }
     modelLute = boundLute
-    const unitDom = createUnitDom(root, boundLute, { onBatch })
+    const unitDom = createUnitDom(root, boundLute, {
+      onBatch,
+      // The post-render steps of an apply (previews, captions, outline) need the inner editor.
+      vditor: () =>
+        (win as unknown as { vditor?: { vditor?: unknown } }).vditor?.vditor,
+    })
     const built = createTextModel(unitDom, scanMovableBlocks)
     built.build(host.text)
     model = built
@@ -798,6 +874,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       if (refused || !model) return refused ?? offFallback
       const before = model.text
       const result = model.sync(sequence)
+      changedAtSet = true
       if (result.kind === 'fallback')
         return { kind: 'fallback', reason: result.reason }
       if (result.changes.length === 0 || model.state !== 'live')
@@ -887,7 +964,10 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       finishAnswer(content, message.epoch)
       // 3.5 A: a host write that starts an epoch restarts the delta counter, so no unit keeps a
       // `changedAt` of the epoch that ended.
-      if (newEpoch && model?.state === 'live') resetChangedAt(model.units)
+      if (newEpoch && model?.state === 'live') {
+        resetChangedAt(model.units)
+        changedAtSet = false
+      }
     },
     onHostWriteOutcome(message) {
       awaitingWrite = false
@@ -922,6 +1002,88 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         stale = true
         confirmed = false
       }
+    },
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the apply's gates, plan, render, kind check and commit are one transaction (handoff 2.4)
+    applyText(changes, origin) {
+      if (!model || !dom || !live() || deps.getMode() !== 'ir') return APPLY_OFF
+      if (origin === 'exact' && !session.ownsText()) return APPLY_OFF
+      // A composition owns the DOM under the caret.
+      if (deps.isComposing()) return applyFallback('dirty-overlap')
+      const current = model
+      const unitDom = dom
+      unitDom.drain()
+      const planned = current.planApply(changes)
+      if (planned.kind === 'fallback') return planned
+      const { plan } = planned
+      const rows = plan.tableRows?.[0]
+      const replace = rows
+        ? rows.rows.map(
+            (r) =>
+              rows.table.children[r].members[0].parentElement as HTMLElement,
+          )
+        : plan.removed.flatMap((unit) => unit.members)
+      const neighbours = [
+        replace[0]?.previousElementSibling,
+        replace[replace.length - 1]?.nextElementSibling,
+      ]
+      // The history capture snapshots the scopes while the replaced elements are still in place: a
+      // list run after the render has lost its items' list, and an Undo could not find it (DR1).
+      const scopes = new Set<'root' | U>()
+      if (rows) scopes.add(rows.table)
+      else {
+        scopes.add('root')
+        for (const unit of plan.removed)
+          if (unit.kind === 'list-item') scopes.add(unit)
+      }
+      capture.onBatch(new Set(), scopes)
+      const rendered = unitDom.render?.(plan.sources, replace)
+      if (!rendered) return applyFallback('lute-not-ready')
+      // `render` writes nothing when a built element has another kind than its source.
+      if (
+        rendered.length !== plan.sources.length ||
+        rendered.some((unit, i) => unit.kind !== plan.sources[i].kind)
+      )
+        return applyFallback('window-without-kind')
+      // The capture sees the replacement while the model still lists the removed units (handoff 2.4).
+      unitDom.drain()
+      current.commitApply(plan, rendered)
+      emitApplied(rendered, rows?.table, neighbours)
+      restartSoon()
+      return APPLIED
+    },
+    reopenTyping(text) {
+      if (!model || !live()) return
+      model.rebind(normalizeEol(text))
+      if (model.state !== 'live') {
+        offReason = model.offReason ?? 'pairing-failed'
+        return
+      }
+      // The model no longer knows which units hold the typing: the next publication is whole-text, so
+      // it carries the DOM with the typing (a stale one is refused visibly, Task 646).
+      model.markStructureDirty('root')
+      preTouchFallback = true
+    },
+    adoptHostEpoch(text, epoch) {
+      if (!model || !live()) return
+      const newEpoch = epoch !== host?.epoch
+      host = { text: normalizeEol(text), epoch }
+      modeReentry = false
+      awaited = undefined
+      awaitingWrite = false
+      stale = false
+      exactSequences.clear()
+      prediction = undefined
+      confirmed = true
+      // As `onRebind` for a host-own epoch: no unit keeps a `changedAt` of the epoch that ended.
+      if (newEpoch && changedAtSet) {
+        resetChangedAt(model.units)
+        changedAtSet = false
+      }
+    },
+    rebuildAfterExact(text) {
+      if (!host || !domComplete) return
+      host = { text: normalizeEol(text), epoch: host.epoch }
+      buildSoon()
     },
     onHostWriteRequested() {
       if (!live()) return
@@ -984,6 +1146,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       )
         return unshadowedPost(model, sequence)
       const result = model.sync(sequence)
+      changedAtSet = true
       publicationBase(sequence)
       if (result.kind === 'fallback') {
         countFallback(result.reason)

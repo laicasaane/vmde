@@ -106,12 +106,47 @@ export interface DeltaSync {
   publishHistory(kind: 'undo' | 'redo', steps: number): DeltaResult
   /** The sequence of the last posted delta of the current epoch; 0 when none. */
   lastPostedSequence(): number
+  /**
+   * Task 733 / 010 (shared rules 3.7): an exact action already applied by units posts its change as
+   * one `edit-delta` against `before`. A fallback posts nothing: the caller posts the whole text.
+   * `rollback` runs once, from `afterUpdate`, when the host refuses this delta (G9).
+   */
+  publishApplied(
+    before: string,
+    changes: readonly TextChange[],
+    rollback?: ExactRollback,
+  ):
+    | { kind: 'delta'; sequence: number }
+    | { kind: 'fallback'; reason: DeltaFallbackReason }
+  /**
+   * Call after the router handled an `update` (Q-79 OQ-4): `shown` true runs the rollback of a refused
+   * exact delta; false (the update threw, or a deferred view or a stream keeps it) drops it, so no
+   * later, unrelated update runs it.
+   */
+  afterUpdate(shown: boolean): void
+  /**
+   * Task 733 / 010 (DR3): the model text the host held at the `afterSequence` of the last `update`
+   * that ended the epoch below the deltas posted in it, once; undefined when every delta was answered.
+   * The router rebases the unanswered changes past the host change and posts them on the new epoch.
+   */
+  takeRefusedBase(): string | undefined
   onBaseline(message: { epoch: number; afterSequence: number }): void
   onRestoreBaseline(message: {
     epoch: number
     afterSequence: number
     content: string
   }): void
+}
+
+/** Restores what an exact action changed besides the text when the host refuses it (edit-sync.ts). */
+interface ExactRollback {
+  restore(): void
+}
+
+/** Why a built change list cannot be posted. */
+const BUILD_REASON: Record<'too-many' | 'overlap', DeltaFallbackReason> = {
+  'too-many': 'too-many-changes',
+  overlap: 'sync-error',
 }
 
 /** Host limits (SR-1, section 4 of the shared rules). */
@@ -132,6 +167,19 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
   let forceWhole = false
   let refusals: number[] = []
   let latchedUntil: number | undefined
+  // The rollback of the latest exact delta of the epoch until the host answers it, and one that a
+  // refusing `update` made due (run by `afterUpdate`, after the editor shows the host text).
+  // Ascending by sequence: an earlier exact delta keeps its record when a later one is posted (F8).
+  let pendingRollbacks: Array<{ sequence: number; rollback: ExactRollback }> =
+    []
+  let dueRollback: ExactRollback | undefined
+  // The text before each posted delta the host has not answered yet (references, no copy).
+  let unanswered: Array<{ sequence: number; before: string }> = []
+  let refusedBase: string | undefined
+
+  function noteUnanswered(before: string): void {
+    unanswered.push({ sequence: lastPosted, before })
+  }
 
   /** The session may adopt an epoch without telling us (rebind, outcome); follow it lazily. */
   function followEpoch(): void {
@@ -140,6 +188,20 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     trackedEpoch = epoch
     lastPosted = 0
     acknowledged = 0
+    pendingRollbacks = []
+    unanswered = []
+  }
+
+  /** The host answered up to `afterSequence` in the tracked epoch: an exact delta it covers stays. */
+  function acknowledgeRollback(afterSequence: number): void {
+    if (unanswered.length > 0)
+      unanswered = unanswered.filter(
+        (record) => record.sequence > afterSequence,
+      )
+    if (pendingRollbacks.length === 0) return
+    pendingRollbacks = pendingRollbacks.filter(
+      (record) => record.sequence > afterSequence,
+    )
   }
 
   function isLatched(): boolean {
@@ -162,6 +224,10 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     perf?: RendererEditPerf,
   ): 'fallback' {
     deps.countFallback(reason)
+    // A plain whole-text post carries the DOM, the action included: a refusal no longer rolls it back,
+    // and no delta before it needs posting again.
+    pendingRollbacks = []
+    unanswered = []
     deps.publishWhole(reason, perf)
     session.markPublishedWhole()
     return 'fallback'
@@ -257,6 +323,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     if (changes === 'overlap') return fallback('sync-error', perf)
     if (changes.length === 0) return 'nothing'
     send(changes)
+    noteUnanswered(prepared.before)
     return 'delta'
   }
 
@@ -294,6 +361,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       undefined,
       (changes) => {
         postHistory(kind, steps, epoch, changes)
+        pendingRollbacks = []
         deps.afterDelta?.()
       },
     )
@@ -310,12 +378,70 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       forceWhole = false
       return fallback('host-write', perf)
     }
-    return publishPrepared(epoch, session.prepareDelta(lastPosted + 1), perf)
+    const result = publishPrepared(
+      epoch,
+      session.prepareDelta(lastPosted + 1),
+      perf,
+    )
+    // Typing published after an exact delta is in the DOM: a refusal keeps it, as the whole-text rule
+    // does for a plain post after the exact one (`plainAfter`, 010-R F9).
+    if (result === 'delta') pendingRollbacks = []
+    return result
+  }
+
+  /** The gates of an applied exact action, in the order of `publish`; undefined when it may post. */
+  function appliedGate(): DeltaFallbackReason | undefined {
+    if (session.epoch() === undefined) return 'model-off'
+    if (session.awaiting()) return 'awaiting-rebind'
+    if (isLatched()) return 'refusal-limit'
+    if (!forceWhole) return undefined
+    forceWhole = false
+    return 'host-write'
+  }
+
+  function publishApplied(
+    before: string,
+    changes: readonly TextChange[],
+    rollback?: ExactRollback,
+  ):
+    | { kind: 'delta'; sequence: number }
+    | { kind: 'fallback'; reason: DeltaFallbackReason } {
+    followEpoch()
+    const gated = appliedGate()
+    const built = gated === undefined ? buildChanges(before, changes) : 'gated'
+    const epoch = session.epoch()
+    if (typeof built === 'string' || epoch === undefined) {
+      const why =
+        gated ??
+        (built === 'too-many' || built === 'overlap'
+          ? BUILD_REASON[built]
+          : 'model-off')
+      deps.countFallback(why)
+      return { kind: 'fallback', reason: why }
+    }
+    if (built.length === 0) return { kind: 'delta', sequence: lastPosted }
+    post(epoch, built)
+    noteUnanswered(before)
+    if (rollback) pendingRollbacks.push({ sequence: lastPosted, rollback })
+    deps.afterDelta?.()
+    return { kind: 'delta', sequence: lastPosted }
   }
 
   return {
     publish,
     publishHistory,
+    publishApplied,
+    takeRefusedBase() {
+      const base = refusedBase
+      refusedBase = undefined
+      return base
+    },
+    afterUpdate(shown) {
+      refusedBase = undefined
+      const due = dueRollback
+      dueRollback = undefined
+      if (shown) due?.restore()
+    },
     lastPostedSequence() {
       followEpoch()
       return lastPosted
@@ -324,10 +450,30 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       followEpoch()
       const epoch = message.epoch ?? 0
       if (epoch === trackedEpoch) {
-        if (message.afterSequence !== undefined)
+        if (message.afterSequence !== undefined) {
           acknowledged = Math.max(acknowledged, message.afterSequence)
+          acknowledgeRollback(message.afterSequence)
+        }
         return
       }
+      // G9: the epoch ended below the exact delta's sequence, so the host refused it. The earliest
+      // refused exact delta restores the state before every later one.
+      const refused = pendingRollbacks.find(
+        (record) => record.sequence > (message.afterSequence ?? 0),
+      )
+      if (refused) dueRollback = refused.rollback
+      pendingRollbacks = []
+      // Otherwise the host text answers up to `afterSequence`, and the changes posted after it are
+      // re-applied on the new epoch from the text before the first of them (DR3).
+      refusedBase =
+        !refused &&
+        message.afterSequence !== undefined &&
+        message.afterSequence < lastPosted
+          ? unanswered.find(
+              (record) => record.sequence > message.afterSequence!,
+            )?.before
+          : undefined
+      unanswered = []
       // A new epoch: a posted delta that the host did not apply counts as one refusal (Q-11).
       if (
         message.afterSequence !== undefined &&
@@ -345,18 +491,23 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       // deltas the host accepted.
       if (message.epoch === trackedEpoch) {
         acknowledged = Math.max(acknowledged, message.afterSequence)
+        acknowledgeRollback(message.afterSequence)
         return
       }
       if (message.editSequence !== undefined) return
       // Posted deltas the host did not report as accepted are lost only when the host text differs from
       // the model text, which holds all of them; equal texts mean the host applied everything.
-      const unanswered =
+      const lost =
         lastPosted > acknowledged &&
         session.modelText() !== normalizeEol(message.content)
       trackedEpoch = message.epoch
       lastPosted = 0
       acknowledged = 0
-      if (unanswered || session.hasDirty()) {
+      // A host-own rebind keeps the DOM, which still shows the action: no record survives the epoch
+      // (the forced whole publication below carries the action), 010-R N4.
+      pendingRollbacks = []
+      unanswered = []
+      if (lost || session.hasDirty()) {
         forceWhole = true
         deps.requestPublication?.()
       }
@@ -387,6 +538,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       const changes = buildChanges(text, [diff])
       if (typeof changes === 'string' || changes.length === 0) return
       post(message.epoch, changes)
+      noteUnanswered(text)
       session.rebind(content)
       deps.afterDelta?.()
     },

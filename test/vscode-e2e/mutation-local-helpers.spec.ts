@@ -369,7 +369,8 @@ test('large mixed edits stay mutation-local and preserve exact host state', asyn
   expect(externalStats.helpers['section-fold-surface']).toBeDefined()
   expect(externalStats.helpers['section-fold-surface'].full).toBeGreaterThan(0)
   expect(externalStats.helpers['responsive-tables']).toBeDefined()
-  expect(externalStats.helpers['responsive-tables'].full).toBeGreaterThan(0)
+  // The host update is applied by units, so the table helper gets no whole pass.
+  expect(externalStats.helpers['responsive-tables'].full).toBe(0)
   for (const name of [
     'diagram-zoom',
     'diagram-controls',

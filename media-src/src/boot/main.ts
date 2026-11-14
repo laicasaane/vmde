@@ -112,6 +112,7 @@ import {
 import { configureSourceListCommand } from '../editing/list-normalize-source-command'
 import { configureBlockTransformCommand } from '../editing/block-transform-command'
 import { configureBlockActionClient } from '../editing/block-action-client'
+import { modelBlockUnits } from '../bridge/model-block-units'
 import { configureGithubInlineMathInsertion } from '../editing/math-insertion'
 import { configureIdInsertion } from '../editing/id-insertion'
 import { configureInlinePictureInsertion } from '../editing/inline-picture'
@@ -311,7 +312,10 @@ const legacyExactMarkdown = (): string =>
 // the owned exact bytes or `null`, acquire authority before planning, and pass a rollback handle.
 const ownedExactMarkdown = (): string | null =>
   sessionState.editSync?.snapshotExactMarkdown() ?? null
-const acquireActionAuthority = (opts?: { publish?: boolean }) =>
+const acquireActionAuthority = (opts?: {
+  publish?: boolean
+  lazyRendering?: boolean
+}) =>
   sessionState.editSync?.acquireExactAuthority(opts) ?? Promise.resolve(null)
 const postActionExact = (
   markdown: string,
@@ -524,6 +528,19 @@ configureBlockActionClient({
   },
   onError: (error) => reportError(error, 'block-action'),
   reown: (after) => sessionState.editSync?.reseed(undefined, after),
+  // Task 733 / 010 (Q-31, Q-79 OQ-1/OQ-2): while the model owns the text, the action plans on its
+  // confirmed units and applies `after` by units; the delta carries the write.
+  applyExactText: (after, opts) =>
+    sessionState.editSync?.applyExactText(after, opts) ?? 'fallback',
+  modelUnits: () => {
+    const session = sessionState.modelSession
+    return session?.ownsText() ? modelBlockUnits(session) : undefined
+  },
+  // The owner check reads the confirmed text only: no unit list is built for it.
+  modelText: () => {
+    const session = sessionState.modelSession
+    return session?.ownsText() ? session.confirmedSnapshot()?.text : undefined
+  },
 })
 
 configureBlockTransformCommand({

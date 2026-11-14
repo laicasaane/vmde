@@ -471,6 +471,58 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
         await vscode.commands.executeCommand(id)
       }, command)
     const source = () => docText(evaluateInVSCode, file)
+    // Task 733 / 010 (Q-62, DR2, diagnostics only): message names with epochs and sequences from the
+    // previous Ctrl+Z to a failed poll; never document text. No assertion depends on it.
+    if (mode === 'ir')
+      await frame.locator('body').evaluate(() => {
+        const page = window as any
+        const trace: unknown[] = []
+        page.__q62Trace = trace
+        page.__q62Mark = 0
+        const api = page.vscode
+        page.vscode = {
+          ...api,
+          postMessage: (m: any) => {
+            if (m?.command === 'edit' || m?.command === 'edit-delta')
+              trace.push({
+                out: m.command,
+                epoch: m.epoch,
+                sequence: m.sequence,
+                exact: m.exact === true ? true : undefined,
+              })
+            return api.postMessage(m)
+          },
+        }
+        window.addEventListener(
+          'message',
+          (event) => {
+            const m = event.data as any
+            if (['update', 'rebind', 'baseline'].includes(m?.command))
+              trace.push({
+                in: m.command,
+                epoch: m.epoch,
+                afterSequence: m.afterSequence,
+                editSequence: m.editSequence,
+              })
+          },
+          true,
+        )
+      })
+    const markTrace = () =>
+      mode === 'ir'
+        ? frame.locator('body').evaluate(() => {
+            const page = window as any
+            page.__q62Mark = page.__q62Trace.length
+          })
+        : Promise.resolve()
+    const printTrace = async (command: string) => {
+      if (mode !== 'ir') return
+      const entries = await frame.locator('body').evaluate(() => {
+        const page = window as any
+        return page.__q62Trace.slice(page.__q62PreviousMark ?? 0)
+      })
+      console.log(`[Q-62 trace ${command}] ${JSON.stringify(entries)}`)
+    }
 
     for (const [command, text, check] of TABLE_COMMAND_CASES) {
       const alignment = command.startsWith('vmde.table.align')
@@ -487,11 +539,23 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
         ).toBeAttached()
       const before = await source()
       await run(command)
-      await expect.poll(source, { message: command }).not.toBe(before)
+      try {
+        await expect.poll(source, { message: command }).not.toBe(before)
+      } catch (error) {
+        await printTrace(command)
+        throw error
+      }
       check(parseCommandTable(await source()))
       // Insert Row Above (Ctrl+Shift+F) never took an undo boundary. In IR the pre-CP2-9 chord's
       // row survived three Ctrl+Z; the command keeps that as found (not a CP1 P5 row).
       if (mode === 'ir' && command === 'vmde.table.insertRowAbove') continue
+      // The trace of the next command starts at this Undo.
+      await markTrace()
+      if (mode === 'ir')
+        await frame.locator('body').evaluate(() => {
+          const page = window as any
+          page.__q62PreviousMark = page.__q62Mark
+        })
       await workbox.keyboard.press('Control+z')
       await expect.poll(source, { message: `${command} undo` }).toBe(before)
     }

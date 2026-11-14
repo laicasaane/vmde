@@ -303,6 +303,8 @@ export interface BlockHandleActions {
    * proof of the live rendering exists. Only the keyboard move uses it, because a caret move has
    * no handle to wait for: without an owned exact source there are no units to plan on. */
   acquireExactAuthority?(): Promise<{ exact: string; rendered: string } | null>
+  /** Task 733 / 010 (Q-79 OQ-1): the confirmed model units while the model owns the text (IR only). */
+  modelUnits?(): { exact: string; units: BlockHandleUnit[] } | undefined
   move(
     sourceStart: number,
     targetStart: number,
@@ -820,6 +822,7 @@ export function installBlockHandleLayer(
     const root = getActiveRoot()
     const node = document.getSelection()?.anchorNode
     if (!node || !root?.contains(node)) return false
+    if (moveOnModelUnits(direction, root, node)) return true
     const snapshot = actions.snapshot()
     if (!snapshot && mayAcquire && actions.acquireExactAuthority) {
       // Task 607: a trusted edit left no owned exact source, so no unit can be resolved. Pull the
@@ -846,6 +849,59 @@ export function installBlockHandleLayer(
           return null
         const again = planCaretMove(direction, live, pair)
         return again
+          ? {
+              kind: 'move',
+              sourceStart: again.source.start,
+              targetStart: again.target.start,
+              placement,
+            }
+          : null
+      },
+    })
+    return true
+  }
+  // Plans the keyboard move on the confirmed model units: no snapshot, no whole-document read.
+  // The basis re-derives on the model units again when the acquired bytes differ.
+  const modelPlan = (
+    direction: BlockMoveDirection,
+    node: Node,
+  ): {
+    exact: string
+    source: BlockHandleUnit
+    target: BlockHandleUnit
+  } | null => {
+    const model = actions.modelUnits?.()
+    if (!model) return null
+    const index = model.units.findIndex((unit) =>
+      unit.members.some((member) => member.contains(node)),
+    )
+    const source = model.units[index]
+    const target = keyboardTarget(
+      model.units,
+      index,
+      direction === 'up' ? -1 : 1,
+    )
+    return source?.movable && target
+      ? { exact: model.exact, source, target }
+      : null
+  }
+  const moveOnModelUnits = (
+    direction: BlockMoveDirection,
+    root: HTMLElement,
+    node: Node,
+  ): boolean => {
+    const plan = modelPlan(direction, node)
+    if (!plan) return false
+    clearUnsafeState()
+    const placement = direction === 'up' ? 'before' : 'after'
+    void actions.move(plan.source.start, plan.target.start, placement, {
+      exact: plan.exact,
+      rederive: (pair) => {
+        const live = document.getSelection()?.anchorNode
+        if (getActiveRoot() !== root || !live || !root.contains(live))
+          return null
+        const again = modelPlan(direction, live)
+        return again && again.exact === pair.exact
           ? {
               kind: 'move',
               sourceStart: again.source.start,

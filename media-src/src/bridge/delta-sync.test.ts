@@ -902,3 +902,260 @@ describe('lastPostedSequence (task 004)', () => {
     expect(sync.lastPostedSequence()).toBe(0)
   })
 })
+
+// Task 733 / 010-T: an applied exact action posts its change as one `edit-delta`; a refused one
+// rolls back once, after the editor shows the host text (G9, shared rules 3.7 and Q-79 OQ-4).
+describe('publishApplied (Task 733 / 010)', () => {
+  const applied = [typed(0, 'A', 5)]
+
+  it('posts one edit-delta against `before` without asking the model to prepare', () => {
+    const t = setup()
+    expect(t.sync.publishApplied(before, applied)).toEqual({
+      kind: 'delta',
+      sequence: 1,
+    })
+    expect(t.state.prepared).toEqual([])
+    expect(t.posted).toEqual([
+      {
+        command: 'edit-delta',
+        epoch: 1,
+        sequence: 1,
+        changes: [
+          {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 5 },
+            oldText: 'line0',
+            text: 'A',
+          },
+        ],
+      },
+    ])
+    expect(t.sync.lastPostedSequence()).toBe(1)
+  })
+
+  it('continues the sequence of typing deltas of the epoch', () => {
+    const t = setup()
+    t.state.results.push({ kind: 'changes', before, changes: [typed(10, 'X')] })
+    expect(t.sync.publish('idle')).toBe('delta')
+    expect(t.sync.publishApplied(before, applied)).toEqual({
+      kind: 'delta',
+      sequence: 2,
+    })
+  })
+
+  it('falls back without posting while awaiting, with the model off, latched or forced whole', () => {
+    const awaiting = setup()
+    awaiting.state.awaiting = true
+    expect(awaiting.sync.publishApplied(before, applied)).toEqual({
+      kind: 'fallback',
+      reason: 'awaiting-rebind',
+    })
+    const off = setup()
+    off.state.epoch = undefined
+    expect(off.sync.publishApplied(before, applied)).toEqual({
+      kind: 'fallback',
+      reason: 'model-off',
+    })
+    const forced = setup()
+    forced.state.results.push({
+      kind: 'changes',
+      before,
+      changes: [typed(0, 'a')],
+    })
+    forced.sync.publish('idle')
+    forced.sync.onRebind({ epoch: 2, afterSequence: 0, content: 'host\n' })
+    forced.state.epoch = 2
+    expect(forced.sync.publishApplied(before, applied)).toEqual({
+      kind: 'fallback',
+      reason: 'host-write',
+    })
+    for (const t of [awaiting, off, forced]) {
+      expect(
+        t.posted.filter((m: any) => m.command === 'edit-delta'),
+      ).toHaveLength(t === forced ? 1 : 0)
+      expect(t.wholes).toEqual([])
+    }
+  })
+
+  it('falls back refusal-limit while latched', () => {
+    const t = setup()
+    for (let i = 0; i < 5; i += 1) {
+      t.state.results.push({
+        kind: 'changes',
+        before,
+        changes: [typed(0, 'a')],
+      })
+      t.sync.publish('idle')
+      t.sync.onUpdate({ epoch: i + 2, afterSequence: 0 })
+      t.state.epoch = i + 2
+      t.state.now += 100
+    }
+    expect(t.sync.publishApplied(before, applied)).toEqual({
+      kind: 'fallback',
+      reason: 'refusal-limit',
+    })
+  })
+
+  it('falls back too-many-changes above 256 changes', () => {
+    const t = setup('x'.repeat(600))
+    const many = Array.from({ length: 257 }, (_, i) =>
+      typed(i * 2, 'y', i * 2 + 1),
+    )
+    expect(t.sync.publishApplied('x'.repeat(600), many)).toEqual({
+      kind: 'fallback',
+      reason: 'too-many-changes',
+    })
+    expect(t.posted).toEqual([])
+  })
+
+  it('runs the rollback once, after the update, when the refusing update names an earlier sequence', () => {
+    const t = setup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, applied, { restore })
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    // The router applies the host text between the two calls.
+    expect(restore).not.toHaveBeenCalled()
+    t.sync.afterUpdate(true)
+    expect(restore).toHaveBeenCalledTimes(1)
+    t.state.epoch = 2
+    t.sync.onUpdate({ epoch: 3, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+    expect(restore).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops the rollback when the host acknowledges the delta', () => {
+    const t = setup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, applied, { restore })
+    t.sync.onUpdate({ epoch: 1, afterSequence: 1 })
+    t.sync.afterUpdate(true)
+    t.sync.onUpdate({ epoch: 2, afterSequence: 1 })
+    t.sync.afterUpdate(true)
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  it('drops the rollback on an acknowledging rebind', () => {
+    const t = setup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, applied, { restore })
+    t.sync.onRebind({ epoch: 1, afterSequence: 1, content: before })
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  // 010-R F9: typing published after the exact delta is in the DOM, so a refusal keeps it (the
+  // whole-text rule's `plainAfter`).
+  it('a refusal update after a later typing delta runs no rollback', () => {
+    const t = setup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, applied, { restore })
+    t.state.results.push({ kind: 'changes', before, changes: [typed(10, 'X')] })
+    t.sync.publish('idle')
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  // 010-R F8: a later exact delta does not replace the earlier one's record.
+  it('runs the earliest refused rollback when two exact deltas are pending', () => {
+    const t = setup()
+    const first = vi.fn()
+    const second = vi.fn()
+    t.sync.publishApplied(before, applied, { restore: first })
+    t.sync.publishApplied(before, [typed(6, 'B', 11)], { restore: second })
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(second).not.toHaveBeenCalled()
+  })
+
+  it('runs the later rollback when the host accepted the earlier exact delta', () => {
+    const t = setup()
+    const first = vi.fn()
+    const second = vi.fn()
+    t.sync.publishApplied(before, applied, { restore: first })
+    t.sync.publishApplied(before, [typed(6, 'B', 11)], { restore: second })
+    t.sync.onUpdate({ epoch: 2, afterSequence: 1 })
+    t.sync.afterUpdate(true)
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('rollback records across epochs (010-R pass 2)', () => {
+  const applied = [typed(0, 'A', 5)]
+
+  it('drops a due rollback when the update was not shown', () => {
+    const t = setup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, applied, { restore })
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    t.sync.afterUpdate(false)
+    t.state.epoch = 2
+    t.sync.onUpdate({ epoch: 3, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  it('a host-own rebind with a new epoch clears the records', () => {
+    const t = setup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, applied, { restore })
+    t.sync.onRebind({ epoch: 2, afterSequence: 0, content: 'host\n' })
+    t.state.epoch = 2
+    t.sync.onUpdate({ epoch: 3, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  it('a plain whole-text post clears the records', () => {
+    const t = setup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, applied, { restore })
+    t.state.results.push({ kind: 'fallback', reason: 'unproven-unit' })
+    expect(t.sync.publish('idle')).toBe('fallback')
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+    expect(restore).not.toHaveBeenCalled()
+  })
+})
+
+describe('unanswered deltas across an epoch (DR3)', () => {
+  it('names the text before the first delta the ending update did not answer', () => {
+    const t = setup()
+    t.state.results.push(
+      { kind: 'changes', before, changes: [typed(0, 'a')] },
+      { kind: 'changes', before: `a${before}`, changes: [typed(1, 'b')] },
+    )
+    t.sync.publish('idle')
+    t.sync.publish('idle')
+    t.sync.onUpdate({ epoch: 2, afterSequence: 1 })
+    expect(t.sync.takeRefusedBase()).toBe(`a${before}`)
+    expect(t.sync.takeRefusedBase()).toBeUndefined()
+  })
+
+  it('names nothing when the update answered every delta', () => {
+    const t = setup()
+    t.state.results.push({ kind: 'changes', before, changes: [typed(0, 'a')] })
+    t.sync.publish('idle')
+    t.sync.onUpdate({ epoch: 2, afterSequence: 1 })
+    expect(t.sync.takeRefusedBase()).toBeUndefined()
+  })
+
+  it('names nothing for a refused exact delta (its rollback runs instead)', () => {
+    const t = setup()
+    t.sync.publishApplied(before, [typed(0, 'A', 5)], { restore: vi.fn() })
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    expect(t.sync.takeRefusedBase()).toBeUndefined()
+  })
+
+  it('forgets the base after the update was handled', () => {
+    const t = setup()
+    t.state.results.push({ kind: 'changes', before, changes: [typed(0, 'a')] })
+    t.sync.publish('idle')
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+    expect(t.sync.takeRefusedBase()).toBeUndefined()
+  })
+})

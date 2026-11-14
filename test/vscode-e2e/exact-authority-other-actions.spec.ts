@@ -937,6 +937,49 @@ async function actionAfterTyping(ctx: Ctx, check: Check, scenario: Scenario) {
 // ---------------------------------------------------------------------------------------------
 // Stale host: an edit the webview never saw must not be overwritten.
 
+// Task 733 / 010 (DR2, diagnostics only): the ordered message names of the stale-details cell, with
+// flags, ids, epochs, sequences and lengths; never document text.
+function installStaleTraceInPage() {
+  const page = window as any
+  if (page.__staleTrace733) return
+  const trace: unknown[] = []
+  page.__staleTrace733 = trace
+  const shape = (direction: string, m: any) => ({
+    direction,
+    command: m?.command,
+    exact: m?.exact === true ? true : undefined,
+    requestId: typeof m?.requestId === 'string' ? m.requestId : undefined,
+    epoch: m?.epoch,
+    sequence: m?.sequence,
+    afterSequence: m?.afterSequence,
+    editSequence: m?.editSequence,
+    hasBefore: typeof m?.before === 'string' ? true : undefined,
+    contentLength:
+      typeof m?.content === 'string' ? m.content.length : undefined,
+    changes: Array.isArray(m?.changes) ? m.changes.length : undefined,
+  })
+  // DR3: every message name in both directions (the IR run showed host text reaching the webview
+  // without a listed message), still with no text.
+  const QUIET = new Set(['edit-perf-renderer', 'cursor-line', 'docMode'])
+  const api = page.vscode
+  page.vscode = {
+    ...api,
+    postMessage: (message: any) => {
+      if (!QUIET.has(message?.command)) trace.push(shape('out', message))
+      return api.postMessage(message)
+    },
+  }
+  // Capture phase, installed before the update filter: hidden updates are listed too.
+  window.addEventListener(
+    'message',
+    (event) => {
+      if (typeof event.data?.command === 'string')
+        trace.push(shape('in', event.data))
+    },
+    true,
+  )
+}
+
 function installUpdateFilterInPage() {
   const page = window as any
   if (page.__hideHostUpdates630) return
@@ -1024,6 +1067,8 @@ async function staleHostCell(ctx: Ctx, check: Check, driver: StaleDriver) {
   const reference = typed.reference
   // The selection (and so the enabled toolbar button or bubble) is set up before the outside edit.
   await driver.arm(ctx)
+  const traced = driver.id === 'stale-host-details'
+  if (traced) await evalFrame(kit, installStaleTraceInPage, 0)
   await evalFrame(kit, installUpdateFilterInPage, 0)
   await kit.host(
     async (vscode, [fsPath, mark]: [string, string]) => {
@@ -1058,6 +1103,12 @@ async function staleHostCell(ctx: Ctx, check: Check, driver: StaleDriver) {
       },
     )
   await kit.workbox.waitForTimeout(QUIET_MS * 2)
+  if (traced)
+    console.log(
+      `[630 S3 trace ${ctx.mode}] ${JSON.stringify(
+        await evalFrame(kit, () => (window as any).__staleTrace733 ?? [], 0),
+      )}`,
+    )
   const after = (await hostText(ctx)) ?? ''
   check(
     after.startsWith(EXTERNAL_MARK),

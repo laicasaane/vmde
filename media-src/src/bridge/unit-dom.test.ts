@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { scanMovableBlocks } from '../../../src/shared/block-move'
+import {
+  type MovableKind,
+  scanMovableBlocks,
+} from '../../../src/shared/block-move'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 import { createRealLute } from '../testing/real-lute'
 import { writeQuietly } from '../util/mutation-impact'
 import { insertWrapHint } from '../util/wrap-hint-mark'
@@ -505,5 +509,199 @@ describe('createUnitDom onBatch (Task 733 / 005-A)', () => {
     ;(root.querySelector('p') as HTMLElement).setAttribute('aria-label', 'x')
     dom.drain()
     expect(onBatch).not.toHaveBeenCalled()
+  })
+})
+
+// Task 733 / 010-T: `render` writes new blocks from Markdown sources through the live Lute and the
+// post-render steps of `setValue`, on the new elements only (shared rules 3.7, SR-2).
+describe('createUnitDom render (Task 733 / 010)', () => {
+  it('renders each block kind of the table-heavy fixture as a whole render does', () => {
+    const markdown = tableHeavyMarkdown(1)
+    const { dom, model } = open(markdown)
+    const seen = new Set<string>()
+    for (const unit of [...model.units]) {
+      if (seen.has(unit.kind)) continue
+      seen.add(unit.kind)
+      const kind = unit.kind as MovableKind
+      const expected = unit.members.map((member) => dom.html(kind, member))
+      const source = model.text.slice(unit.start, unit.end)
+      const rendered = dom.render([{ kind, source }], unit.members)
+      expect(rendered, kind).toBeDefined()
+      expect(
+        rendered?.map((host) => host.kind),
+        kind,
+      ).toEqual([kind])
+      const members = rendered?.[0].members ?? []
+      expect(
+        members.map((member) => dom.html(kind, member)),
+        kind,
+      ).toEqual(expected)
+      for (const member of members) expect(member.isConnected, kind).toBe(true)
+      for (const old of unit.members) expect(old.isConnected, kind).toBe(false)
+    }
+    expect([...seen]).toEqual([
+      'front-matter',
+      'heading',
+      'paragraph',
+      'list-item',
+      'fence',
+      'table',
+    ])
+  })
+
+  it('calls the Lute once per source with the source only, never the whole document', () => {
+    const root = rootOf(lute.Md2VditorIRDOM(MIXED))
+    const inputs: string[] = []
+    const counted: UnitLute = {
+      VditorIRDOM2Md: (html) => lute.VditorIRDOM2Md(html),
+      Md2VditorIRDOM: (markdown) => {
+        inputs.push(markdown)
+        return lute.Md2VditorIRDOM(markdown)
+      },
+    }
+    const dom = createUnitDom(root, counted)
+    const model = createTextModel(dom, scanMovableBlocks)
+    model.build(MIXED)
+    dom.attach(model)
+    attached.push(dom)
+    const paragraph = model.units.find((unit) => unit.kind === 'paragraph')!
+    inputs.length = 0
+    dom.render([{ kind: 'paragraph', source: 'new para' }], paragraph.members)
+    expect(inputs).toEqual(['new para'])
+  })
+
+  it('gives the SR-2 fixture the same DOM as the full render and runs no handler', () => {
+    const spy = vi.fn()
+    ;(window as unknown as { __sr2Spy: () => void }).__sr2Spy = spy
+    const source = [
+      '<script>window.__sr2Spy()</script>',
+      '',
+      '<img src="x" onerror="window.__sr2Spy()">',
+      '',
+      '[a](javascript:window.__sr2Spy()) [b](data:text/html,<script>window.__sr2Spy()</script>)',
+      '',
+      '<svg><script>window.__sr2Spy()</script><circle onload="window.__sr2Spy()"/></svg>',
+    ].join('\n')
+    const full = rootOf(lute.Md2VditorIRDOM(source))
+    const { root, dom, model } = open('placeholder\n')
+    const placeholder = model.units[0]
+    const kinds = scanMovableBlocks(source).map((block) => block.kind)
+    expect(kinds).toEqual(['html', 'html', 'paragraph', 'paragraph'])
+    const sources = scanMovableBlocks(source).map((block) => ({
+      kind: block.kind,
+      source: source.slice(block.start, block.end),
+    }))
+    const rendered = dom.render(sources, placeholder.members)
+    expect(rendered?.map((host) => host.kind)).toEqual(kinds)
+    expect(root.innerHTML).toBe(full.innerHTML)
+    expect(spy).not.toHaveBeenCalled()
+    delete (window as unknown as { __sr2Spy?: unknown }).__sr2Spy
+  })
+
+  it('writes nothing when a rendered element has another kind than its source', () => {
+    const { root, dom, model } = open(MIXED)
+    const before = root.innerHTML
+    const paragraph = model.units.find((unit) => unit.kind === 'paragraph')!
+    const rendered = dom.render(
+      [{ kind: 'paragraph', source: '[r]: https://example.com' }],
+      paragraph.members,
+    )
+    expect(rendered).toBeDefined()
+    expect(rendered?.map((host) => host.kind)).not.toEqual(['paragraph'])
+    expect(paragraph.members[0].isConnected).toBe(true)
+    expect(root.innerHTML).toBe(before)
+  })
+
+  it('replaces one table row for a row source and keeps the other rows', () => {
+    const markdown = '| a | b |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n'
+    const { root, dom } = open(markdown)
+    const rows = Array.from(root.querySelectorAll('tbody > tr'))
+    const rendered = dom.render(
+      [{ kind: 'table', source: '| a | b |\n| - | - |\n| 3 | X |' }],
+      [rows[1] as HTMLElement],
+    )
+    const after = Array.from(root.querySelectorAll('tbody > tr'))
+    expect(after).toHaveLength(3)
+    expect(after[0]).toBe(rows[0])
+    expect(after[2]).toBe(rows[2])
+    expect(after[1]).not.toBe(rows[1])
+    expect(after[1].textContent).toContain('X')
+    expect(rendered).toEqual([
+      {
+        kind: 'table',
+        members: [after[1]],
+        rows: [Array.from(after[1].children)],
+      },
+    ])
+    expect(root.querySelectorAll('table')).toHaveLength(1)
+  })
+
+  it('lets the observer see the replacement (the history capture records it)', () => {
+    const onBatch = vi.fn()
+    const { dom, model } = open(MIXED, { onBatch })
+    const paragraph = model.units.find((unit) => unit.kind === 'paragraph')!
+    dom.render([{ kind: 'paragraph', source: 'seen' }], paragraph.members)
+    dom.drain()
+    expect(onBatch).toHaveBeenCalledTimes(1)
+    expect(onBatch.mock.calls[0][1].has('root')).toBe(true)
+  })
+})
+
+describe('createUnitDom render list identity (010-R F4)', () => {
+  it('refuses an item of another marker inside an existing list', () => {
+    const { root, dom } = open('- a\n- b\n- c\n')
+    const before = root.innerHTML
+    const item = root.querySelectorAll('li')[1] as HTMLElement
+    const rendered = dom.render([{ kind: 'list-item', source: '* b' }], [item])
+    expect(rendered?.map((host) => host.kind)).not.toEqual(['list-item'])
+    expect(root.innerHTML).toBe(before)
+  })
+
+  it('refuses an ordered item of another delimiter', () => {
+    const { root, dom } = open('1. a\n2. b\n')
+    const before = root.innerHTML
+    const item = root.querySelectorAll('li')[1] as HTMLElement
+    const rendered = dom.render([{ kind: 'list-item', source: '2) b' }], [item])
+    expect(rendered?.map((host) => host.kind)).not.toEqual(['list-item'])
+    expect(root.innerHTML).toBe(before)
+  })
+
+  it('refuses a new first number of an ordered list', () => {
+    const { root, dom } = open('1. a\n2. b\n')
+    const before = root.innerHTML
+    const item = root.querySelectorAll('li')[0] as HTMLElement
+    const rendered = dom.render([{ kind: 'list-item', source: '3. a' }], [item])
+    expect(rendered?.map((host) => host.kind)).not.toEqual(['list-item'])
+    expect(root.innerHTML).toBe(before)
+  })
+
+  it('still places an item of the same style inside the list', () => {
+    const { root, dom } = open('- a\n- b\n- c\n')
+    const list = root.querySelector('ul')
+    const item = root.querySelectorAll('li')[1] as HTMLElement
+    const rendered = dom.render([{ kind: 'list-item', source: '- B' }], [item])
+    expect(rendered?.map((host) => host.kind)).toEqual(['list-item'])
+    expect(root.querySelector('ul')).toBe(list)
+    expect(root.querySelectorAll('li')[1].textContent).toContain('B')
+  })
+})
+
+describe('createUnitDom render deletions in lists (010-R pass 2, N1)', () => {
+  it('refuses deleting the first item of an ordered list and writes nothing', () => {
+    const { root, dom } = open('para\n\n1. a\n2. b\n3. c\n')
+    const before = root.innerHTML
+    const first = root.querySelectorAll('li')[0] as HTMLElement
+    const rendered = dom.render([], [first])
+    expect(rendered?.length).not.toBe(0)
+    expect(root.innerHTML).toBe(before)
+  })
+
+  it('deletes a later item of an ordered list in place', () => {
+    const { root, dom } = open('para\n\n1. a\n2. b\n3. c\n')
+    const list = root.querySelector('ol')
+    const second = root.querySelectorAll('li')[1] as HTMLElement
+    expect(dom.render([], [second])).toEqual([])
+    expect(root.querySelector('ol')).toBe(list)
+    expect(root.querySelectorAll('li')).toHaveLength(2)
   })
 })

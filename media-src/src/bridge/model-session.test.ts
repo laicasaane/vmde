@@ -1291,3 +1291,263 @@ describe('unit change feed (Task 733 / 005-A)', () => {
     expect(changes).toEqual([])
   })
 })
+
+// Task 733 / 010-T: `applyText` writes a text change into the IR DOM unit by unit (shared rules 3.7).
+describe('applyText (Task 733 / 010)', () => {
+  const THREE = 'alpha\n\nbeta\n\ngamma\n'
+  const change = (text: string, needle: string, insert: string) => {
+    const from = text.indexOf(needle)
+    return { from, to: from + needle.length, insert }
+  }
+
+  it('applies an exact change by units: the DOM and the model text hold it, untouched elements stay', () => {
+    const r = open(THREE)
+    const first = r.root.querySelectorAll('p')[0]
+    const last = r.root.querySelectorAll('p')[2]
+    const outcome = r.session.applyText(
+      [change(THREE, 'beta', 'BETA')],
+      'exact',
+    )
+    expect(outcome).toEqual({ kind: 'applied' })
+    expect(r.session.deltaPort().modelText()).toBe('alpha\n\nBETA\n\ngamma\n')
+    const paragraphs = r.root.querySelectorAll('p')
+    expect(paragraphs[1].textContent).toContain('BETA')
+    expect(paragraphs[0]).toBe(first)
+    expect(paragraphs[2]).toBe(last)
+  })
+
+  it('is not re-published as typing: the next delta preparation finds no change', () => {
+    const r = open(THREE)
+    r.session.applyText([change(THREE, 'beta', 'BETA')], 'exact')
+    expect(r.session.deltaPort().hasDirty()).toBe(false)
+    expect(r.session.deltaPort().prepareDelta(1)).toMatchObject({
+      kind: 'changes',
+      changes: [],
+    })
+  })
+
+  it('emits one sync change that names the new unit and is not whole', () => {
+    const r = open(THREE)
+    const changes: UnitsChange[] = []
+    r.session.onUnitsChanged((c) => changes.push(c))
+    r.session.applyText([change(THREE, 'beta', 'BETA')], 'exact')
+    r.runFrames()
+    expect(changes).toHaveLength(1)
+    expect(changes[0].cause).toBe('sync')
+    expect(changes[0].whole).toBe(false)
+    expect(changes[0].changed.map((unit) => unit.el)).toEqual([
+      r.root.querySelectorAll('p')[1],
+    ])
+  })
+
+  it('makes no model build and keeps the epoch', () => {
+    const r = open(THREE, 7)
+    r.session.applyText([change(THREE, 'beta', 'BETA')], 'exact')
+    r.runFrames()
+    expect(r.session.deltaPort().epoch()).toBe(7)
+    expect(r.stats().state).toBe('live')
+    expect(r.session.ownsText()).toBe(true)
+  })
+
+  it('falls back model-off while the model is off and leaves the DOM alone', () => {
+    const r = rig()
+    r.render(THREE)
+    const before = r.root.innerHTML
+    expect(
+      r.session.applyText([change(THREE, 'beta', 'BETA')], 'exact'),
+    ).toEqual({ kind: 'fallback', reason: 'model-off' })
+    expect(r.root.innerHTML).toBe(before)
+  })
+
+  it('falls back dependent-construct for a reference definition and leaves the DOM alone', () => {
+    const r = open(THREE)
+    const before = r.root.innerHTML
+    expect(
+      r.session.applyText(
+        [
+          {
+            from: THREE.length,
+            to: THREE.length,
+            insert: '\n[r]: https://e.com\n',
+          },
+        ],
+        'exact',
+      ),
+    ).toEqual({ kind: 'fallback', reason: 'dependent-construct' })
+    expect(r.root.innerHTML).toBe(before)
+  })
+
+  it('origin host over a dirty unit falls back dirty-overlap', () => {
+    const r = open(THREE)
+    type(r, 1, 'beta typed')
+    expect(
+      r.session.applyText([change(THREE, 'beta', 'BETA')], 'host'),
+    ).toEqual({ kind: 'fallback', reason: 'dirty-overlap' })
+    expect(paragraph(r, 1).data).toBe('beta typed')
+  })
+
+  it('origin host posts nothing and keeps a dirty unit outside the window dirty', () => {
+    const r = open(THREE)
+    type(r, 2, 'gamma typed')
+    const typedEl = r.root.querySelectorAll('p')[2]
+    expect(
+      r.session.applyText([change(THREE, 'alpha', 'ALPHA')], 'host'),
+    ).toEqual({ kind: 'applied' })
+    expect(r.session.deltaPort().hasDirty()).toBe(true)
+    expect(r.root.querySelectorAll('p')[2]).toBe(typedEl)
+    expect(r.root.querySelectorAll('p')[0].textContent).toContain('ALPHA')
+    const prepared = r.session.deltaPort().prepareDelta(1)
+    expect(prepared.kind).toBe('changes')
+    if (prepared.kind === 'changes')
+      expect(prepared.changes.map((c) => c.insert).join('')).toContain('typed')
+  })
+
+  it('origin host keeps a dirty table cell outside the window dirty and the cell element (Q-62)', () => {
+    const doc = 'intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n'
+    const r = open(doc)
+    const cell = r.root.querySelector('tbody td') as HTMLElement
+    cell.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    ;(cell.firstChild as Text).data = '1x'
+    expect(
+      r.session.applyText([change(doc, 'intro', 'INTRO')], 'host'),
+    ).toEqual({ kind: 'applied' })
+    expect(r.root.querySelector('tbody td')).toBe(cell)
+    expect(r.session.deltaPort().hasDirty()).toBe(true)
+  })
+
+  it('Undo of an applied change over an unproven removed paragraph restores its bytes', () => {
+    const r = open(THREE)
+    const port = r.session.historyPort()
+    expect(r.stats().proven).toBe(0)
+    port.capture()
+    expect(
+      r.session.applyText([change(THREE, 'beta', 'BETA')], 'exact'),
+    ).toEqual({ kind: 'applied' })
+    const capture = port.capture()
+    expect(capture).toBeDefined()
+    expect(port.restore(capture!, 'before')).toBe(true)
+    expect(r.root.querySelectorAll('p')[1].textContent).toContain('beta')
+    const prepared = r.session.deltaPort().prepareDelta(2)
+    expect(prepared).toMatchObject({ kind: 'changes' })
+    expect(r.session.deltaPort().modelText()).toBe(THREE)
+  })
+})
+
+describe('rebuildAfterExact (Task 733 / 010)', () => {
+  it("builds over a caller's setValue in the same epoch", () => {
+    const r = open('alpha\n\nbeta\n', 5)
+    const next = 'beta\n\nalpha\n'
+    r.render(next)
+    r.session.rebuildAfterExact(next)
+    r.runFrames()
+    expect(r.stats().state).toBe('live')
+    expect(r.session.deltaPort().epoch()).toBe(5)
+    expect(r.session.deltaPort().modelText()).toBe(next)
+    expect(r.session.ownsText()).toBe(true)
+  })
+})
+
+describe('adoptHostEpoch (Task 733 / 010, Q-80)', () => {
+  it('takes the host text and epoch after an apply by units and keeps the units', () => {
+    const doc = 'alpha\n\nbeta\n'
+    const r = open(doc, 3)
+    const kept = r.root.querySelectorAll('p')[1]
+    const next = 'ALPHA\n\nbeta\n'
+    expect(
+      r.session.applyText([{ from: 0, to: 5, insert: 'ALPHA' }], 'host'),
+    ).toEqual({ kind: 'applied' })
+    r.session.adoptHostEpoch(next, 4)
+    expect(r.session.deltaPort().epoch()).toBe(4)
+    expect(r.session.deltaPort().modelText()).toBe(next)
+    expect(r.session.confirmedSnapshot()).toEqual({ text: next, epoch: 4 })
+    expect(r.session.ownsText()).toBe(true)
+    expect(r.root.querySelectorAll('p')[1]).toBe(kept)
+    r.runFrames()
+    expect(r.stats().state).toBe('live')
+  })
+
+  it('does nothing while the model is off', () => {
+    const r = rig()
+    r.session.adoptHostEpoch('x\n', 9)
+    expect(r.session.deltaPort().epoch()).toBeUndefined()
+  })
+})
+
+describe('applyText feed and epoch costs (010-R F11, F12)', () => {
+  it('a row apply names its table in the feed, not a whole change', () => {
+    const doc = 'intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |\n'
+    const r = open(doc)
+    const changes: UnitsChange[] = []
+    r.session.onUnitsChanged((c) => changes.push(c))
+    const from = doc.indexOf('| 3 |') + 2
+    expect(
+      r.session.applyText([{ from, to: from + 1, insert: 'X' }], 'exact'),
+    ).toEqual({ kind: 'applied' })
+    expect(changes).toHaveLength(1)
+    expect(changes[0].whole).toBe(false)
+    expect(changes[0].changed.map((unit) => unit.kind)).toEqual(['table'])
+  })
+
+  it('a deletion names the neighbouring units, not a whole change', () => {
+    const doc = 'alpha\n\nbeta\n\ngamma\n'
+    const r = open(doc)
+    const changes: UnitsChange[] = []
+    r.session.onUnitsChanged((c) => changes.push(c))
+    const from = doc.indexOf('beta')
+    expect(
+      r.session.applyText([{ from, to: from + 6, insert: '' }], 'exact'),
+    ).toEqual({ kind: 'applied' })
+    expect(r.session.deltaPort().modelText()).toBe('alpha\n\ngamma\n')
+    expect(changes).toHaveLength(1)
+    expect(changes[0].whole).toBe(false)
+    expect(changes[0].changed.length).toBeGreaterThan(0)
+  })
+
+  it('adoptHostEpoch still resets changedAt after a delta set one in the epoch', () => {
+    const r = open('alpha\n\nbeta\n', 3)
+    type(r, 1, 'beta2')
+    const prepared = r.session.deltaPort().prepareDelta(1)
+    expect(prepared.kind).toBe('changes')
+    const typedUnit = r.session.confirmedUnits()?.[1]
+    expect(typedUnit?.changedAt).toBe(1)
+    r.session.applyText([{ from: 0, to: 5, insert: 'ALPHA' }], 'host')
+    r.session.adoptHostEpoch('ALPHA\n\nbeta2\n', 4)
+    expect(r.session.confirmedUnits()?.[1]?.changedAt).toBe(0)
+  })
+})
+
+describe('Undo of a list item move applied by units (DR1)', () => {
+  it('restores a lazy continuation item order', () => {
+    const doc = '- first\nlazy continuation\n- second\n'
+    const moved = '- second\n- first\nlazy continuation\n'
+    const r = open(doc)
+    const port = r.session.historyPort()
+    port.capture()
+    const changes = [
+      { from: 0, to: doc.length - 1, insert: moved.slice(0, -1) },
+    ]
+    expect(r.session.applyText(changes, 'exact')).toEqual({ kind: 'applied' })
+    expect(r.session.deltaPort().modelText()).toBe(moved)
+    const capture = port.capture()
+    expect(capture).toBeDefined()
+    expect(port.restore(capture!, 'before')).toBe(true)
+    r.session.deltaPort().prepareDelta(2)
+    expect(r.session.deltaPort().modelText()).toBe(doc)
+  })
+})
+
+describe('reopenTyping (DR2)', () => {
+  it('makes typing taken by prepareDelta pending again as a whole-text publication', () => {
+    const doc = 'alpha\n\nbeta\n'
+    const r = open(doc)
+    type(r, 1, 'beta2')
+    const taken = r.session.deltaPort().prepareDelta(1)
+    expect(taken.kind).toBe('changes')
+    expect(r.session.deltaPort().hasDirty()).toBe(false)
+    r.session.reopenTyping(doc)
+    expect(r.session.deltaPort().modelText()).toBe(doc)
+    expect(r.session.deltaPort().hasDirty()).toBe(true)
+    // The next publication is whole-text: it carries the DOM, the typing included.
+    expect(r.session.deltaPort().prepareDelta(2).kind).toBe('fallback')
+  })
+})

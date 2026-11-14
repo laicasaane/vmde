@@ -35,6 +35,7 @@ vi.mock('../chrome/busy-cursor', () => ({
 vi.mock('../util/webview-log', () => ({ logToHost: h.logToHost }))
 
 import type { DeltaSessionPort, PrepareResult } from './delta-sync'
+import type { ApplyOutcome } from './model-session'
 import { createEditSync } from './edit-sync'
 import { applyBareUrls } from '../links/bare-url-decorate'
 import { sourceComplexitySignature } from '../../../src/shared/incremental-admission'
@@ -3341,7 +3342,9 @@ describe('createEditSync with a live text model (007-B)', () => {
     vi.clearAllMocks()
   })
 
-  function live(overrides: { canPublish?: boolean } = {}) {
+  function live(
+    overrides: { canPublish?: boolean; suppressed?: boolean } = {},
+  ) {
     const results: PrepareResult[] = []
     const state = { awaiting: false, owns: true, dirty: false, text: 'alpha\n' }
     const port: DeltaSessionPort = {
@@ -3366,9 +3369,16 @@ describe('createEditSync with a live text model (007-B)', () => {
       onWholeTextPublished: vi.fn(),
       recordFallback: vi.fn(),
       markExplicitAtCaret: vi.fn(),
+      // Task 733 / 010: the apply of an exact action by units and the rebuild after a caller's setValue.
+      applyText: vi.fn((): ApplyOutcome => ({ kind: 'applied' })),
+      rebuildAfterExact: vi.fn(),
     }
     const getValue = vi.fn(() => 'FULL')
-    const rig = boot({ getValue, modelSession: session })
+    const rig = boot({
+      getValue,
+      modelSession: session,
+      suppressed: overrides.suppressed,
+    })
     const deltas = () =>
       rig.post.mock.calls.filter((c) => c[0]?.command === 'edit-delta')
     return { ...rig, results, state, port, session, getValue, deltas }
@@ -3562,6 +3572,27 @@ describe('createEditSync with a live text model (007-B)', () => {
     ).toBe(false)
   })
 
+  it('acquireExactAuthority pins the acquire-time rendering for its callers (DR2)', async () => {
+    const t = live()
+    t.getValue.mockReturnValue('FIRST')
+    const pair = await t.es.acquireExactAuthority({ publish: true })
+    // The DOM changes after the acquire (a refusal rollback): the pair keeps what it was acquired on.
+    t.getValue.mockReturnValue('LATER')
+    document.body.append(document.createElement('p'))
+    expect(pair?.rendered).toBe('FIRST')
+  })
+
+  it('acquireExactAuthority reads the rendering only on first use with lazyRendering (DR1)', async () => {
+    const t = live()
+    const pair = await t.es.acquireExactAuthority({
+      publish: true,
+      lazyRendering: true,
+    })
+    expect(pair?.exact).toBe('alpha\n')
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(typeof pair?.rendered).toBe('string')
+  })
+
   it('exact readers fall back to the existing code while the text is awaited or untrusted', () => {
     const t = live()
     t.state.owns = false
@@ -3592,6 +3623,8 @@ describe('createEditSync with a live text model (007-B)', () => {
     t.es.setActionApplying(false)
   })
 
+  // DR1: a caller that ran its own setValue keeps the whole-text exact post, named against the model
+  // text (Task 607's `before` guard refuses it on a host the editor never saw).
   it('an exact action after typing names the model text as the bytes it expects the host to hold', () => {
     const t = live()
     t.results.push(typed)
@@ -3599,12 +3632,154 @@ describe('createEditSync with a live text model (007-B)', () => {
     expect(t.es.snapshotExactMarkdown()).toBe('alphaX\n')
     t.post.mockClear()
     t.es.postExact('ALPHA\n')
+    expect(t.deltas()).toHaveLength(0)
     const exact = t.post.mock.calls.find((c) => c[0]?.command === 'edit')
     expect(exact?.[0]).toMatchObject({
       exact: true,
       before: 'alphaX\n',
       content: 'ALPHA\n',
     })
+    expect(t.session.rebuildAfterExact).not.toHaveBeenCalled()
+  })
+
+  it('a history replay keeps the whole-text exact post', () => {
+    const t = live()
+    t.post.mockClear()
+    t.es.postExact('ALPHA\n', { history: 'undo', rollback: false })
+    expect(t.deltas()).toHaveLength(0)
+    expect(t.edits()).toHaveLength(1)
+    expect(t.edits()[0][0]).toMatchObject({
+      exact: true,
+      content: 'ALPHA\n',
+      history: 'undo',
+    })
+    expect(t.session.rebuildAfterExact).not.toHaveBeenCalled()
+  })
+
+  it('applyExactText applies by units and posts one delta, reading no full document', () => {
+    const t = live()
+    t.post.mockClear()
+    expect(t.es.applyExactText('ALPHA\n')).toBe('applied')
+    expect(t.session.applyText).toHaveBeenCalledExactlyOnceWith(
+      [{ from: 0, to: 5, insert: 'ALPHA' }],
+      'exact',
+    )
+    expect(t.deltas()).toHaveLength(1)
+    expect(t.deltas()[0][0]).toMatchObject({
+      command: 'edit-delta',
+      epoch: 3,
+      sequence: 1,
+      changes: [{ oldText: 'alpha', text: 'ALPHA' }],
+    })
+    expect(t.edits()).toHaveLength(0)
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.session.rebuildAfterExact).not.toHaveBeenCalled()
+  })
+
+  it('applyExactText returns fallback and posts nothing when the model falls back', () => {
+    const t = live()
+    t.session.applyText.mockReturnValueOnce({
+      kind: 'fallback',
+      reason: 'dependent-construct',
+    })
+    t.post.mockClear()
+    expect(t.es.applyExactText('ALPHA\n')).toBe('fallback')
+    expect(t.deltas()).toHaveLength(0)
+    expect(t.edits()).toHaveLength(0)
+  })
+
+  it('applyExactText falls back without applying when the model does not own the text or an answer is awaited', () => {
+    const notOwned = live()
+    notOwned.state.owns = false
+    expect(notOwned.es.applyExactText('ALPHA\n')).toBe('fallback')
+    expect(notOwned.session.applyText).not.toHaveBeenCalled()
+    const awaiting = live()
+    awaiting.state.awaiting = true
+    expect(awaiting.es.applyExactText('ALPHA\n')).toBe('fallback')
+    expect(awaiting.session.applyText).not.toHaveBeenCalled()
+  })
+
+  // Q-79 OQ-5: the apply wrote the DOM, then the publisher refused the delta (an answer became
+  // awaited): the whole text goes as today's exact edit and no caller setValue follows.
+  it('applyExactText posts the whole-text exact edit and returns applied when the delta falls back after the apply', () => {
+    const t = live()
+    t.session.applyText.mockImplementationOnce((): ApplyOutcome => {
+      t.state.awaiting = true
+      return { kind: 'applied' }
+    })
+    t.post.mockClear()
+    expect(t.es.applyExactText('ALPHA\n')).toBe('applied')
+    expect(t.deltas()).toHaveLength(0)
+    expect(t.edits()).toHaveLength(1)
+    expect(t.edits()[0][0]).toMatchObject({
+      exact: true,
+      content: 'ALPHA\n',
+      before: 'alpha\n',
+    })
+  })
+
+  it('postExact keeps the guarded whole post when the caller names other host bytes (010-R F5)', () => {
+    const t = live()
+    t.post.mockClear()
+    t.es.postExact('ALPHA\n', { before: 'older host bytes\n' })
+    expect(t.deltas()).toHaveLength(0)
+    expect(t.edits()).toHaveLength(1)
+    expect(t.edits()[0][0]).toMatchObject({
+      exact: true,
+      before: 'older host bytes\n',
+    })
+    expect(t.session.rebuildAfterExact).not.toHaveBeenCalled()
+  })
+
+  it('postExact posts no delta while suppressed (010-R F13)', () => {
+    const t = live({ suppressed: true })
+    t.post.mockClear()
+    t.es.postExact('ALPHA\n')
+    expect(t.deltas()).toHaveLength(0)
+    expect(t.session.rebuildAfterExact).not.toHaveBeenCalled()
+  })
+
+  it('applyExactText leaves typing outside the action pending and publishes it (010-R F7)', () => {
+    const t = live()
+    t.post.mockClear()
+    t.state.dirty = true
+    t.es.markUserInput()
+    t.es.schedule()
+    expect(t.es.applyExactText('ALPHA\n')).toBe('applied')
+    expect(t.deltas()).toHaveLength(1)
+    t.state.text = 'ALPHA\n'
+    t.results.push({
+      kind: 'changes',
+      before: 'ALPHA\n',
+      changes: [{ from: 5, to: 5, insert: 'X' }],
+    })
+    vi.advanceTimersByTime(1000)
+    expect(t.deltas()).toHaveLength(2)
+  })
+
+  it('postExact after a setValue cancels the pending typing (010-R N5)', () => {
+    const t = live()
+    t.post.mockClear()
+    t.state.dirty = true
+    t.es.markUserInput()
+    t.es.schedule()
+    t.es.postExact('ALPHA\n')
+    expect(t.edits()).toHaveLength(1)
+    t.results.push({
+      kind: 'changes',
+      before: 'alpha\n',
+      changes: [{ from: 5, to: 5, insert: 'X' }],
+    })
+    vi.advanceTimersByTime(1000)
+    expect(t.deltas()).toHaveLength(0)
+  })
+
+  it('applyExactText keeps the whole-text path for a history replay', () => {
+    const t = live()
+    expect(
+      t.es.applyExactText('ALPHA\n', { history: 'redo', rollback: false }),
+    ).toBe('fallback')
+    expect(t.session.applyText).not.toHaveBeenCalled()
   })
 
   it('equivalentToHost is true when the model has nothing left to publish and false after a delta', () => {

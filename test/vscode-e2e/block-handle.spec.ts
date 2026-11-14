@@ -988,7 +988,14 @@ test('an external host edit invalidates a prepared block move without overwritin
     ;(window as any).vscode = {
       ...api,
       postMessage: (message: { command: string }) => {
-        if (message.command === 'apply-block-action') {
+        // Task 733 / 010 (Q-31): with the IR model live the move is applied by units and its
+        // `edit-delta` carries the write; otherwise the host applies `apply-block-action`. Either
+        // write is held until the external edit landed.
+        if (
+          !(window as any).__heldBlockApply &&
+          (message.command === 'apply-block-action' ||
+            message.command === 'edit-delta')
+        ) {
           ;(window as any).__heldBlockApply = message
           return true
         }

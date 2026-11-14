@@ -1,9 +1,16 @@
-import { scanMovableBlocks } from '../../../src/shared/block-move'
+import { renderImageCaptions } from 'vditor/src/ts/markdown/imageCaptionRender'
+import { processCodeRender } from 'vditor/src/ts/util/processCode'
+import {
+  type MovableKind,
+  scanMovableBlocks,
+} from '../../../src/shared/block-move'
 import { isHelper } from '../editing/trailing-paragraph'
 import { domKind } from '../nav/unit-pairing'
 import { registerQuietObserver } from '../util/mutation-impact'
 import { isOwnHintRecord, stripWrapHints } from '../util/wrap-hint-mark'
+import { installApplyText } from './apply-text'
 import type {
+  ApplySource,
   HostUnit,
   TextModel,
   Unit,
@@ -180,6 +187,110 @@ export interface UnitDomOptions {
     changed: ReadonlySet<Unit<HTMLElement>>,
     structure: ReadonlySet<'root' | Unit<HTMLElement>>,
   ): void
+  /** Task 733 / 010: the inner Vditor editor, for the post-render steps of `render`; without one they are skipped. */
+  vditor?(): unknown
+}
+
+interface RenderVditor {
+  options?: { preview?: { markdown?: { imageCaption?: boolean } } }
+  outline?: { render?(vditor: unknown): unknown }
+}
+
+const PREVIEW_FRESH = ".vditor-ir__preview[data-render='2']"
+
+/** Top-level elements of an HTML string, parsed in the root's document (never inserted yet). */
+function parseElements(root: HTMLElement, html: string): HTMLElement[] {
+  const template = root.ownerDocument.createElement('template')
+  template.innerHTML = html
+  return Array.from(template.content.children) as HTMLElement[]
+}
+
+const isList = (element: Element | null | undefined): boolean =>
+  element?.tagName === 'UL' || element?.tagName === 'OL'
+
+/**
+ * The list a whole render would put an item in: its tag and its marker (`-`, `*`, `+`; the `.` or `)`
+ * delimiter of an ordered list). Items of different keys are different lists (010-R F4).
+ */
+function listKey(list: Element | null | undefined): string {
+  const marker = list?.getAttribute('data-marker') ?? ''
+  return `${list?.tagName}:${list?.tagName === 'OL' ? marker.slice(-1) : marker}`
+}
+
+/** An ordered list's number shell: its `start` and its first marker, which follow its first item. */
+const numberShell = (list: Element): string =>
+  `${list.getAttribute('start') ?? ''}|${list.getAttribute('data-marker') ?? ''}`
+
+/** A kind that differs from `kind`: the listing of a render that wrote nothing (UnitHost.render). */
+const otherKind = (kind: MovableKind): MovableKind =>
+  kind === 'paragraph' ? 'html' : 'paragraph'
+
+/** One built source: the nodes to insert and the host unit they list. */
+interface Built {
+  nodes: HTMLElement[]
+  unit: HostUnit<HTMLElement>
+}
+
+/** The built elements of one block source, or undefined when they do not have the source's kind. */
+function buildBlock(
+  root: HTMLElement,
+  lute: UnitLute,
+  source: ApplySource,
+): Built | undefined {
+  const elements = parseElements(root, lute.Md2VditorIRDOM(source.source))
+  if (elements.length === 0) return undefined
+  if (source.kind === 'list-item') {
+    const [list] = elements
+    const item = list.children[0] as HTMLElement | undefined
+    if (
+      elements.length !== 1 ||
+      !isList(list) ||
+      list.children.length !== 1 ||
+      item?.tagName !== 'LI'
+    )
+      return undefined
+    return { nodes: [list], unit: { kind: 'list-item', members: [item] } }
+  }
+  if (source.kind === 'html-group') {
+    if (elements.some((element) => !domKind(element))) return undefined
+    return { nodes: elements, unit: { kind: 'html-group', members: elements } }
+  }
+  if (elements.length !== 1 || domKind(elements[0]) !== source.kind)
+    return undefined
+  return {
+    nodes: elements,
+    unit:
+      source.kind === 'table'
+        ? tableUnit(elements[0])
+        : { kind: source.kind, members: elements },
+  }
+}
+
+/** Swaps the rows `replace` for the body rows of the row sources (same-shape tables). */
+function renderRows(
+  root: HTMLElement,
+  lute: UnitLute,
+  sources: readonly ApplySource[],
+  replace: readonly HTMLElement[],
+): HostUnit<HTMLElement>[] {
+  const fresh: HTMLElement[] = []
+  for (const [n, source] of sources.entries()) {
+    const [table] = parseElements(root, lute.Md2VditorIRDOM(source.source))
+    const row = table?.querySelector('tbody > tr') as HTMLElement | null
+    if (
+      source.kind !== 'table' ||
+      !row ||
+      row.children.length !== replace[n].children.length
+    )
+      return sources.map((s) => ({ kind: otherKind(s.kind), members: [] }))
+    fresh.push(row)
+  }
+  for (const [n, row] of fresh.entries()) replace[n].replaceWith(row)
+  return fresh.map((row) => ({
+    kind: 'table',
+    members: [row],
+    rows: [Array.from(row.children) as HTMLElement[]],
+  }))
 }
 
 export function createUnitDom(
@@ -321,7 +432,127 @@ export function createUnitDom(
     options?.onBatch?.(changed ?? new Set(), structure ?? new Set())
   }
 
+  // Task 733 / 010: the apply's planning and commit run on models built over this adapter.
+  installApplyText()
+
+  /** The post-render steps of `setValue` (vditor/src/index.ts:329-343) on the inserted elements only. */
+  const afterRender = (
+    inserted: readonly HTMLElement[],
+    heading: boolean,
+  ): void => {
+    const vditor = options?.vditor?.() as RenderVditor | undefined
+    if (!vditor) return
+    for (const element of inserted) {
+      const previews = Array.from(element.querySelectorAll(PREVIEW_FRESH))
+      if (element.matches(PREVIEW_FRESH)) previews.push(element)
+      for (const preview of previews)
+        processCodeRender(preview as HTMLElement, vditor as never)
+      renderImageCaptions(
+        element,
+        'ir',
+        Boolean(vditor.options?.preview?.markdown?.imageCaption),
+      )
+    }
+    if (heading) vditor.outline?.render?.(vditor)
+  }
+
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: build, kind check, list placement and insert are one transaction that writes nothing on any refusal
+  function render(
+    sources: readonly ApplySource[],
+    replace: readonly HTMLElement[],
+  ): HostUnit<HTMLElement>[] | undefined {
+    if (replace.length > 0 && replace.every((el) => el.tagName === 'TR'))
+      return renderRows(root, lute, sources, replace)
+    // A deletion has no source to differ from: one extra entry makes the listing differ (010-R N1).
+    const refused = (): HostUnit<HTMLElement>[] =>
+      sources.length === 0
+        ? [{ kind: 'html', members: [] }]
+        : sources.map((source) => ({
+            kind: otherKind(source.kind),
+            members: [],
+          }))
+    const anchor = replace[0]
+    if (!anchor?.parentElement) return refused()
+    const built: Built[] = []
+    for (const source of sources) {
+      const one = buildBlock(root, lute, source)
+      if (!one) return refused()
+      built.push(one)
+    }
+    // Inside a list only items can be placed; replaced items must all belong to that one list.
+    const inList = anchor.tagName === 'LI'
+    if (
+      replace.some(
+        (el) =>
+          (el.tagName === 'LI') !== inList ||
+          (inList && el.parentElement !== anchor.parentElement),
+      ) ||
+      (inList && sources.some((source) => source.kind !== 'list-item'))
+    )
+      return refused()
+    if (inList) {
+      const list = anchor.parentElement as HTMLElement
+      // A new item of another list style, or a new first number of an ordered list, would render as
+      // another list or another `start` in a whole render.
+      if (built.some((one) => listKey(one.nodes[0]) !== listKey(list)))
+        return refused()
+      // Removing the first item of an ordered list moves its `start` to the next one, which a kept
+      // list does not follow (010-R N1).
+      if (
+        list.tagName === 'OL' &&
+        replace.includes(list.firstElementChild as HTMLElement) &&
+        (built.length === 0 ||
+          numberShell(built[0].nodes[0]) !== numberShell(list))
+      )
+        return refused()
+    }
+    // A new list next to a list of the same tag would render as one list in a whole render.
+    if (!inList) {
+      const firstNew = built[0]?.nodes[0]
+      const lastNew = built[built.length - 1]?.nodes.at(-1)
+      const after = replace[replace.length - 1].nextElementSibling
+      if (
+        (isList(firstNew) &&
+          listKey(anchor.previousElementSibling) === listKey(firstNew)) ||
+        (isList(lastNew) && listKey(after) === listKey(lastNew))
+      )
+        return refused()
+    }
+    const nodes: HTMLElement[] = []
+    for (const one of built) {
+      if (inList) {
+        nodes.push(one.unit.members[0])
+        continue
+      }
+      // Consecutive new items of one list type go into one list, as a whole render gives.
+      const previous = nodes[nodes.length - 1]
+      if (
+        one.unit.kind === 'list-item' &&
+        previous &&
+        isList(previous) &&
+        listKey(previous) === listKey(one.nodes[0])
+      ) {
+        previous.append(one.unit.members[0])
+        continue
+      }
+      nodes.push(...one.nodes)
+    }
+    anchor.before(...nodes)
+    const lists = new Set<HTMLElement>()
+    for (const el of replace) {
+      if (inList && el.parentElement) lists.add(el.parentElement)
+      el.remove()
+    }
+    for (const list of lists) if (list.children.length === 0) list.remove()
+    const heading =
+      sources.some((source) => source.kind === 'heading') ||
+      replace.some((el) => domKind(el) === 'heading')
+    afterRender(nodes, heading)
+    return built.map((one) => one.unit)
+  }
+
   return {
+    render,
     listUnits: () => listUnitsOf(root),
     html: (kind: UnitKind, el: HTMLElement) =>
       stripWrapHints(kind === 'cell' ? el.innerHTML : el.outerHTML),

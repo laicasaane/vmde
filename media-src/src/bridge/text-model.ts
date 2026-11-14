@@ -56,7 +56,46 @@ export interface UnitHost<E> {
   roundTrip(kind: UnitKind, source: string): string | undefined
   /** Whole-list serialization for a structural list change, split into item sources; items of several DOM lists are serialized once per parent list; undefined when a split gives another item count than the DOM. */
   serializeList(items: readonly E[]): string[] | undefined
+  /**
+   * Task 733 / 010 (shared rules 3.7): renders `sources` through the live Lute and the post-render
+   * steps of `setValue`, in place of `replace`, and lists the new elements one host unit per source.
+   * A `table` source whose `replace` entries are rows swaps only those rows. When a built element has
+   * another kind than its source, nothing is written and the listing names a kind that differs from
+   * the source's. undefined: Lute not ready. Optional so that hosts without a DOM (model tests) need
+   * no stub; the model itself never calls it.
+   */
+  render?(
+    sources: readonly ApplySource[],
+    replace: readonly E[],
+  ): HostUnit<E>[] | undefined
 }
+
+/** Why a text change cannot be applied by units (shared rules 3.7). */
+export type ApplyFallbackReason =
+  | 'model-off'
+  | 'dependent-construct'
+  | 'window-without-kind'
+  | 'too-many-changes'
+  | 'oversize-unit'
+  | 'lute-not-ready'
+  | 'dirty-overlap'
+export interface ApplySource {
+  readonly kind: MovableKind
+  readonly source: string
+}
+export interface ApplyPlan<E> {
+  readonly changes: readonly TextChange[] // ascending, against the model text
+  readonly window: { readonly from: number; readonly to: number } // old-text range rescanned
+  readonly removed: readonly Unit<E>[] // top-level units whose members are replaced
+  readonly sources: readonly ApplySource[] // new blocks, in order
+  readonly tableRows?: readonly {
+    readonly table: Unit<E>
+    readonly rows: readonly number[]
+  }[] // same-shape tables: changed body rows only
+}
+export type ApplyPlanResult<E> =
+  | { kind: 'plan'; plan: ApplyPlan<E> }
+  | { kind: 'fallback'; reason: ApplyFallbackReason }
 
 type OffReason =
   | 'mode'
@@ -97,6 +136,10 @@ export interface TextModel<E> {
   clearForms(keep?: (unit: Unit<E>) => boolean): void // a clean baseline was recorded; units for which keep is true keep their forms
   markPublishedWhole(): void // the DOM was published through the whole-text path: clear every dirty and structure flag; units that were dirty lose html, canon and proof
   hasDirty(): boolean
+  /** Task 733 / 010: the units a text change replaces and the sources of the new blocks; no DOM work. */
+  planApply(changes: readonly TextChange[]): ApplyPlanResult<E>
+  /** Task 733 / 010: text = applyChanges(text, changes); `rendered` lists the new elements (one per source); new units are proven by construction. */
+  commitApply(plan: ApplyPlan<E>, rendered: readonly HostUnit<E>[]): void
 }
 
 /** A block that was removed: its elements (still serializable) and its bytes. */
@@ -158,6 +201,28 @@ export function setSyncImplementation(
 ): void {
   syncImplementation = implementation
 }
+
+/** Apply seam: apply-text.ts registers itself here (Task 733 / 010), as model-sync.ts does for sync. */
+export interface ApplyImplementation {
+  plan<E>(
+    internals: ModelInternals<E>,
+    changes: readonly TextChange[],
+  ): ApplyPlanResult<E>
+  commit<E>(
+    internals: ModelInternals<E>,
+    plan: ApplyPlan<E>,
+    rendered: readonly HostUnit<E>[],
+  ): void
+}
+
+let applyImplementation: ApplyImplementation | undefined
+export function setApplyImplementation(
+  implementation: ApplyImplementation | undefined,
+): void {
+  applyImplementation = implementation
+}
+
+const APPLY_MODEL_OFF = { kind: 'fallback', reason: 'model-off' } as const
 
 const internalsByModel = new WeakMap<object, ModelInternals<never>>()
 export function modelInternals<E>(model: TextModel<E>): ModelInternals<E> {
@@ -763,6 +828,14 @@ export function createTextModel<E>(
       internals.structure.clear()
     },
     hasDirty: () => internals.dirty.size > 0 || internals.structure.size > 0,
+    planApply: (changes) =>
+      state === 'off'
+        ? APPLY_MODEL_OFF
+        : (applyImplementation?.plan(internals, changes) ?? APPLY_MODEL_OFF),
+    commitApply(plan, rendered) {
+      if (!applyImplementation) throw new TypeError('apply is not installed')
+      applyImplementation.commit(internals, plan, rendered)
+    },
   }
   internalsByModel.set(model, internals as unknown as ModelInternals<never>)
   return model

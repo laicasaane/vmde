@@ -497,4 +497,48 @@ test.describe('edit counter gates', () => {
     expect(counters.legacyEditPosts).toBe(0)
     expect(counters.rootClone).toBe(0)
   })
+
+  // Task 733 / 010 (shared rules 4.2, Q-31): while the model owns the text, Move Block Down plans on
+  // the model units, applies by units and posts one delta; no whole read, no whole Lute call.
+  test('first block action makes no whole-document call', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await expect.poll(() => modelState(frame), { timeout: 30_000 }).toBe('live')
+    const paragraph = frame.locator('.vditor-ir .vditor-reset > p').first()
+    await paragraph.scrollIntoViewIfNeeded()
+    await paragraph.click()
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    await evaluateInVSCode(
+      async (vscode: typeof import('vscode'), _args: string[]) => {
+        await vscode.commands.executeCommand('vmde.moveBlockDown')
+      },
+      [''],
+    )
+    const file = path.join(baseDir, 'edit-counter-gates.md')
+    await expect
+      .poll(() =>
+        evaluateInVSCode(
+          async (vscode: typeof import('vscode'), args: string[]) =>
+            vscode.workspace.textDocuments
+              .find((d) => d.uri.fsPath === args[0])
+              ?.getText() ?? '',
+          [file],
+        ),
+      )
+      .not.toBe(fixture)
+    await settleForPublication(workbox)
+    const counters = await readCounters(
+      frame,
+      'first block action makes no whole-document call',
+      'paragraph',
+    )
+    expect(counters.fullGetValue).toBe(0)
+    expect(counters.luteDocument).toBe(0)
+    expect(counters.legacyEditPosts).toBe(0)
+    expect(counters.deltaPosts).toBeGreaterThanOrEqual(1)
+  })
 })

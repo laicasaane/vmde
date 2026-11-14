@@ -262,6 +262,7 @@ async function traceSince(
         hostAtDecision: fingerprint(m.content ?? null),
       })),
     inboundCommands: raw.inbound.map((m) => m.command),
+    outboundCommands: raw.outbound.map((m) => m.command as string),
     requests: raw.outbound
       .filter((m) => m.command === 'request-block-action')
       .map((m) => ({ before: fingerprint(m.before ?? null) })),
@@ -618,6 +619,17 @@ async function moveBlockCell(
   await select(ctx, CARET_TOKEN[direction], { collapsed: true, offset: 2 })
   await endSelectionGesture(ctx)
   const before = await hostState(ctx)
+  // Task 733 / 010 (Q-31): while the IR model owns the text the move is applied by units and its
+  // delta carries the write; otherwise the host-applied route answers with an outcome.
+  const modelLive =
+    ctx.mode === 'ir' &&
+    (await evalFrame(
+      kit,
+      () =>
+        (window as unknown as { __vmdeModelShadowStats?: { state: string } })
+          .__vmdeModelShadowStats?.state === 'live',
+      0,
+    ))
   const mark = await traceMark(ctx)
   await kit.xtest.key(`alt+${direction}`)
   const moved = await hostBecomes(ctx, (text) => text === expected, 6_000)
@@ -626,7 +638,22 @@ async function moveBlockCell(
   const trace = await traceSince(ctx, mark)
   const status = trace.outcomes.at(-1)?.status ?? 'none'
   check(moved, 'Move Block did not produce the intended exact result')
-  check(status === 'applied', `Move Block outcome is ${status}, not applied`)
+  if (modelLive) {
+    check(status === 'none', `Move Block by units got an outcome (${status})`)
+    check(
+      trace.outboundCommands.includes('cancel-block-action'),
+      'Move Block by units did not cancel the host binding',
+    )
+    check(
+      !trace.outboundCommands.includes('apply-block-action'),
+      'Move Block by units posted apply-block-action',
+    )
+    check(
+      trace.outboundCommands.includes('edit-delta'),
+      'Move Block by units posted no edit-delta',
+    )
+  } else
+    check(status === 'applied', `Move Block outcome is ${status}, not applied`)
 
   // Stale diagnosis: the webview's `before` against the host text at the decision.
   const staleDiagnosis = trace.rawBefore.map((webviewBefore, index) => {
@@ -681,6 +708,7 @@ async function moveBlockCell(
     equalsIntended: after.text === expected,
     outcomes: trace.outcomes,
     inboundCommands: trace.inboundCommands,
+    modelLive,
     requests: trace.requests,
     staleDiagnosis,
     undo: undone && {
