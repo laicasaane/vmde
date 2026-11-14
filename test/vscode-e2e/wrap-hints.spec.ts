@@ -590,8 +590,12 @@ async function snapshot(
     const slot = inner.undo[inner.currentMode]
     return {
       value: win.vditor.getValue() as string,
-      undo: slot.undoStack.length as number,
-      redo: slot.redoStack.length as number,
+      undo: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : slot.undoStack.length) as number,
+      redo: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+        : slot.redoStack.length) as number,
       lastTextHasHint: String(slot.lastText).includes('vmde-wrap-hint'),
       epoch: win.__vmdeE2EReadiness.editorEpoch as number,
     }
@@ -1118,8 +1122,12 @@ test.describe('OS input in a hinted word', () => {
             const inner = (window as any).vditor.vditor
             const slot = inner.undo[inner.currentMode]
             return {
-              undo: slot.undoStack.length as number,
-              redo: slot.redoStack.length as number,
+              undo: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+                ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+                : slot.undoStack.length) as number,
+              redo: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+                ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+                : slot.redoStack.length) as number,
             }
           },
           0,

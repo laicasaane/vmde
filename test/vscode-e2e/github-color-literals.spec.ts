@@ -48,7 +48,11 @@ async function undoStackLength(frame: ReturnType<typeof wf>): Promise<number> {
   return frame.locator('body').evaluate(() => {
     const inner = (window as unknown as { vditor: { vditor: any } }).vditor
       .vditor
-    return inner.undo[inner.currentMode].undoStack.length as number
+    return (
+      (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode].undoStack.length
+    ) as number
   })
 }
 

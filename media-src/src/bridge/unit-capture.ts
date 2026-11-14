@@ -1,4 +1,4 @@
-import { sourceProjection } from '../editing/undo-block-restore'
+import { historySourceProjection } from '../editing/undo-block-restore'
 import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import type { HistoryCapture, HistoryModelPort } from '../util/unit-changes'
 import { stripWrapHints } from '../util/wrap-hint-mark'
@@ -55,6 +55,7 @@ type Forms = ReadonlyArray<Form | readonly Form[] | undefined>
 interface SnapUnit {
   readonly unit: U
   readonly kind: U['kind']
+  /** The unit's members; for a multi-member unit, the root children they span (see `topsOf`). */
   readonly members: HTMLElement[]
   /** List item: its list. */
   readonly list: HTMLElement | undefined
@@ -65,6 +66,11 @@ interface SnapUnit {
   readonly start: number
   readonly end: number
   readonly forms: ReadonlyArray<{ canon: string; bytes: string }>
+  /**
+   * `was` is a later state than the model's proof (a capture remembered it, and no sync has caught the
+   * model up since): the model's text does not hold the bytes of `was`.
+   */
+  readonly ahead: boolean
 }
 
 /** A table whose rows or columns changed, as it was when the change was first seen. */
@@ -100,7 +106,7 @@ export interface UnitCapture {
   readonly port: HistoryModelPort
   /** Called by the observer for each batch, before the session merges it. */
   onBatch(changed: ReadonlySet<U>, structure: ReadonlySet<'root' | U>): void
-  /** Watches the keys that start a change (see `preTables`); returns the uninstall. */
+  /** Watches the keys that start a change (see `preTables`) and the clicks below the last block; returns the uninstall. */
   watch(root: HTMLElement): () => void
   /** The model is rebuilt over the same DOM: keep what is pending as one step of the next capture. */
   hold(): void
@@ -126,9 +132,41 @@ const parse = (html: string): Node[] => {
 const keyOf = (nodes: ArrayLike<Node>): string => {
   let key = ''
   for (let i = 0; i < nodes.length; i += 1) {
-    key += `${sourceProjection(nodes[i])}\u0007`
+    key += `${historySourceProjection(nodes[i])}\u0007`
   }
   return key
+}
+
+/**
+ * A top-level paragraph with no text (Vditor's empty `<p>`, a caret placeholder) has no Markdown
+ * bytes. Vditor appends one when a click lands below the last block; that one must not become an
+ * Undo step of its own. Any other empty paragraph (an Enter, a Backspace) stays a step.
+ */
+const isEmptyParagraph = (node: Node): boolean => {
+  if (!(node instanceof HTMLElement) || node.localName !== 'p') return false
+  for (const child of Array.from(node.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      if ((child as Text).data.replace(/[\n\u200b]/g, '') !== '') return false
+    } else if (
+      !(child instanceof HTMLElement) ||
+      (child.localName !== 'br' && child.localName !== 'wbr')
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * The source key of a window side for the no-change test. `atEnd`: the window ends at the last root
+ * child and a paragraph a click appended below the last block is or was there, so the empty
+ * paragraphs at its end are that one.
+ */
+const changeKeyOf = (html: string, atEnd: boolean): string => {
+  const nodes = parse(html)
+  let end = nodes.length
+  while (atEnd && end > 0 && isEmptyParagraph(nodes[end - 1])) end -= 1
+  return keyOf(end === nodes.length ? nodes : nodes.slice(0, end))
 }
 
 const TABLE_ROWS = ':scope > thead > tr, :scope > tbody > tr'
@@ -260,6 +298,14 @@ function rootIndexOf(el: Element): number {
   return index
 }
 
+/** The number of non-view-only root children; a walk, no allocation. */
+function countRootChildren(root: HTMLElement): number {
+  let last = root.lastElementChild
+  while (last && isViewOnlyChild(last as HTMLElement))
+    last = last.previousElementSibling
+  return last ? rootIndexOf(last) + 1 : 0
+}
+
 /** The top-level child of `root` that holds `el`. */
 function topOf(root: HTMLElement, el: HTMLElement): HTMLElement | undefined {
   let current: HTMLElement | null = el
@@ -267,6 +313,78 @@ function topOf(root: HTMLElement, el: HTMLElement): HTMLElement | undefined {
     current = current.parentElement
   }
   return current ?? undefined
+}
+
+/**
+ * The top-level elements a multi-member unit spans, in order. A source enclosure (an HTML `<details>`
+ * pair around blocks) lists the items of a list inside it as members, so a member is not always a
+ * child of the root; the root window and restore work on root children.
+ */
+function topsOf(
+  root: HTMLElement,
+  members: readonly HTMLElement[],
+): HTMLElement[] {
+  const tops: HTMLElement[] = []
+  for (const member of members) {
+    const top = formerTopOf(root, member)
+    if (tops.at(-1) !== top) tops.push(top)
+  }
+  return tops
+}
+
+/**
+ * `topOf` that also works for an element a structure change has just removed: the removed root child
+ * is the top of its own detached subtree.
+ */
+function formerTopOf(root: HTMLElement, el: HTMLElement): HTMLElement {
+  let current = el
+  while (current.parentElement && current.parentElement !== root) {
+    current = current.parentElement
+  }
+  return current
+}
+
+/**
+ * The HTML a multi-member unit had at its last proof, as root children: `pieces` holds one normalized
+ * HTML per member (the model's `html`, joined by NUL). A member inside a top-level list stands for an
+ * item of that list; the list is rebuilt from its open tag and its items, and only when every item of
+ * the list is a member. Undefined when the members cannot be described.
+ */
+function topsThen(
+  root: HTMLElement,
+  members: readonly HTMLElement[],
+  html: string | undefined,
+): string | undefined {
+  const pieces = html?.split('\u0000')
+  if (!pieces || pieces.length !== members.length) return undefined
+  let out = ''
+  let list: HTMLElement | undefined
+  let items = ''
+  let count = 0
+  const closeList = (): boolean => {
+    if (!list) return true
+    if (count !== list.children.length) return false
+    out += `${openTag(list)}${items}</${list.localName}>`
+    list = undefined
+    items = ''
+    count = 0
+    return true
+  }
+  for (let i = 0; i < members.length; i += 1) {
+    const member = members[i]
+    const top = formerTopOf(root, member)
+    if (top === member) {
+      if (!closeList()) return undefined
+      out += pieces[i]
+      continue
+    }
+    if (member.parentElement !== top) return undefined
+    if (list !== top && !closeList()) return undefined
+    list = top
+    items += pieces[i]
+    count += 1
+  }
+  return closeList() ? out : undefined
 }
 
 /** The non-view-only children of `root` from `index`, `count` of them (all when `count` is omitted). */
@@ -317,6 +435,23 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   let held: Step[] = []
   /** A restore is writing: its own mutations are not a change to capture. */
   let restoring = false
+  /**
+   * The empty paragraphs Vditor's click handler appended below the last block (seen by `watch`). Kept
+   * while connected and empty; usually none or one.
+   */
+  let clickParagraphs: HTMLElement[] = []
+  /**
+   * The model text at the last capture when the model had changes it had not synced (a rewrite closed by
+   * a checkpoint before any delta): until the text changes, the HTML that capture remembered is ahead
+   * of the text, and the text holds no bytes for it.
+   */
+  let behindText: string | undefined
+  /**
+   * A detached list that a rewrite replaced by a block whose items do not pair with the list's (a block
+   * move puts another kind of block at its position): the HTML that block held at the capture. Its
+   * items have no successors, so the list stands for this HTML as a whole.
+   */
+  let successors = new WeakMap<HTMLElement, string>()
 
   const hasPending = (): boolean =>
     leaves.size > 0 || rootSnap !== undefined || tableSnaps.size > 0
@@ -331,11 +466,31 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   }
 
   /**
+   * The HTML of a multi-member unit before its change, as root children: what the previous capture
+   * remembered of each top-level element, else the model's last proof.
+   */
+  function multiThen(unit: U): string | undefined {
+    const root = deps.root()
+    if (!root) return undefined
+    const tops = topsOf(root, unit.members)
+    let remembered = ''
+    for (const top of tops) {
+      const html = known.get(top)
+      if (html === undefined) return topsThen(root, unit.members, unit.html)
+      remembered += html
+    }
+    return tops.length > 0 ? remembered : undefined
+  }
+
+  /**
    * The HTML of a unit before this interval: a string when known, undefined when the unit is dirty and
    * the model never proved it, null when the unit is clean (reading its elements later gives the same).
    */
   function snapThen(unit: U): string | undefined | null {
     if (leaves.has(unit)) return leaves.get(unit)
+    if (unit.members.length > 1 && unit.kind !== 'row') {
+      return unit.html === undefined ? null : multiThen(unit)
+    }
     const el = unit.el
     const remembered = el ? known.get(el) : undefined
     if (remembered !== undefined) return remembered
@@ -348,19 +503,31 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
    * describe the state after the change.
    */
   function snapRoot(model: TextModel<HTMLElement>): SnapUnit[] {
+    const behind = behindText !== undefined && model.text === behindText
     rootText = model.text
+    const root = deps.root()
     const lists = listsOf(model.units)
-    const snapshot = model.units.map((unit, at) => ({
-      unit,
-      kind: unit.kind,
-      members: unit.members.slice(),
-      list: lists[at],
-      was: unit.kind === 'table' ? null : snapThen(unit),
-      canon: unit.proof === 'proven' ? unit.canon : undefined,
-      start: unit.start,
-      end: unit.end,
-      forms: unit.forms,
-    }))
+    const snapshot = model.units.map((unit, at) => {
+      const was = unit.kind === 'table' ? null : snapThen(unit)
+      return {
+        unit,
+        kind: unit.kind,
+        members:
+          unit.members.length > 1 && unit.kind !== 'row' && root
+            ? topsOf(root, unit.members)
+            : unit.members.slice(),
+        list: lists[at],
+        was,
+        canon: unit.proof === 'proven' ? unit.canon : undefined,
+        start: unit.start,
+        end: unit.end,
+        forms: unit.forms,
+        ahead:
+          behind &&
+          typeof was === 'string' &&
+          was !== unit.html?.replaceAll('\u0000', ''),
+      }
+    })
     snapTablesWithEditedCells(snapshot)
     return snapshot
   }
@@ -498,6 +665,9 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       kind: su.kind,
       bytes: bytesOf(su.canon, su.forms, rootText, su.start, su.end),
     })
+    // The model's text holds no bytes for a state it never synced: the model reads them from the DOM.
+    if (entry.items.some((su) => su.ahead) || successors.has(entry.el))
+      return undefined
     if (first.kind === 'list-item') return entry.items.map(formOf)
     return first.members.length === 1 ? formOf(first) : undefined
   }
@@ -531,6 +701,8 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   /** A list as it was: its shell and the HTML of each item that lived in it. */
   function thenOfEntry(entry: Entry): string | undefined {
     if (entry.items[0].kind !== 'list-item') return thenOfSnap(entry.items[0])
+    const succeeded = successors.get(entry.el)
+    if (succeeded !== undefined) return succeeded
     let html = openTag(entry.el)
     for (const item of entry.items) {
       const then = thenOfSnap(item)
@@ -538,6 +710,36 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       html += then
     }
     return `${html}</${entry.el.localName}>`
+  }
+
+  /**
+   * A rewrite replaced `old` (now detached) by `live` at the same root position. Until the model syncs, its units still
+   * name `old` (an exact post is unanswered, so no delta synced the rewrite): the next interval's
+   * `before` of that unit is what `live` holds at this capture. A list maps its items the same way when
+   * the item count is the same.
+   */
+  function succeed(old: HTMLElement, live: HTMLElement): void {
+    // An element still in the document keeps its own HTML (a wrap shifts live blocks by position).
+    if (old === live || old.isConnected) return
+    const html = normalized(live, 'outer')
+    known.set(old, html)
+    const isList = (el: HTMLElement): boolean =>
+      el.localName === 'ul' || el.localName === 'ol'
+    if (!isList(old)) return
+    if (
+      old.localName !== live.localName ||
+      old.children.length !== live.children.length
+    ) {
+      successors.set(old, html)
+      return
+    }
+    successors.delete(old)
+    for (let i = 0; i < old.children.length; i += 1) {
+      known.set(
+        old.children[i] as HTMLElement,
+        normalized(live.children[i] as HTMLElement, 'outer'),
+      )
+    }
   }
 
   /** Live top-level elements (a multi-member unit holds several). */
@@ -630,6 +832,9 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       .slice(start, liveEnd)
       .map((el) => normalized(el, 'outer'))
       .join('')
+    if (oldEnd - start === liveEnd - start) {
+      for (let i = start; i < oldEnd; i += 1) succeed(flat[i].el, live[i])
+    }
     return {
       kind: 'blocks',
       a: start,
@@ -687,15 +892,37 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         forms,
       }
     }
+    return blockWindow(root, unit, top, index, then, forms)
+  }
+
+  /**
+   * The window of a changed top-level block unit. A multi-member unit can list the items of a list as
+   * members: the window holds root children, so the list stands for its items on both sides.
+   */
+  function blockWindow(
+    root: HTMLElement,
+    unit: U,
+    top: HTMLElement,
+    index: number,
+    then: string | undefined,
+    forms: Forms,
+  ): Window {
+    const multi = unit.members.length > 1
+    const tops = multi ? topsOf(root, unit.members) : [top]
+    const beforeCount =
+      multi && then !== undefined
+        ? parse(then).filter((node) => node.nodeType === Node.ELEMENT_NODE)
+            .length
+        : tops.length
     return {
       kind: 'blocks',
       a: index,
       b: 0,
       c: 0,
-      beforeCount: unit.members.length,
-      afterCount: unit.members.length,
+      beforeCount,
+      afterCount: tops.length,
       before: then,
-      after: unit.members.map((m) => normalized(m, 'outer')).join(''),
+      after: tops.map((m) => normalized(m, 'outer')).join(''),
       forms,
     }
   }
@@ -791,14 +1018,44 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     if (windows.length === 0) return undefined
     windows.sort((x, y) => x.a - y.a || x.b - y.b || x.c - y.c)
     for (const window of windows) remember(root, window)
+    const model = deps.model()
+    behindText = model?.hasDirty() ? model.text : undefined
     // A window whose two sides have the same source (view-only classes, caret markers, rendered
-    // previews) is no change: it makes no entry, and its Undo would be a visible no-op step.
-    const changed = windows.filter(
-      (window) =>
-        window.before === undefined ||
-        keyOf(parse(window.before)) !== keyOf(parse(window.after)),
-    )
+    // previews, an empty paragraph a click appended below the last block) is no change: it makes no
+    // entry, and its Undo would be a visible no-op step.
+    const clicked = clickParagraphAtEnd(root)
+    let rootCount: number | undefined
+    const changed = windows.filter((window) => {
+      if (window.before === undefined) return true
+      let atEnd = false
+      if (clicked && window.kind === 'blocks') {
+        rootCount ??= countRootChildren(root)
+        atEnd = window.a + window.afterCount === rootCount
+      }
+      return (
+        changeKeyOf(window.before, atEnd) !== changeKeyOf(window.after, atEnd)
+      )
+    })
     return changed.length > 0 ? { windows: changed } : undefined
+  }
+
+  /**
+   * Whether a paragraph a click appended below the last block is the last root child now (still
+   * empty) or was removed since the previous capture. Drops the marks that no longer apply.
+   */
+  function clickParagraphAtEnd(root: HTMLElement): boolean {
+    if (clickParagraphs.length === 0) return false
+    let last = root.lastElementChild
+    while (last && isViewOnlyChild(last as HTMLElement))
+      last = last.previousElementSibling
+    let found = false
+    for (const p of clickParagraphs) {
+      if (!p.isConnected || (p === last && isEmptyParagraph(p))) found = true
+    }
+    clickParagraphs = clickParagraphs.filter(
+      (p) => p.isConnected && isEmptyParagraph(p),
+    )
+    return found
   }
 
   /** Root index of a window in the coordinates of the state before the step's windows. */
@@ -1073,7 +1330,10 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     },
   }
 
-  /** Snapshots the table under the caret before the first key of an interval changes one of its cells. */
+  /**
+   * Snapshots the table under the caret before the first key of an interval changes one of its cells,
+   * and marks the paragraph a click appends below the last block.
+   */
   function watch(root: HTMLElement): () => void {
     const target: EventTarget = root.ownerDocument.defaultView ?? window
     const handler = (): void => {
@@ -1091,11 +1351,33 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         )
       }
     }
+    // Vditor's IR click handler (on the root) appends an empty paragraph when a click lands below
+    // the last block. The last child before the click (capture phase) and after the root's handlers
+    // (bubble phase on the window) tell that paragraph from one an Enter made.
+    let lastBeforeClick: Element | null = null
+    const beforeClick = (): void => {
+      lastBeforeClick = root.lastElementChild
+    }
+    const afterClick = (): void => {
+      const last = root.lastElementChild
+      if (
+        last !== lastBeforeClick &&
+        last instanceof HTMLElement &&
+        isEmptyParagraph(last)
+      ) {
+        clickParagraphs.push(last)
+      }
+      lastBeforeClick = null
+    }
     target.addEventListener('keydown', handler, true)
     target.addEventListener('beforeinput', handler, true)
+    target.addEventListener('click', beforeClick, true)
+    target.addEventListener('click', afterClick)
     return () => {
       target.removeEventListener('keydown', handler, true)
       target.removeEventListener('beforeinput', handler, true)
+      target.removeEventListener('click', beforeClick, true)
+      target.removeEventListener('click', afterClick)
     }
   }
 
@@ -1111,7 +1393,12 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         if (!leaves.has(unit)) {
           const el = unit.el
           const remembered = el ? known.get(el) : undefined
-          leaves.set(unit, remembered ?? unit.html?.replaceAll('\u0000', ''))
+          leaves.set(
+            unit,
+            unit.members.length > 1 && unit.kind !== 'row'
+              ? multiThen(unit)
+              : (remembered ?? unit.html?.replaceAll('\u0000', '')),
+          )
           if (unit.kind !== 'row' && unit.members.length === 1) {
             leafForms.set(unit, {
               kind: unit.kind,
@@ -1150,6 +1437,9 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       clearPending()
       held = []
       known = new WeakMap()
+      successors = new WeakMap()
+      behindText = undefined
+      clickParagraphs = []
     },
   }
 }

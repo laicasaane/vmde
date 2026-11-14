@@ -310,8 +310,12 @@ function readHistory(): { undo: number; redo: number; undoButton: string } {
     | HTMLElement
     | undefined
   return {
-    undo: slot.undoStack.length,
-    redo: slot.redoStack.length,
+    undo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : slot.undoStack.length,
+    redo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+      : slot.redoStack.length,
     undoButton: !button
       ? 'missing'
       : button.classList.contains('vditor-menu--disabled')

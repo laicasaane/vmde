@@ -40,10 +40,12 @@ const VIEW_ONLY_ATTRIBUTES = [
   'data-vmde-leading',
 ] as const
 
-// Attributes that never reach the Markdown: presentation, fold and indent state (shared rules 3.4).
+// Attributes that never reach the Markdown: presentation, fold and indent state, and the outline's
+// heading anchor `id` (shared rules 3.4).
 const IGNORED_ATTRIBUTES = new Set([
   'class',
   'style',
+  'id',
   'data-vmde-foldable',
   'data-vmde-list-foldable',
   'data-vmde-indent',

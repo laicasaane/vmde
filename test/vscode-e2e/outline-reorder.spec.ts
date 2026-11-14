@@ -227,7 +227,11 @@ test.describe('Task 222 OS keyboard acceptance', () => {
     await expect(rows).toHaveCount(2)
     const undoBefore = await frame.locator('body').evaluate(() => {
       const inner = (window as any).vditor.vditor
-      return inner.undo.ir.undoStack.length as number
+      return (
+        (globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo.ir.undoStack.length
+      ) as number
     })
     await frame.locator('body').evaluate(() => {
       const rows = Array.from(
@@ -264,7 +268,11 @@ test.describe('Task 222 OS keyboard acceptance', () => {
       .poll(() =>
         frame.locator('body').evaluate(() => {
           const inner = (window as any).vditor.vditor
-          return inner.undo.ir.undoStack.length as number
+          return (
+            (globalThis as any).__vmdeUnitHistory?.holds(inner)
+              ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+              : inner.undo.ir.undoStack.length
+          ) as number
         }),
       )
       .toBeGreaterThan(undoBefore)

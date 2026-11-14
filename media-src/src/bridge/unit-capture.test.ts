@@ -88,6 +88,12 @@ function open(markdown: string) {
 }
 type Rig = ReturnType<typeof open>
 
+const parseHtml = (html: string): Node[] => {
+  const template = document.createElement('template')
+  template.innerHTML = html
+  return Array.from(template.content.children)
+}
+
 /** Types into a block the way the editor does: the pre-touch proof runs before the DOM changes. */
 function typeInto(target: HTMLElement, text: string): void {
   target.dispatchEvent(new Event('beforeinput', { bubbles: true }))
@@ -178,6 +184,248 @@ describe('capture and restore', () => {
     expect(r.port.restore(second, 'after')).toBe(true)
     r.sync()
     expect(r.state()).toEqual(afterBoth)
+  })
+})
+
+// DR (outline move): Vditor adds an empty paragraph when a click lands below the last block. It has no
+// Markdown bytes, so it must not become an entry that the next Undo spends with no text change.
+describe('an empty paragraph added or removed is no change', () => {
+  it('captures nothing for an appended empty paragraph, and the earlier edit still restores', () => {
+    const r = open(DOC)
+    typeInto(r.root.querySelectorAll('p')[0], 'alpha!')
+    const edit = r.port.capture() as HistoryCapture
+    expect(edit).toBeDefined()
+    r.sync()
+    // Vditor's click handler on the IR root appends the paragraph (a zero-width space and a caret mark).
+    r.root.addEventListener(
+      'click',
+      () => {
+        const empty = document.createElement('p')
+        empty.setAttribute('data-block', '0')
+        empty.append('\u200b', document.createElement('wbr'))
+        r.root.appendChild(empty)
+      },
+      { once: true },
+    )
+    r.root.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(r.port.capture()).toBeUndefined()
+    expect(r.port.restore(edit, 'before')).toBe(true)
+    expect(r.sync()).toBe(DOC)
+  })
+
+  // DR3: only the paragraph a click below the last block appends is no change. An Enter or a
+  // Backspace that adds or removes an empty paragraph between blocks is an Undo step, as in Vditor.
+  it('Enter at the end of a paragraph adds an empty paragraph, and Undo removes it', () => {
+    const r = open(DOC)
+    const empty = document.createElement('p')
+    empty.setAttribute('data-block', '0')
+    empty.append(document.createElement('wbr'))
+    r.root.querySelectorAll('p')[0].after(empty)
+    const enter = r.port.capture() as HistoryCapture
+    expect(enter).toBeDefined()
+    r.sync()
+    expect(r.port.restore(enter, 'before')).toBe(true)
+    expect(r.root.querySelectorAll(':scope > p').length).toBe(2)
+    expect(r.sync()).toBe(DOC)
+  })
+
+  // DR4: an Enter at the end of the last paragraph appends an empty paragraph at the root end; no click
+  // made it, so it is an Undo step.
+  it('Enter at the end of the last paragraph adds an empty paragraph, and Undo removes it', () => {
+    const r = open('alpha\n\nbeta\n')
+    const empty = document.createElement('p')
+    empty.setAttribute('data-block', '0')
+    empty.append(document.createElement('wbr'))
+    r.root.appendChild(empty)
+    const enter = r.port.capture() as HistoryCapture
+    expect(enter).toBeDefined()
+    r.sync()
+    expect(r.port.restore(enter, 'before')).toBe(true)
+    expect(r.root.querySelectorAll(':scope > p').length).toBe(2)
+    expect(r.sync()).toBe('alpha\n\nbeta\n')
+  })
+
+  it('Backspace removes an empty paragraph, and Undo restores it', () => {
+    const r = open('alpha\n\nbeta\n')
+    const empty = document.createElement('p')
+    empty.setAttribute('data-block', '0')
+    r.root.querySelectorAll('p')[0].after(empty)
+    // The empty paragraph is part of the state the next change starts from.
+    r.port.capture()
+    r.sync()
+    const before = r.root.querySelectorAll(':scope > p').length
+    empty.remove()
+    const backspace = r.port.capture() as HistoryCapture
+    expect(backspace).toBeDefined()
+    r.sync()
+    expect(r.port.restore(backspace, 'before')).toBe(true)
+    expect(r.root.querySelectorAll(':scope > p').length).toBe(before)
+  })
+
+  it('an empty paragraph added together with a real change keeps the change', () => {
+    const r = open(DOC)
+    const empty = document.createElement('p')
+    empty.setAttribute('data-block', '0')
+    empty.append(document.createElement('wbr'))
+    r.root.querySelectorAll('p')[0].after(empty)
+    typeInto(r.root.querySelectorAll('p')[0], 'alpha!')
+    expect(r.port.capture()).toBeDefined()
+  })
+})
+
+// DR4 (front matter commit, then remove): two whole-root rewrites (`setValue`) in a row, each closed by a
+// checkpoint, with no sync between them (the first one's exact post is still unanswered). The model's
+// units still name the elements from before the first rewrite; the second entry's `before` must be the
+// state the first capture left, not the one before it.
+describe('two whole-root rewrites with no sync between them', () => {
+  it("the second entry's Undo restores the first rewrite's state", () => {
+    const r = open('alpha\n\nbeta\n')
+    const first = 'alpha one\n\nbeta\n'
+    const second = 'alpha two\n\nbeta\n'
+    r.root.innerHTML = lute.Md2VditorIRDOM(first)
+    const c1 = r.port.capture() as HistoryCapture
+    expect(c1).toBeDefined()
+    const afterFirst = r.root.innerHTML
+    r.root.innerHTML = lute.Md2VditorIRDOM(second)
+    const c2 = r.port.capture() as HistoryCapture
+    expect(c2).toBeDefined()
+    expect(r.port.restore(c2, 'before')).toBe(true)
+    expect(r.root.innerHTML).toBe(afterFirst)
+    expect(r.sync()).toBe(first)
+  })
+})
+
+// DR8 (block handle drag across a list): a block move rewrites the whole root, so the old and the live
+// elements meet by position, and a list's old element meets a block of another kind. A second capture
+// before the model syncs must see the state the first capture left at each position, the list's
+// position included, or it records a change that never happened and Undo restores the list there.
+describe('a block move across a list with no sync before the next capture', () => {
+  const DOC = '# Heading\n\nbody\n\n- parent\n- sibling\n\n> quote\n\nend\n'
+  const MOVED = '# Heading\n\n- parent\n- sibling\n\n> quote\n\nbody\n\nend\n'
+
+  it('the next capture makes no entry, and Undo of the move restores the document', () => {
+    const r = open(DOC)
+    r.root.innerHTML = lute.Md2VditorIRDOM(MOVED)
+    const move = r.port.capture() as HistoryCapture
+    expect(move).toBeDefined()
+    // A second spin of the same text replaces every element again.
+    r.root.innerHTML = lute.Md2VditorIRDOM(MOVED)
+    expect(r.port.capture()).toBeUndefined()
+    expect(r.port.restore(move, 'before')).toBe(true)
+    expect(r.sync()).toBe(DOC)
+  })
+})
+
+// DR (Details toolbar): a source enclosure (`<details>` HTML blocks around blocks) is one unit whose
+// members include the items of a list inside it. Its window must hold root children (the list, not
+// its items) on both sides, or the restore refuses and the history is lost.
+describe('a multi-member enclosure unit', () => {
+  const BODY = 'Toolbar body **exact**.\n\n- toolbar item'
+  const CONTENT = `# Toolbar details\n\n<details>\n<summary>Outer</summary>\n\nOuter first.\n\nOuter second.\n\n</details>\n\n${BODY}\n\nTail.\n`
+  const DETAILS = CONTENT.replace(
+    BODY,
+    `<details>\n<summary>Details</summary>\n\n${BODY}\n\n</details>`,
+  )
+
+  it('a rebuild of the root that removes the pair restores it, list included', () => {
+    const r = open(DETAILS)
+    r.session.deltaPort().rebind(DETAILS)
+    // Unwrap with `setValue`: every root child is replaced, the members of the pair are detached.
+    r.root.innerHTML = lute.Md2VditorIRDOM(CONTENT)
+    const unwrap = r.port.capture() as HistoryCapture
+    expect(r.sync()).toBe(CONTENT)
+    expect(r.port.restore(unwrap, 'before')).toBe(true)
+    expect(r.sync()).toBe(DETAILS)
+    expect(r.root.querySelector(':scope > li')).toBeNull()
+    expect(r.port.restore(unwrap, 'after')).toBe(true)
+    expect(r.sync()).toBe(CONTENT)
+  })
+
+  it('its window holds root children, and a later view-state change is no change', () => {
+    const r = open(DETAILS)
+    // The host's answer to the action's exact post rebinds the model: the pair becomes one unit
+    // whose members are the opening block, the paragraph, the list item and the closing block.
+    r.session.deltaPort().rebind(DETAILS)
+    const group = r.session
+      .confirmedUnits()
+      ?.find((unit) => unit.members.some((m) => m.localName === 'li'))
+    expect(group?.members.map((m) => m.localName)).toEqual([
+      'div',
+      'p',
+      'li',
+      'div',
+    ])
+    const body = group?.members[1] as HTMLElement
+    body.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    ;(body.lastChild as Text).data = '. More.'
+    const edit = r.port.capture() as unknown as {
+      steps: Array<{ windows: Array<{ afterCount: number; after: string }> }>
+    }
+    const window = edit.steps[0].windows[0]
+    // The list, not its item, is the third root child of the window.
+    expect(window.afterCount).toBe(4)
+    const tops = parseHtml(window.after).map((n) => (n as Element).localName)
+    expect(tops).toEqual(['div', 'p', 'ul', 'div'])
+    // The Details decoration marks the pair while it is edited and adds its toggle button (a
+    // rendered child with no source) to the opening block.
+    const [opening, , , closing] = group?.members ?? []
+    opening.setAttribute('data-vmde-details-editing', '')
+    closing.setAttribute('data-vmde-details-editing', '')
+    const toggle = document.createElement('button')
+    toggle.setAttribute('data-render', '1')
+    toggle.setAttribute('contenteditable', 'false')
+    opening.append(toggle)
+    expect(r.port.capture()).toBeUndefined()
+  })
+})
+
+// DR (HTML superscript): the inline-HTML presentation wraps an authored `<sup>` body in a semantic
+// element while the caret is elsewhere, and unwraps it when the caret enters. That is view state:
+// a window captured in one presentation must restore in the other.
+describe('the inline-HTML presentation wrapper is no source', () => {
+  it('a window captured undecorated restores while its body is decorated', () => {
+    const r = open('Action x<sup>2</sup>y.\n\nother\n')
+    const p = r.root.querySelector('p') as HTMLElement
+    typeInto(p, 'Action z')
+    const edit = r.port.capture() as HistoryCapture
+    r.sync()
+    const markers = p.querySelectorAll('[data-type="html-inline"]')
+    expect(markers.length).toBe(2)
+    const owned = document.createElement('sup')
+    owned.setAttribute('data-vmde-html-superscript', '1')
+    owned.setAttribute('data-vmde-html-superscript-owner', 'x:1')
+    for (
+      let node = markers[0].nextSibling;
+      node && node !== markers[1];
+      node = markers[0].nextSibling
+    )
+      owned.append(node)
+    markers[0].after(owned)
+    expect(r.port.restore(edit, 'before')).toBe(true)
+    expect(r.sync()).toBe('Action x<sup>2</sup>y.\n\nother\n')
+  })
+})
+
+// DR (callout apply): a block re-spin gives a blockquote the callout type and title Lute derives
+// from its `[!NOTE] Title` text. A window captured before the re-spin must still restore.
+describe('derived callout attributes are no source', () => {
+  it('a window captured before the re-spin restores after it', () => {
+    const r = open('> [!NOTE] Proof\n> body\n\nother\n')
+    const quote = r.root.querySelector('blockquote') as HTMLElement
+    const p = quote.querySelector('p') as HTMLElement
+    const text = p.lastChild as Text
+    p.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    text.data = `${text.data}!`
+    const edit = r.port.capture() as HistoryCapture
+    r.sync()
+    // The derived form, as a re-spin writes it on a blockquote written without it.
+    for (const name of ['data-callout', 'data-callout-title', 'class'])
+      quote.removeAttribute(name)
+    quote.setAttribute('data-callout', 'note')
+    quote.setAttribute('data-callout-title', 'Proof')
+    quote.classList.add('vditor-ir__node')
+    expect(r.port.restore(edit, 'before')).toBe(true)
+    expect(r.sync()).toBe('> [!NOTE] Proof\n> body\n\nother\n')
   })
 })
 
@@ -481,13 +729,21 @@ describe('a multi-step restore (F4)', () => {
 })
 
 describe('claimable (F1)', () => {
-  it('is true while live and for a transient off, false for a permanent off reason', () => {
+  // DR (IR re-entry, deferred edit view): a model that is off for any reason observes nothing, so
+  // edits recorded then were lost to Undo. Only a rebuild over the same DOM keeps the unit engine.
+  it('is true while live and during a rebuild over the same DOM, false while the model is off', () => {
     const r = open(DOC)
     expect(r.port.claimable()).toBe(true)
+    // A host text rebuilds the model on the next frame: what is pending is held meanwhile.
+    r.session.onHostText(DOC, 2)
+    expect(r.session.isLive()).toBe(false)
+    expect(r.port.claimable()).toBe(true)
+    r.runFrames()
+    expect(r.session.isLive()).toBe(true)
     r.session.turnOff('not-mounted')
-    expect(r.port.claimable()).toBe(true)
+    expect(r.port.claimable()).toBe(false)
     r.session.turnOff('mode')
-    expect(r.port.claimable()).toBe(true)
+    expect(r.port.claimable()).toBe(false)
     for (const reason of [
       'scan-declined',
       'pairing-failed',
@@ -752,5 +1008,77 @@ describe('Undo and Redo of a table action keep the table bytes', () => {
     expect(r.port.restore(capture, 'after')).toBe(true)
     r.session.deltaPort().prepareDelta(41)
     expect(r.session.deltaPort().modelText()).toBe(MOVED)
+  })
+})
+
+// A view-only attribute written after the capture (the webview context menu of a code block) is no
+// change of source: the restore verifies the window and proceeds.
+describe('a view-only attribute added after the capture', () => {
+  it('data-vscode-context does not refuse the restore', () => {
+    const r = open('alpha\n\n```ts\nconst x = 1\n```\n\nomega\n')
+    const first = r.state()
+    const [a] = Array.from(r.root.querySelectorAll(':scope > p'))
+    const code = r.root.querySelector('[data-type="code-block"]') as HTMLElement
+    code.after(a)
+    const capture = r.port.capture() as HistoryCapture
+    expect(capture).toBeDefined()
+    for (const block of Array.from(
+      r.root.querySelectorAll('[data-type="code-block"]'),
+    )) {
+      block.setAttribute('data-vscode-context', '{"webviewSection":"code"}')
+    }
+    expect(r.port.restore(capture, 'before')).toBe(true)
+    expect(r.root.querySelectorAll(':scope > p')[0].textContent).toBe('alpha')
+    expect(first.html).toContain('alpha')
+  })
+})
+
+// The outline writes an `id` on each heading. After a whole-text rebind no unit is proven, so a
+// change seen there would be an entry with no `before` side, which Undo can only refuse.
+describe('an id written on a heading is no change', () => {
+  it('makes no entry after a whole-text rebind', () => {
+    const r = open('# Title\n\nalpha\n')
+    r.session.deltaPort().rebind('# Title\n\nalpha\n')
+    ;(r.root.querySelector('h1') as HTMLElement).id = 'vditorAnchor-0'
+    expect(r.port.pending()).toBe(false)
+    expect(r.port.capture()).toBeUndefined()
+  })
+})
+
+// A host write this webview asked for (a Preview checkbox toggle) rewrites the root with the host's
+// text, and the checkpoint after it captures that rewrite. The host text that follows describes the
+// same DOM, so the capture stays valid and its Undo is one exact unit step.
+describe('the answer to a requested host write keeps the matching capture', () => {
+  const TASKS = 'alpha\n\n- [ ] one\n- [ ] two\n\nomega\n'
+  const TOGGLED = TASKS.replace('- [ ] one', '- [x] one')
+
+  it('Undo restores the bytes of the toggled block', () => {
+    const r = open(TASKS)
+    r.session.onHostWriteRequested()
+    expect(r.port.capture()).toBeUndefined()
+    // `setValue` with the host's text, then the checkpoint.
+    r.root.innerHTML = lute.Md2VditorIRDOM(TOGGLED)
+    const capture = r.port.capture() as HistoryCapture
+    expect(capture).toBeDefined()
+    r.session.onHostText(TOGGLED, 2)
+    r.runFrames()
+    expect(r.session.deltaPort().modelText()).toBe(TOGGLED)
+    expect(r.port.restore(capture, 'before')).toBe(true)
+    expect(r.sync()).toBe(TASKS)
+    expect(r.port.restore(capture, 'after')).toBe(true)
+    expect(r.sync()).toBe(TOGGLED)
+  })
+
+  it('an update with changes no checkpoint took still drops every capture', () => {
+    const r = open(TASKS)
+    typeInto(r.root.querySelector('p') as HTMLElement, 'alpha!')
+    const capture = r.port.capture() as HistoryCapture
+    expect(capture).toBeDefined()
+    r.session.onHostWriteRequested()
+    // An outside update lands in place of the answer: its rebuild is pending, not captured.
+    r.root.innerHTML = lute.Md2VditorIRDOM(TOGGLED)
+    r.session.onHostText(TOGGLED, 2)
+    r.runFrames()
+    expect(r.port.restore(capture, 'before')).toBe(false)
   })
 })

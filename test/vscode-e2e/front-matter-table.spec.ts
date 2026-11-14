@@ -117,7 +117,9 @@ const webviewState = (frame: Frame, mode: Mode) =>
       expanded: root?.querySelectorAll('.vditor-ir__node--expand').length ?? 0,
       yaml: root?.querySelector('code[data-type="yaml-front-matter"]')
         ?.textContent,
-      undo: inner.undo[inner.currentMode].undoStack.length,
+      undo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode].undoStack.length,
     }
   }, mode)
 

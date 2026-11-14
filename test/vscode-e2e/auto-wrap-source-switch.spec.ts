@@ -133,7 +133,9 @@ test('Task 686: the IR auto-wrap applies right after a Source pass', async ({
       .poll(() =>
         frame.locator('body').evaluate(() => {
           const inner = (window as any).vditor.vditor
-          return inner.undo[inner.currentMode].undoStack.length
+          return (globalThis as any).__vmdeUnitHistory?.holds(inner)
+            ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+            : inner.undo[inner.currentMode].undoStack.length
         }),
       )
       .toBeGreaterThanOrEqual(1)

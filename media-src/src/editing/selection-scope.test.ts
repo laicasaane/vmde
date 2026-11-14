@@ -677,6 +677,36 @@ describe('expandCollapsedSelectionToWord', () => {
     expect(expandCollapsedSelectionToWord(sel, editor)).toBe(false)
   })
 
+  it('leaves a caret at the start of a block alone (left edge of its first word)', () => {
+    const editor = document.createElement('div')
+    editor.innerHTML =
+      '<p data-block="0">Alpha bravo.</p><p data-block="0">Charlie delta.</p>'
+    document.body.appendChild(editor)
+    const first = editor.querySelector('p')!.firstChild as Text
+    const sel = placeCaret(first, 0)
+    expect(expandCollapsedSelectionToWord(sel, editor)).toBe(false)
+    expect(sel.toString()).toBe('')
+    const second = editor.querySelectorAll('p')[1]!.firstChild as Text
+    const sel2 = placeCaret(second, 0)
+    expect(expandCollapsedSelectionToWord(sel2, editor)).toBe(false)
+  })
+
+  it('still expands at the left edge of a later word, and at a block-start word preceded by a marker', () => {
+    const editor = document.createElement('div')
+    editor.innerHTML =
+      '<p data-block="0">Alpha bravo.</p>' +
+      '<h1 data-block="0"><span class="vditor-ir__marker">#\u00a0</span>Probe</h1>'
+    document.body.appendChild(editor)
+    const para = editor.querySelector('p')!.firstChild as Text
+    const sel = placeCaret(para, 6) // left edge of "bravo"
+    expect(expandCollapsedSelectionToWord(sel, editor)).toBe(true)
+    expect(sel.toString()).toBe('bravo')
+    const heading = editor.querySelector('h1')!.lastChild as Text
+    const sel2 = placeCaret(heading, 0)
+    expect(expandCollapsedSelectionToWord(sel2, editor)).toBe(true)
+    expect(sel2.toString()).toBe('Probe')
+  })
+
   it('leaves a caret parked in the middle of a space run alone', () => {
     const editor = document.createElement('div')
     editor.textContent = 'hello  world'

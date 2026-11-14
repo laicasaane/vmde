@@ -143,8 +143,12 @@ function readState() {
     }
   }
   return {
-    undo: slot.undoStack.length as number,
-    redo: slot.redoStack.length as number,
+    undo: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : slot.undoStack.length) as number,
+    redo: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+      : slot.redoStack.length) as number,
     caret,
     sentinel,
     collapsed,

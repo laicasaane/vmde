@@ -302,7 +302,11 @@ test('IR: cutting a selection spanning THREE paragraphs merges the remainder int
   const undoLength = () =>
     frame.locator('body').evaluate(() => {
       const inner = (window as any).vditor.vditor
-      return inner.undo[inner.currentMode].undoStack.length as number
+      return (
+        (globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo[inner.currentMode].undoStack.length
+      ) as number
     })
   const directUndo = () =>
     frame.locator('body').evaluate(() => {

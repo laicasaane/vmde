@@ -43,6 +43,9 @@ const HIGHLIGHTED_CODE_PARENT = 'pre.vditor-wysiwyg__pre'
 // View-state attributes VMDE or the webview set on live blocks.
 const VIEW_ATTRIBUTE =
   /^(?:style|id|role|tabindex|spellcheck|data-vmde-.*|aria-.*)$/
+// The unit history also leaves out `data-vscode-context`, the webview context menu of a block
+// (chrome/webview-context.ts writes it quietly after a render, after the window was captured).
+const HISTORY_VIEW_ATTRIBUTE = 'data-vscode-context'
 // View-state class tokens: VMDE's own (`vmde-*`), Vditor's IR caret expansion, wiki chip
 // expansion, and code tagging (code-source.ts, wysiwyg-code-highlight.ts).
 const VIEW_CLASS =
@@ -65,14 +68,37 @@ function parseSnapshot(html: string): Node[] {
   return Array.from(template.content.childNodes)
 }
 
-function attributeShape(el: Element): string {
+// Lute's callout render of a blockquote: the type and title it derives from the `[!TYPE] Title` text
+// the blockquote holds. A block re-spin adds them to a blockquote written without them.
+const CALLOUT_ATTRIBUTE = /^data-callout(?:-title)?$/
+
+/** Whether an attribute is view state; `history` and `callout` add the unit history's exclusions. */
+function viewOnlyAttribute(
+  name: string,
+  history: boolean,
+  callout: boolean,
+): boolean {
+  return (
+    VIEW_ATTRIBUTE.test(name) ||
+    (history && name === HISTORY_VIEW_ATTRIBUTE) ||
+    (callout && CALLOUT_ATTRIBUTE.test(name))
+  )
+}
+
+function attributeShape(el: Element, history = false): string {
   const parts: string[] = []
+  const callout = history && el.tagName === 'BLOCKQUOTE'
   for (const attr of Array.from(el.attributes)) {
-    if (VIEW_ATTRIBUTE.test(attr.name)) continue
+    if (viewOnlyAttribute(attr.name, history, callout)) continue
     if (attr.name === 'class') {
       const kept = attr.value
         .split(/\s+/)
-        .filter((token) => token && !VIEW_CLASS.test(token))
+        .filter(
+          (token) =>
+            token &&
+            !VIEW_CLASS.test(token) &&
+            !(callout && token === 'vditor-ir__node'),
+        )
         .sort()
       if (kept.length) parts.push(`class=${kept.join(' ')}`)
       continue
@@ -85,9 +111,22 @@ function attributeShape(el: Element): string {
   return parts.sort().join('\u0001')
 }
 
+// The semantic wrapper the inline-HTML presentation (editing/html-subscript.ts) puts around an
+// authored `<sub>`, `<sup>`, `<ins>` or `<a>` body while the caret is elsewhere. Lute never sees it
+// (it is stripped before every Lute call), so the unit history's projection reads through it.
+const PRESENTATION_WRAPPER =
+  '[data-vmde-html-subscript],[data-vmde-html-superscript],[data-vmde-html-underline],[data-vmde-html-link]'
+
 // The Lute-visible shape of a node, in document order. Adjacent text is concatenated, so a text node
-// split by a wrap-hint span or a removed marker projects the same as the unsplit one.
-function sourceShape(node: Node, out: string[], highlighted: boolean): void {
+// split by a wrap-hint span or a removed marker projects the same as the unsplit one. `presentation`
+// (the unit history only): a presentation wrapper projects as its children, and a blockquote's
+// derived callout attributes are left out.
+function sourceShape(
+  node: Node,
+  out: string[],
+  highlighted: boolean,
+  presentation = false,
+): void {
   if (node.nodeType === TEXT_NODE) {
     out.push((node as Text).data)
     return
@@ -97,24 +136,42 @@ function sourceShape(node: Node, out: string[], highlighted: boolean): void {
     return
   }
   if (node.matches(RENDERED) || node.matches(MARKER)) return
-  if (highlighted && node.tagName === 'SPAN') {
+  if (
+    (highlighted && node.tagName === 'SPAN') ||
+    (presentation && node.matches(PRESENTATION_WRAPPER))
+  ) {
     for (const child of Array.from(node.childNodes))
-      sourceShape(child, out, true)
+      sourceShape(child, out, highlighted, presentation)
     return
   }
-  out.push(`\u0003${node.tagName}\u0004${attributeShape(node)}\u0005`)
+  out.push(
+    `\u0003${node.tagName}\u0004${attributeShape(node, presentation)}\u0005`,
+  )
   const inner =
     highlighted ||
     (node.tagName === 'CODE' &&
       !!node.parentElement?.matches(HIGHLIGHTED_CODE_PARENT))
   for (const child of Array.from(node.childNodes))
-    sourceShape(child, out, inner)
+    sourceShape(child, out, inner, presentation)
   out.push('\u0006')
 }
 
 function projection(node: Node): string {
   const out: string[] = []
   sourceShape(node, out, false)
+  return out.join('')
+}
+
+/**
+ * Task 733 (task 004): the source projection the unit history capture (bridge/unit-capture.ts)
+ * verifies a window with: this restore's projection, which also reads through the inline-HTML
+ * presentation wrappers (the decoration is undone and redone by the caret, never by an edit) and
+ * leaves out the webview context-menu attribute and the callout attributes Lute derives from a
+ * blockquote's text.
+ */
+export function historySourceProjection(node: Node): string {
+  const out: string[] = []
+  sourceShape(node, out, false, true)
   return out.join('')
 }
 
@@ -286,7 +343,3 @@ export function restoreSnapshotBlocks(
     ),
   }
 }
-
-// Task 733 (task 004): the unit history capture (bridge/unit-capture.ts) verifies a window with the
-// same source projection this restore uses, so the two cannot disagree about what counts as source.
-export { projection as sourceProjection }

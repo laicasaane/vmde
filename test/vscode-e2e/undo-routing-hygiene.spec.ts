@@ -111,8 +111,12 @@ function readState() {
   }
   const base: string | undefined = slot.undoStack[0]?.[0]?.diffs?.[0]?.[1]
   return {
-    undo: slot.undoStack.length as number,
-    redo: slot.redoStack.length as number,
+    undo: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : slot.undoStack.length) as number,
+    redo: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+      : slot.redoStack.length) as number,
     caret,
     collapsed: selection?.isCollapsed ?? null,
     focused: document.hasFocus() && root.contains(document.activeElement),
@@ -360,7 +364,7 @@ function readFind() {
           : 'other',
     status:
       widget?.querySelector<HTMLElement>('[data-status]')?.textContent ?? null,
-    depth: `${slot.undoStack.length}/${slot.redoStack.length}`,
+    depth: `${(globalThis as any).__vmdeUnitHistory?.holds(inner) ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo : slot.undoStack.length}/${(globalThis as any).__vmdeUnitHistory?.holds(inner) ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo : slot.redoStack.length}`,
     engineUndos: (w.__t603?.undos ?? 0) as number,
   }
 }

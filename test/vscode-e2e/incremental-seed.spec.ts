@@ -211,7 +211,11 @@ test('complexity-aware IR seed stays off for small docs and ready before complex
   expect(placed).toBe(true)
   const undoStackBefore = await frame.locator('body').evaluate(() => {
     const inner = (window as any).vditor.vditor
-    return inner.undo.ir.undoStack.length as number
+    return (
+      (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo.ir.undoStack.length
+    ) as number
   })
   const edited = COMPLEX.replace(TARGET, `${TARGET}X`)
   await workbox.keyboard.type('X')
@@ -221,7 +225,11 @@ test('complexity-aware IR seed stays off for small docs and ready before complex
       () =>
         frame.locator('body').evaluate(() => {
           const inner = (window as any).vditor.vditor
-          return inner.undo.ir.undoStack.length as number
+          return (
+            (globalThis as any).__vmdeUnitHistory?.holds(inner)
+              ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+              : inner.undo.ir.undoStack.length
+          ) as number
         }),
       { timeout: 30_000 },
     )

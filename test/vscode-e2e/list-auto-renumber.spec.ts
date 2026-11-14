@@ -119,7 +119,9 @@ test('drag-moving an ordered item renumbers the local roots as one undoable edit
         selection.addRange(movedRange)
         resolve({
           scrollTop,
-          undoLength: inner.undo.ir.undoStack.length as number,
+          undoLength: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+            ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+            : inner.undo.ir.undoStack.length) as number,
         })
       }),
     )
@@ -148,7 +150,9 @@ test('drag-moving an ordered item renumbers the local roots as one undoable edit
       bridgeCount: (outer.getValue() as string).split(
         'Bridge paragraph stays byte-identical.',
       ).length,
-      undoLength: inner.undo.ir.undoStack.length as number,
+      undoLength: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo.ir.undoStack.length) as number,
     }
   })
   expect(state.anchorText).toContain('alpha')
@@ -160,7 +164,11 @@ test('drag-moving an ordered item renumbers the local roots as one undoable edit
     .poll(async () => {
       return frame.locator('body').evaluate(() => {
         const inner = (window as any).vditor.vditor
-        return inner.undo.ir.undoStack.length as number
+        return (
+          (globalThis as any).__vmdeUnitHistory?.holds(inner)
+            ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+            : inner.undo.ir.undoStack.length
+        ) as number
       })
     })
     .toBeGreaterThan(before.undoLength)

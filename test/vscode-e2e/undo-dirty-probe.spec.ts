@@ -35,8 +35,11 @@ test('undo-to-start dirty probe', async ({ workbox, evaluateInVSCode }) => {
     const editor = (window as any).vditor
     const originalSetValue = editor.setValue.bind(editor)
     ;(window as any).__undoDirtySetValueCalls = 0
-    ;(window as any).__undoDirtyInitialStack =
-      editor.vditor.undo[editor.getCurrentMode()].undoStack.length
+    ;(window as any).__undoDirtyInitialStack = (
+      globalThis as any
+    ).__vmdeUnitHistory?.holds(editor.vditor)
+      ? (globalThis as any).__vmdeUnitHistory.depth(editor.vditor).undo
+      : editor.vditor.undo[editor.getCurrentMode()].undoStack.length
     editor.setValue = (...args: unknown[]) => {
       ;(window as any).__undoDirtySetValueCalls++
       return originalSetValue(...args)
@@ -91,7 +94,9 @@ test('undo-to-start dirty probe', async ({ workbox, evaluateInVSCode }) => {
       frame.locator('body').evaluate(() => {
         const editor = (window as any).vditor
         return (
-          editor.vditor.undo[editor.getCurrentMode()].undoStack.length >
+          ((globalThis as any).__vmdeUnitHistory?.holds(editor.vditor)
+            ? (globalThis as any).__vmdeUnitHistory.depth(editor.vditor).undo
+            : editor.vditor.undo[editor.getCurrentMode()].undoStack.length) >
           (window as any).__undoDirtyInitialStack
         )
       }),

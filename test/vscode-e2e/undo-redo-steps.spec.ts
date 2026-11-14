@@ -65,7 +65,9 @@ test('type → undo → redo round-trips the document', async ({
   const initialUndoStackLength = await frame.locator('body').evaluate(() => {
     const inner = (window as unknown as { vditor: { vditor: any } }).vditor
       .vditor
-    return inner.undo[inner.currentMode].undoStack.length
+    return (globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : inner.undo[inner.currentMode].undoStack.length
   })
 
   // Caret at the end of CARET-ANCHOR, type the marker.
@@ -98,7 +100,9 @@ test('type → undo → redo round-trips the document', async ({
       frame.locator('body').evaluate(() => {
         const inner = (window as unknown as { vditor: { vditor: any } }).vditor
           .vditor
-        return inner.undo[inner.currentMode].undoStack.length
+        return (globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo[inner.currentMode].undoStack.length
       }),
     )
     .toBeGreaterThan(initialUndoStackLength)
@@ -204,7 +208,9 @@ test('type → undo → redo round-trips the document', async ({
         frame.locator('body').evaluate(() => {
           const inner = (window as unknown as { vditor: { vditor: any } })
             .vditor.vditor
-          return inner.undo[inner.currentMode].undoStack.length
+          return (globalThis as any).__vmdeUnitHistory?.holds(inner)
+            ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+            : inner.undo[inner.currentMode].undoStack.length
         }),
       )
       .toBeGreaterThanOrEqual(1)
@@ -257,7 +263,9 @@ test('type → undo → redo round-trips the document', async ({
     const stackLength = await frame.locator('body').evaluate(() => {
       const inner = (window as unknown as { vditor: { vditor: any } }).vditor
         .vditor
-      return inner.undo[inner.currentMode].undoStack.length
+      return (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode].undoStack.length
     })
     await frame
       .locator(rootSelector)
@@ -272,7 +280,9 @@ test('type → undo → redo round-trips the document', async ({
         frame.locator('body').evaluate(() => {
           const inner = (window as unknown as { vditor: { vditor: any } })
             .vditor.vditor
-          return inner.undo[inner.currentMode].undoStack.length
+          return (globalThis as any).__vmdeUnitHistory?.holds(inner)
+            ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+            : inner.undo[inner.currentMode].undoStack.length
         }),
       )
       .toBeGreaterThan(stackLength)

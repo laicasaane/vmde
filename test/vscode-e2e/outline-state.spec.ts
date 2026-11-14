@@ -174,7 +174,10 @@ const webviewState = (frame: Frame) =>
     return {
       mode: inner.currentMode,
       value: outer.vditor.getValue(),
-      undoDepth: inner.undo[inner.currentMode]?.undoStack.length ?? -1,
+      // Task 004: the unit engine keeps IR history outside Vditor's slots.
+      undoDepth: (window as any).__vmdeUnitHistory?.holds(inner)
+        ? (window as any).__vmdeUnitHistory.depth(inner).undo
+        : (inner.undo[inner.currentMode]?.undoStack.length ?? -1),
       // The caret as a character offset inside its block: the text node holding it may be split
       // or merged by a re-render without the caret moving.
       caret: (() => {

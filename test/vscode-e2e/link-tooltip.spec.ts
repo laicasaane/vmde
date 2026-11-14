@@ -278,7 +278,8 @@ async function expectTooltip(
     shown.box !== null && shown.native !== null,
     `${pane} ${name}: box and native title together ${JSON.stringify(shown)}`,
   ).toBe(false)
-  const own = NATIVE_ONLY.has(name) || (pane === 'wysiwyg' && name in WYSIWYG_OWN_TITLE)
+  const own =
+    NATIVE_ONLY.has(name) || (pane === 'wysiwyg' && name in WYSIWYG_OWN_TITLE)
   expect(
     shown.box === null,
     `${pane} ${name}: ${own ? 'native' : 'hover box'} expected ${JSON.stringify(shown)}`,
@@ -314,7 +315,10 @@ async function state(
     const inner = vditor.vditor
     const selection = getSelection()
     return {
-      undo: inner.undo[inner.currentMode]?.undoStack.length ?? -1,
+      undo:
+        ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo[inner.currentMode]?.undoStack.length) ?? -1,
       value: vditor.getValue(),
       caret: {
         text: selection?.anchorNode?.textContent ?? null,

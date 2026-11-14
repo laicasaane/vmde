@@ -5,6 +5,7 @@
 // re-inits from host messages); state that's purely internal to this lifecycle
 // (the observer registry) stays local to this module.
 import type { InitPayload } from './init-payload'
+import type { VsCodeApi } from '../../../src/shared/protocol'
 import { configureE2EReadiness } from '../testing/e2e-readiness'
 import Vditor from 'vditor/src/index'
 import { d2ConfigFromOptions, setD2Config } from '../diagram-kit/d2-config'
@@ -172,25 +173,31 @@ function shadowGuard<T>(session: ModelSession, call: () => T): T | undefined {
 
 // Requests that make the host write by itself (rule 4.1 of the delta protocol): the model awaits
 // their outcome. Their posts live in three feature modules that do not know the session, so the one
-// shared post function is observed instead; each api object is wrapped once.
+// shared post function is observed instead. VS Code's `acquireVsCodeApi()` object is frozen, so its
+// `postMessage` cannot be replaced: `window.vscode` becomes a wrapper, built once per api object,
+// that forwards every member to the original. Every post reads the `vscode` global at call time.
 const HOST_WRITE_REQUESTS = new Set([
   'apply-block-action',
   'apply-outline-section-move',
   'toggle-preview-task-checkbox',
 ])
-const observedApis = new WeakSet<object>()
+const hostWriteWrappers = new WeakSet<object>()
 function observeHostWriteRequests(): void {
   const api = window.vscode
-  if (!api || observedApis.has(api)) return
-  observedApis.add(api)
-  const post = api.postMessage.bind(api)
-  api.postMessage = (message) => {
-    if (HOST_WRITE_REQUESTS.has(message.command)) {
-      const session = sessionState.modelSession
-      if (session) shadowGuard(session, () => session.onHostWriteRequested())
-    }
-    post(message)
+  if (!api || hostWriteWrappers.has(api)) return
+  const wrapper: VsCodeApi = {
+    postMessage: (message) => {
+      if (HOST_WRITE_REQUESTS.has(message.command)) {
+        const session = sessionState.modelSession
+        if (session) shadowGuard(session, () => session.onHostWriteRequested())
+      }
+      api.postMessage(message)
+    },
+    getState: <T>() => api.getState<T>(),
+    setState: <T>(state: T) => api.setState(state),
   }
+  hostWriteWrappers.add(wrapper)
+  window.vscode = wrapper
 }
 
 /**

@@ -361,7 +361,11 @@ test('non-collapsed cut and recurring Backspace stay exact in a generated large 
     .poll(() =>
       frame.locator('body').evaluate(() => {
         const inner = (window as any).vditor.vditor
-        return inner.undo?.ir?.undoStack?.length ?? 0
+        return (
+          ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+            ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+            : inner.undo?.ir?.undoStack?.length) ?? 0
+        )
       }),
     )
     .toBeGreaterThan(0)

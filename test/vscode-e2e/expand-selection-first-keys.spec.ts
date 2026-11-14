@@ -75,8 +75,12 @@ function undoStacksInPage() {
   const inner = (window as any).vditor.vditor
   const history = inner.undo?.[inner.currentMode]
   return {
-    undo: (history?.undoStack?.length ?? -1) as number,
-    redo: (history?.redoStack?.length ?? -1) as number,
+    undo: (((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : history?.undoStack?.length) ?? -1) as number,
+    redo: (((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+      : history?.redoStack?.length) ?? -1) as number,
   }
 }
 

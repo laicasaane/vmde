@@ -167,7 +167,14 @@ const stackLength = (frame: Frame) =>
   frame
     .locator('body')
     .evaluate(
-      () => (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+      () =>
+        ((globalThis as any).__vmdeUnitHistory?.holds(
+          (window as any).vditor.vditor,
+        )
+          ? (globalThis as any).__vmdeUnitHistory.depth(
+              (window as any).vditor.vditor,
+            ).undo
+          : (window as any).vditor.vditor.undo.ir.undoStack.length) as number,
     )
 
 // A direct read outside a history step: the fast read against getValue on the same DOM.

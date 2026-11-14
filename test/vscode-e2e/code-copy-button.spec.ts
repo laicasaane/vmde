@@ -142,7 +142,9 @@ const webviewState = (frame: Frame, mode: Mode): Promise<WebviewState> =>
       blocks: [
         ...(root?.querySelectorAll('[data-type="code-block"]') ?? []),
       ].map((block) => block.outerHTML),
-      undo: inner.undo[inner.currentMode].undoStack.length,
+      undo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode].undoStack.length,
     }
   }, mode)
 

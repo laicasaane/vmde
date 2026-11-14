@@ -320,7 +320,10 @@ function installProbe(_body: Element, ch: string): boolean {
       return original.apply(this, args)
     }
   }
-  const depth = () => undo[inner.currentMode].undoStack.length as number
+  const depth = () =>
+    ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : undo[inner.currentMode].undoStack.length) as number
   const add = undo.addToUndoStack
   undo.addToUndoStack = function (...args: unknown[]) {
     const before = depth()
@@ -358,8 +361,12 @@ function readLive(_body: Element, ch: string) {
     keyList: w.__t625.keys as { key: string; ctrl: boolean; t: number }[],
     engine: w.__t625.engine as number,
     entries: (w.__t625.entries as unknown[]).length,
-    depth: slot.undoStack.length as number,
-    redoDepth: slot.redoStack.length as number,
+    depth: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : slot.undoStack.length) as number,
+    redoDepth: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+      : slot.redoStack.length) as number,
     armed:
       !!pending?.options?.enableAddUndoStack && !!pending.options.enableInput,
     value: w.vditor.getValue() as string,

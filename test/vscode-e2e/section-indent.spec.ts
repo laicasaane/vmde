@@ -205,6 +205,8 @@ const undoDepth = (frame: Frame) =>
       }
     ).vditor?.vditor
     const mode = inner?.currentMode
+    if ((globalThis as any).__vmdeUnitHistory?.holds(inner))
+      return (globalThis as any).__vmdeUnitHistory.depth(inner).undo as number
     return mode ? (inner?.undo?.[mode]?.undoStack?.length ?? -1) : -1
   })
 

@@ -575,3 +575,43 @@ describe('initVditor input: exact history replay (Task 685)', () => {
     )
   })
 })
+
+describe('initVditor host-write requests with a frozen api object (Task 733)', () => {
+  const saved = (window as any).vscode
+  afterEach(() => {
+    ;(window as any).vscode = saved
+    ;(window as any).vditor = undefined
+    sessionState.editSync = null
+  })
+
+  it('signals each host-write request once and forwards every message unchanged', () => {
+    const post = vi.fn()
+    const getState = vi.fn(() => ({ kept: 1 }))
+    const setState = vi.fn((state: unknown) => state)
+    const frozen = Object.freeze({ postMessage: post, getState, setState })
+    ;(window as any).vscode = frozen
+    initVditor({ content: '# a', theme: 'dark', options: {} } as never)
+    const session = sessionState.modelSession
+    expect(session).toBeTruthy()
+    const signal = vi.spyOn(session as never, 'onHostWriteRequested' as never)
+    const wrapper = window.vscode
+    expect(wrapper).not.toBe(frozen)
+
+    const write = { command: 'toggle-preview-task-checkbox', requestId: 'r1' }
+    const other = { command: 'log', text: 'x' }
+    wrapper.postMessage(write as never)
+    wrapper.postMessage(other as never)
+
+    expect(signal).toHaveBeenCalledTimes(1)
+    expect(post).toHaveBeenCalledTimes(2)
+    expect(post.mock.calls[0][0]).toBe(write)
+    expect(post.mock.calls[1][0]).toBe(other)
+    expect(wrapper.getState()).toEqual({ kept: 1 })
+    expect(wrapper.setState({ s: 2 })).toEqual({ s: 2 })
+    expect(setState).toHaveBeenCalledWith({ s: 2 })
+
+    // A re-init keeps the one wrapper rather than wrapping it again.
+    initVditor({ content: '# a', theme: 'dark', options: {} } as never)
+    expect(window.vscode).toBe(wrapper)
+  })
+})

@@ -178,7 +178,13 @@ async function activeUndoLength(frame: Frame, mode: 'ir') {
     .locator('body')
     .evaluate(
       (_body, m) =>
-        (window as any).vditor.vditor.undo?.[m]?.undoStack?.length ?? 0,
+        (globalThis as any).__vmdeUnitHistory?.holds(
+          (window as any).vditor.vditor,
+        )
+          ? (globalThis as any).__vmdeUnitHistory.depth(
+              (window as any).vditor.vditor,
+            ).undo
+          : ((window as any).vditor.vditor.undo?.[m]?.undoStack?.length ?? 0),
       mode,
     )
 }

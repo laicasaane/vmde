@@ -94,7 +94,10 @@ const state = (frame: Frame) =>
       hasIrRange: !!inner.ir.range,
       value: outer.vditor.getValue(),
       delivered: outer.__task600Input ?? [],
-      undoStackLength: inner.undo[inner.currentMode]?.undoStack.length ?? 0,
+      undoStackLength:
+        ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo[inner.currentMode]?.undoStack.length) ?? 0,
       setupTrace,
       undoCheckpointCalls: setupTrace.filter(
         (event) => event.kind === 'undoCheckpoint',
@@ -122,7 +125,9 @@ async function installSetupTrace(frame: Frame) {
     target.__task600Trace = trace
     target.__task600TraceOwner = inner.undo
     const stackLength = () =>
-      inner.undo[inner.currentMode]?.undoStack.length ?? 0
+      ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode]?.undoStack.length) ?? 0
     const originalCheckpoint = inner.undo.addToUndoStack.bind(inner.undo)
     inner.undo.addToUndoStack = (...args: unknown[]) => {
       trace.push({
@@ -493,7 +498,11 @@ test('T1 XTEST blockless caret legs (a)-(f) in one VS Code boot', async ({
             const checkpointStart = (window as any).__task600Trace.filter(
               (event: SetupEvent) => event.kind === 'undoCheckpoint',
             ).length
-            const undoStackLength = vditor.vditor.undo.ir.undoStack.length
+            const irUndoDepth = (inner: typeof vditor.vditor): number =>
+              (globalThis as any).__vmdeUnitHistory?.holds(inner)
+                ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+                : inner.undo.ir.undoStack.length
+            const undoStackLength = irUndoDepth(vditor.vditor)
             const delivered = requestCaret({ node: text, offset: 0 })
             document.dispatchEvent(new Event('selectionchange'))
             return { delivered, checkpointStart, undoStackLength }

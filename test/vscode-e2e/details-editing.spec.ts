@@ -153,7 +153,11 @@ test('details toggle in real edit modes and native Preview without changing sour
   const undoLength = () =>
     frame.locator('body').evaluate(() => {
       const inner = (window as any).vditor.vditor
-      return inner.undo[inner.currentMode].undoStack.length as number
+      return (
+        (globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo[inner.currentMode].undoStack.length
+      ) as number
     })
   const beforeSnippetUndo = await undoLength()
   await frame.locator('.vditor-sv').click({ position: { x: 10, y: 10 } })

@@ -356,7 +356,10 @@ test('IR caret inside a link: revealed source look is kept; caret, dirty state a
           text: sel.anchorNode?.textContent ?? null,
           offset: sel.anchorOffset,
         },
-        undo: v?.undo?.[v.currentMode]?.undoStack?.length ?? -1,
+        undo:
+          ((globalThis as any).__vmdeUnitHistory?.holds(v)
+            ? (globalThis as any).__vmdeUnitHistory.depth(v).undo
+            : v?.undo?.[v.currentMode]?.undoStack?.length) ?? -1,
         value: (window as any).vditor.getValue() as string,
       }
     }, pane)

@@ -125,7 +125,9 @@ async function installTrace(frame: Frame) {
     }
     const trace: TraceEvent[] = []
     const stackLength = () =>
-      inner.undo[inner.currentMode]?.undoStack.length ?? 0
+      ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode]?.undoStack.length) ?? 0
     target.__task609Trace = trace
     target.__task609Input = []
     const originalCheckpoint = inner.undo.addToUndoStack.bind(inner.undo)
@@ -193,7 +195,10 @@ const snapshot = (frame: Frame) =>
       focused: document.activeElement === root,
       value: target.vditor.getValue(),
       delivered: [...target.__task609Input],
-      undoStackLength: inner.undo[inner.currentMode]?.undoStack.length ?? 0,
+      undoStackLength:
+        ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo[inner.currentMode]?.undoStack.length) ?? 0,
       trace: [...target.__task609Trace],
       traceLive:
         inner.undo === target.__task609UndoOwner &&

@@ -97,8 +97,12 @@ async function historyIdentity(frame: Frame): Promise<HistoryIdentity> {
     )
     const digest = await crypto.subtle.digest('SHA-256', bytes)
     return {
-      undo: history.undoStack.length,
-      redo: history.redoStack.length,
+      undo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : history.undoStack.length,
+      redo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+        : history.redoStack.length,
       sha256: Array.from(new Uint8Array(digest), (n) =>
         n.toString(16).padStart(2, '0'),
       ).join(''),

@@ -154,6 +154,8 @@ export const undoDepth = (frame: Frame) =>
       }
     ).vditor?.vditor
     const slot = inner?.undo?.[inner.currentMode]
+    if ((globalThis as any).__vmdeUnitHistory?.holds(inner))
+      return (globalThis as any).__vmdeUnitHistory.depth(inner).undo as number
     return slot?.undoStack?.length ?? 0
   })
 

@@ -76,6 +76,10 @@ const probe = (frame: Frame): Promise<Probe> =>
       }
     }
     const inner = outer.vditor.vditor
+    const irDepth = (v: typeof inner): { undo: number; redo: number } =>
+      (globalThis as any).__vmdeUnitHistory?.holds(v)
+        ? (globalThis as any).__vmdeUnitHistory.depth(v)
+        : { undo: v.undo.ir.undoStack.length, redo: v.undo.ir.redoStack.length }
     const root = inner.ir.element
     const selection = getSelection()
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null
@@ -108,8 +112,7 @@ const probe = (frame: Frame): Promise<Probe> =>
           node.nodeType === Node.TEXT_NODE && (node as Text).data.trim() !== '',
       ).length,
       tocBlocks: root.querySelectorAll('.vditor-toc').length,
-      undo: inner.undo.ir.undoStack.length,
-      redo: inner.undo.ir.redoStack.length,
+      ...irDepth(inner),
       // The last history checkpoint without its caret marker and expand classes: two checkpoints
       // that differ only in the caret hold the same source (undo-boundaries.ts withoutCaret).
       historySource: inner.undo.ir.lastText

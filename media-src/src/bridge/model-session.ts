@@ -46,14 +46,6 @@ interface HostWriteOutcome {
   epoch?: number
 }
 
-/** Off reasons that last until a new host text arrives (the model could not be built for this document). */
-const PERMANENT_OFF: ReadonlySet<string> = new Set([
-  'scan-declined',
-  'pairing-failed',
-  'unit-without-kind',
-  'sync-error',
-])
-
 /** Quiet time after the last delta before the proof queues are rebuilt. */
 const RESTART_QUIET_MS = 250
 
@@ -514,10 +506,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     root: () => deps.getRoot() ?? undefined,
     drain: () => dom?.drain(),
     ready: () => live() && deps.getMode() === 'ir' && !awaitingNow() && !stale,
-    // A model that is off for one of these reasons never comes back by itself: it observes nothing,
-    // so the unit engine could not capture an edit and Undo would do nothing. A transient off
-    // (`not-mounted` during a rebuild, `mode`) keeps the unit engine, so the engines never alternate.
-    claimable: () => !(!live() && PERMANENT_OFF.has(offReason)),
+    // A model that is off observes nothing, so the unit engine could not capture an edit and its Undo
+    // would do nothing: the old engine holds the history then (an IR re-entry before the first post's
+    // answer, a deferred edit view before its build, a permanent off). Only a rebuild over the same
+    // DOM keeps the unit engine: what is pending is held as one step of the next capture (`hold`).
+    claimable: () => live() || buildFrame !== undefined,
     vditor: () =>
       (win as unknown as { vditor?: { vditor?: unknown } }).vditor?.vditor,
   })
@@ -850,6 +843,9 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
 
   const session: ModelSession = {
     onHostText(text, epoch, options) {
+      // The answer to a host write this webview asked for (a Preview checkbox toggle) arrives as a
+      // host text: read before the reset below.
+      const answersWrite = awaitingWrite && live()
       host = { text: normalizeEol(text), epoch }
       modeReentry = false
       awaited = undefined
@@ -863,8 +859,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         return
       }
       confirmed = false
-      // The text behind every capture so far is gone.
-      capture.invalidate()
+      // The text behind every capture so far is gone, unless this answers a requested host write
+      // whose rewrite a checkpoint already captured: that capture matches the DOM and the text, so
+      // it stays restorable, as after an outline move (`onHostWriteOutcome`). A rewrite left pending
+      // is an update no checkpoint took (an outside change in place of the answer).
+      if (!answersWrite || capture.port.pending()) capture.invalidate()
       // The DOM is about to be (or was) rebuilt by `setValue`; with no complete edit DOM there is
       // nothing to build yet and `onEditDomComplete()` will.
       if (domComplete) buildSoon()

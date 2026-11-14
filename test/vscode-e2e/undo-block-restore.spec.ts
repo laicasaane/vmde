@@ -353,8 +353,14 @@ async function typeThenUndoRedo(
     .locator('body')
     .evaluate(
       (_b, m) =>
-        (window as any).vditor.vditor.undo[m as string].undoStack
-          .length as number,
+        ((globalThis as any).__vmdeUnitHistory?.holds(
+          (window as any).vditor.vditor,
+        )
+          ? (globalThis as any).__vmdeUnitHistory.depth(
+              (window as any).vditor.vditor,
+            ).undo
+          : (window as any).vditor.vditor.undo[m as string].undoStack
+              .length) as number,
       mode,
     )
   await workbox.keyboard.type(TYPED, { delay: 40 })
@@ -366,8 +372,14 @@ async function typeThenUndoRedo(
           .locator('body')
           .evaluate(
             (_b, m) =>
-              (window as any).vditor.vditor.undo[m as string].undoStack
-                .length as number,
+              ((globalThis as any).__vmdeUnitHistory?.holds(
+                (window as any).vditor.vditor,
+              )
+                ? (globalThis as any).__vmdeUnitHistory.depth(
+                    (window as any).vditor.vditor,
+                  ).undo
+                : (window as any).vditor.vditor.undo[m as string].undoStack
+                    .length) as number,
             mode,
           ),
       { timeout: 20_000, message: `${mode} edit recorded` },

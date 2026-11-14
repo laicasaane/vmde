@@ -5,7 +5,7 @@ import {
 } from 'vditor/src/ts/toolbar/setToolbar'
 import type { HistoryModelPort } from '../util/unit-changes'
 import { logToHost } from '../util/webview-log'
-import { requestCaret } from './caret'
+import { invalidateCaret, requestCaret } from './caret'
 import {
   type AmendResult,
   type HistoryEntryToken,
@@ -16,6 +16,10 @@ import {
   reportUnitEntry,
   type UnitHistoryDelegate,
 } from './history-store'
+import {
+  hasRewrapDocumentHistoryTransition,
+  moveRewrapDocumentHistory,
+} from './rewrap-command'
 
 // Task 733 (task 004): the unit history engine for IR. An entry holds the capture of the units that
 // changed between two checkpoints (bridge/unit-capture.ts), the caret before and after, and the
@@ -50,6 +54,8 @@ interface UnitHistoryHook {
    * record ran). The end-to-end specs wait for it where they waited for Vditor's initial snapshot.
    */
   settled(vditor: unknown): boolean
+  /** The depth of the stacks in the form Vditor's slots have (the base counts as one Undo entry); a read for the end-to-end specs. */
+  depth(vditor: unknown): { undo: number; redo: number }
 }
 
 declare global {
@@ -105,11 +111,21 @@ type Vditor = {
     vmdeAfterRender?: unknown
   }
   undo: Record<string, any>
-  toolbar?: { elements: Record<string, HTMLElement> }
+  toolbar?: { elements: Record<string, HTMLElement>; element?: HTMLElement }
   hint?: unknown
 }
 
 const token = <T>(): T => Object.freeze({}) as unknown as T
+
+/** The old engine's IR slot holds an entry above its base, or a Redo entry. */
+const oldHolds = (vditor: Vditor): boolean => {
+  const slot = vditor.undo?.ir as
+    | { undoStack?: unknown[]; redoStack?: unknown[] }
+    | undefined
+  return (
+    (slot?.undoStack?.length ?? 0) > 1 || (slot?.redoStack?.length ?? 0) > 0
+  )
+}
 
 const samePoint = (a: Point, b: Point): boolean => {
   if ('node' in a || 'node' in b) {
@@ -181,6 +197,37 @@ function pointOf(
   return point
 }
 
+/**
+ * The caret a checkpoint puts back through the caret authority, as Vditor's patched `addCaret` did at
+ * every `addToUndoStack` (`patchUndoCaretSplitRestore`): a selection keeps both ordered endpoints and a
+ * collapsed caret its block position, re-asserted until it can be painted. Commands rely on it: a
+ * checkpoint before a `setValue` keeps the caret where it was, and one after keeps a directional
+ * selection that a decoration pass detaches. A collapsed caret in an element container was written
+ * back once and armed nothing; the unit engine writes no marker, so that caret needs nothing. Nothing
+ * is armed while the toolbar holds the focus.
+ */
+function checkpointCaret(vditor: Vditor): CaretIntent | undefined {
+  const root = vditor.ir?.element
+  const selection = window.getSelection()
+  if (!root || !selection || selection.rangeCount === 0) return undefined
+  if (vditor.toolbar?.element?.contains(document.activeElement))
+    return undefined
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.startContainer)) return undefined
+  if (
+    range.collapsed &&
+    range.startContainer.nodeType === Node.ELEMENT_NODE &&
+    !(
+      range.startOffset <= 1 &&
+      (range.startContainer.firstChild as Element | null)?.classList?.contains(
+        'vditor-ir__marker',
+      )
+    )
+  )
+    return undefined
+  return caretNow(vditor)
+}
+
 /** The live selection as a caret intent, never a `<wbr>` marker in the DOM. */
 function caretNow(vditor: Vditor): CaretIntent | undefined {
   const selection = window.getSelection()
@@ -247,6 +294,35 @@ export function installUnitHistory(
     IR_HISTORY_ENGINE === 'unit' &&
     deps.port()?.claimable() === true
 
+  /**
+   * Another engine held the history in between (a mode switch, a rebuild without a model): what this
+   * one kept describes a DOM that is gone. Vditor's IR slot is reset when it takes over again.
+   */
+  const handOver = (vditor: Vditor, state: State, value: boolean): void => {
+    drop(state)
+    if (!value && state.claimed && vditor.undo?.ir) {
+      vditor.undo.ir = {
+        hasUndo: false,
+        lastText: '',
+        redoStack: [],
+        undoStack: [],
+      }
+    }
+    const took = value && !state.claimed
+    state.claimed = value
+    // The old engine had taken its base (Vditor's initial record) before the model was live: the
+    // unit engine starts its history here, as that record would have started it.
+    if (took && (vditor.undo?.ir?.undoStack?.length ?? 0) > 0) {
+      createBase(vditor, state)
+      report(
+        vditor,
+        state,
+        (state.base as NonNullable<State['base']>).token,
+        true,
+      )
+    }
+  }
+
   const claims = (raw: unknown): boolean => {
     const vditor = raw as Vditor
     const value = holds(vditor)
@@ -254,18 +330,10 @@ export function installUnitHistory(
     if (state.claimed === undefined) {
       state.claimed = value
     } else if (state.claimed !== value) {
-      // Another engine held the history in between (a mode switch, a rebuild without a model): what
-      // this one kept describes a DOM that is gone. Vditor's IR slot is reset when it takes over again.
-      drop(state)
-      if (!value && state.claimed && vditor.undo?.ir) {
-        vditor.undo.ir = {
-          hasUndo: false,
-          lastText: '',
-          redoStack: [],
-          undoStack: [],
-        }
-      }
-      state.claimed = value
+      // The old engine keeps a history it recorded while the model could not capture (an IR re-entry,
+      // a deferred build): the unit engine takes over once that history holds nothing to undo.
+      if (value && oldHolds(vditor)) return false
+      handOver(vditor, state, value)
     }
     return value
   }
@@ -344,6 +412,11 @@ export function installUnitHistory(
         true,
       )
     } else {
+      // A checkpoint with no change (before an action, after a caret move): the next entry starts at
+      // the caret it found, so its Undo puts the caret where the action began.
+      const caret = caretNow(vditor)
+      if (caret && !sameIntent(caret, state.open.caret))
+        state.open = { ...state.open, caret }
       return
     }
     resetIcon(vditor)
@@ -367,7 +440,16 @@ export function installUnitHistory(
     kind: 'undo' | 'redo',
   ): void => {
     const caret = kind === 'undo' ? entry.caretBefore : entry.caretAfter
-    if (caret) requestCaret(caret as Parameters<typeof requestCaret>[0])
+    // One placement, as Vditor's marker restore made: the restored DOM is complete when this runs.
+    // An intent left armed would rewrite every later selection that is not a user gesture (a
+    // selection set by a command or a test) for up to five seconds; it stays armed only when the
+    // placement found no position yet.
+    if (caret && requestCaret(caret as Parameters<typeof requestCaret>[0]))
+      invalidateCaret()
+    // An exact action's record (`recordRewrapDocumentHistory`) moves with the history, as the
+    // replay after Vditor's own Undo moved it; left behind, it would decline every source proof.
+    if (hasRewrapDocumentHistoryTransition(vditor as never))
+      moveRewrapDocumentHistory(vditor as never)
     // A history delta always carries steps >= 1 (the host refuses 0): an entry that only whole-text
     // posts covered, or one from another epoch, asks the host to walk one step.
     const steps = entry.epoch === deps.epoch() ? Math.max(1, entry.steps) : 1
@@ -381,6 +463,13 @@ export function installUnitHistory(
     state.revision += 1
     resetIcon(vditor)
     if (vditor.hint) hidePanel(vditor as never, ['hint'])
+  }
+
+  /** A checkpoint re-asserts the caret it found (see `checkpointCaret`). */
+  const rearmCaret = (vditor: Vditor): void => {
+    if (!deps.port()) return
+    const caret = checkpointCaret(vditor)
+    if (caret) requestCaret(caret as Parameters<typeof requestCaret>[0])
   }
 
   /** Undo and Redo do nothing in a read-only root or during a composition. */
@@ -446,6 +535,14 @@ export function installUnitHistory(
   const hook: UnitHistoryHook = {
     claims,
     holds: (vditor) => holds(vditor as Vditor),
+    depth: (raw) => {
+      const state = states.get(raw as object)
+      if (!state) return { undo: 0, redo: 0 }
+      return {
+        undo: (state.base ? 1 : 0) + state.undo.length,
+        redo: state.redo.length,
+      }
+    },
     settled: (raw) => {
       const vditor = raw as Vditor
       // The base is created by Vditor's initial `addToUndoStack`, the moment the old engine took its
@@ -458,7 +555,10 @@ export function installUnitHistory(
     },
     undo: (vditor) => move(vditor, 'undo'),
     redo: (vditor) => move(vditor, 'redo'),
-    record,
+    record(raw) {
+      record(raw)
+      rearmCaret(raw as Vditor)
+    },
     recordFirstPosition(raw, event) {
       const vditor = raw as Vditor
       if (vditor.ir?.composingLock) return
@@ -468,7 +568,13 @@ export function installUnitHistory(
         return
       }
       void event
-      if (state.undo.length === 0 && state.redo.length === 0) {
+      // Vditor's own rule: the base caret moves only while the DOM still equals the base, so the keys
+      // of a first edit after the first one leave the caret where that edit started.
+      if (
+        state.undo.length === 0 &&
+        state.redo.length === 0 &&
+        deps.port()?.pending() === false
+      ) {
         state.base.caret = caretNow(vditor)
         state.open = { ...state.open, caret: state.base.caret }
       }

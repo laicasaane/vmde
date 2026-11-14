@@ -499,7 +499,9 @@ test('direct Undo and Redo keep their complete tooltips and apply host-document 
     frame.locator('body').evaluate(() => {
       const inner = (window as unknown as { vditor: { vditor: any } }).vditor
         .vditor
-      return inner.undo[inner.currentMode].undoStack.length
+      return (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode].undoStack.length
     })
   await expect.poll(undoStackLength).toBeGreaterThan(0)
   const initialUndoStackLength = await undoStackLength()

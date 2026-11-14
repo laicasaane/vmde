@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { historyStoreOf } from './history-store'
-import { requestCaret } from './caret'
+import { invalidateCaret, requestCaret } from './caret'
+import {
+  hasRewrapDocumentHistoryTransition,
+  recordRewrapDocumentHistory,
+} from './rewrap-command'
 import { installUnitHistory } from './unit-history'
 import type { HistoryCapture } from '../util/unit-changes'
 
@@ -21,6 +25,7 @@ vi.mock('./history-store', async (original) => ({
 vi.mock('./caret', async (original) => ({
   ...(await original<typeof import('./caret')>()),
   requestCaret: vi.fn(() => true),
+  invalidateCaret: vi.fn(),
 }))
 
 interface Hook {
@@ -32,6 +37,7 @@ interface Hook {
   clear(vditor: unknown): void
   resetIcon(vditor: unknown): void
   seedBaseline(vditor: unknown, event?: Event): boolean
+  settled(vditor: unknown): boolean
 }
 const hookOf = () =>
   (window as unknown as { __vmdeUnitHistory: Hook }).__vmdeUnitHistory
@@ -123,6 +129,7 @@ function rig(options: { port?: boolean } = {}) {
 beforeEach(() => {
   engine.value = 'unit'
   vi.mocked(requestCaret).mockClear()
+  vi.mocked(invalidateCaret).mockClear()
 })
 afterEach(() => {
   uninstall?.()
@@ -396,12 +403,76 @@ describe('drops', () => {
 })
 
 describe('caret', () => {
+  // DR (selection-bubble): an intent left armed rewrote a later selection set by a command for up to
+  // five seconds, so Turn Into acted on the paragraph Redo had selected.
+  it('Undo and Redo place the caret once and leave no intent armed', () => {
+    const r = rig()
+    r.caretAt(0, 0)
+    r.record()
+    r.caretAt(1, 3)
+    r.record(cap('A'))
+    vi.mocked(invalidateCaret).mockClear()
+    r.hook.undo(r.vditor)
+    expect(invalidateCaret).toHaveBeenCalledTimes(1)
+    expect(
+      vi.mocked(invalidateCaret).mock.invocationCallOrder[0],
+    ).toBeGreaterThan(
+      vi.mocked(requestCaret).mock.invocationCallOrder.at(-1) ?? 0,
+    )
+    r.hook.redo(r.vditor)
+    expect(invalidateCaret).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the intent armed when the placement found no position', () => {
+    const r = rig()
+    r.caretAt(0, 0)
+    r.record()
+    r.caretAt(1, 3)
+    r.record(cap('A'))
+    vi.mocked(requestCaret).mockReturnValueOnce(false)
+    r.hook.undo(r.vditor)
+    expect(invalidateCaret).not.toHaveBeenCalled()
+  })
+
+  // DR (HTML superscript): Vditor's patched checkpoint re-asserted the directional selection through
+  // the caret authority; a decoration pass that detaches the selected text relies on it.
+  it('a checkpoint re-asserts a directional selection through the caret authority', () => {
+    const r = rig()
+    r.record()
+    const text = r.root.querySelectorAll('p')[1].firstChild as Text
+    window.getSelection()?.setBaseAndExtent(text, 3, text, 1)
+    vi.mocked(requestCaret).mockClear()
+    r.record(cap('A'))
+    expect(requestCaret).toHaveBeenCalledTimes(1)
+    expect(requestCaret).toHaveBeenLastCalledWith({
+      anchor: { blockPath: [1], offsetInBlock: 3 },
+      focus: { blockPath: [1], offsetInBlock: 1 },
+    })
+  })
+
+  it('a checkpoint arms nothing while the toolbar holds the focus', () => {
+    const r = rig()
+    r.record()
+    const toolbar = document.createElement('div')
+    const button = document.createElement('button')
+    toolbar.append(button)
+    document.body.append(toolbar)
+    ;(r.vditor.toolbar as { element?: HTMLElement }).element = toolbar
+    button.focus()
+    r.caretAt(1, 2)
+    vi.mocked(requestCaret).mockClear()
+    r.record(cap('A'))
+    expect(requestCaret).not.toHaveBeenCalled()
+  })
+
   it('Undo requests the caret recorded before the entry and Redo the caret after it, after the restore', () => {
     const r = rig()
     r.caretAt(0, 0)
     r.record() // base caret: paragraph 0, offset 0
     r.caretAt(1, 3)
     r.record(cap('A'))
+    // A checkpoint re-asserts its own caret (covered below); only the moves are counted here.
+    vi.mocked(requestCaret).mockClear()
     r.hook.undo(r.vditor)
     expect(requestCaret).toHaveBeenLastCalledWith(
       expect.objectContaining({ blockPath: [0], offsetInBlock: 0 }),
@@ -499,6 +570,82 @@ describe('first position and seed', () => {
     expect(requestCaret).toHaveBeenLastCalledWith(
       expect.objectContaining({ blockPath: [2], offsetInBlock: 1 }),
     )
+  })
+
+  // DR (Turn Into): the caret moved to the target after the typing entry, and the action's first
+  // checkpoint found nothing pending; Undo of the action put the caret back after the typing.
+  it('a checkpoint with no change moves the caret the next entry starts from', () => {
+    const r = rig()
+    r.caretAt(0, 0)
+    r.record()
+    r.caretAt(1, 3)
+    r.record(cap('A')) // the typing entry, caret after it at paragraph 1
+    r.caretAt(2, 1)
+    r.record() // the action's first checkpoint: nothing pending
+    r.record(cap('B')) // the action
+    vi.mocked(requestCaret).mockClear()
+    r.hook.undo(r.vditor)
+    expect(requestCaret).toHaveBeenLastCalledWith(
+      expect.objectContaining({ blockPath: [2], offsetInBlock: 1 }),
+    )
+    // The typing entry keeps the caret it ended with.
+    r.hook.undo(r.vditor)
+    expect(requestCaret).toHaveBeenLastCalledWith(
+      expect.objectContaining({ blockPath: [0], offsetInBlock: 0 }),
+    )
+  })
+
+  // DR (large document Undo caret): the keys of one first edit each called recordFirstPosition, and
+  // the base caret followed the typing, so Undo put the caret after the first typed characters.
+  it('recordFirstPosition leaves the base caret once the DOM has changed since the base', () => {
+    const r = rig()
+    r.caretAt(0, 0)
+    r.record()
+    r.caretAt(2, 1)
+    r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    // The first key changed the DOM; the second key's caret is one character further.
+    r.state.pending = true
+    r.caretAt(2, 2)
+    r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    r.record(cap('A'))
+    vi.mocked(requestCaret).mockClear()
+    r.hook.undo(r.vditor)
+    expect(requestCaret).toHaveBeenLastCalledWith(
+      expect.objectContaining({ blockPath: [2], offsetInBlock: 1 }),
+    )
+  })
+})
+
+// DR (exact actions): an exact action records its bytes for the native Undo
+// (`recordRewrapDocumentHistory`). Vditor's Undo moved the record through its replay; the unit
+// engine posts a history delta, and the record must still move, or every source proof after the
+// Undo declines (`hasRewrapDocumentHistoryTransition` stays true).
+describe('an exact action entry', () => {
+  it('Undo and Redo post history deltas and move the record with the history', () => {
+    const r = rig()
+    r.record()
+    r.record(cap('A'))
+    recordRewrapDocumentHistory({
+      owner: r.vditor as never,
+      mode: 'ir',
+      nativeState: historyStoreOf(r.vditor)?.top() as never,
+      beforeRendered: 'a',
+      beforeExact: 'a',
+      afterRendered: 'b',
+      afterExact: 'b',
+    })
+    r.hook.undo(r.vditor)
+    expect(r.state.published).toEqual([['undo', 1]])
+    expect(hasRewrapDocumentHistoryTransition(r.vditor as never)).toBe(false)
+    r.hook.redo(r.vditor)
+    expect(r.state.published).toEqual([
+      ['undo', 1],
+      ['redo', 1],
+    ])
+    expect(hasRewrapDocumentHistoryTransition(r.vditor as never)).toBe(false)
+    // The record stands on its `after` side again: a second Undo moves it once more.
+    r.hook.undo(r.vditor)
+    expect(hasRewrapDocumentHistoryTransition(r.vditor as never)).toBe(false)
   })
 })
 
@@ -641,6 +788,40 @@ describe('claims while the model is off for a permanent reason', () => {
   })
 })
 
+// DR (IR re-entry, deferred edit view): edits made while the model was off were recorded by the old
+// engine; taking the history over when the model comes back left them unreachable by Undo.
+describe('the hand-over back to the unit engine', () => {
+  it('waits while the old engine holds an entry above its base or a Redo entry', () => {
+    const r = rig()
+    r.state.claimable = false
+    expect(r.hook.claims(r.vditor)).toBe(false)
+    // The old engine recorded its base and one edit meanwhile.
+    r.vditor.undo.ir.undoStack.push(['base'], ['edit'])
+    r.state.claimable = true
+    expect(r.hook.claims(r.vditor)).toBe(false)
+    // Undone to its base, with the edit on its Redo stack: still the old engine's history.
+    r.vditor.undo.ir.redoStack.push(r.vditor.undo.ir.undoStack.pop())
+    expect(r.hook.claims(r.vditor)).toBe(false)
+    // A reset (a host update's `clearStack`) leaves nothing to undo: the unit engine claims.
+    r.vditor.undo.ir.undoStack.length = 1
+    r.vditor.undo.ir.redoStack.length = 0
+    expect(r.hook.claims(r.vditor)).toBe(true)
+  })
+
+  // DR (section indent): Vditor's initial record went to the old engine while the model was not yet
+  // live; the unit engine took over with no base, so it never settled and an edit had no Undo caret.
+  it('starts the unit history with a base when it takes over from the old base', () => {
+    const r = rig()
+    r.state.claimable = false
+    expect(r.hook.claims(r.vditor)).toBe(false)
+    r.vditor.undo.ir.undoStack.push(['base'])
+    r.state.claimable = true
+    expect(r.hook.claims(r.vditor)).toBe(true)
+    expect(historyStoreOf(r.vditor)?.base()).toBeDefined()
+    expect(r.hook.settled(r.vditor)).toBe(true)
+  })
+})
+
 // Review repair (F5): a pending change the caller says leaves the source unchanged.
 describe('amendTopCaret with a pending change', () => {
   it('refuses when the source may have changed', () => {
@@ -686,8 +867,25 @@ describe('the first entry', () => {
     const r = rig()
     r.caretAt(1, 3)
     r.record(cap('A')) // base and first entry in one record
+    vi.mocked(requestCaret).mockClear()
     r.hook.undo(r.vditor)
     expect(r.names(r.state.restores)).toEqual([['A', 'before']])
     expect(requestCaret).not.toHaveBeenCalled()
+  })
+})
+
+describe('depth (a read for the end-to-end specs)', () => {
+  it('counts the base as one Undo entry, like Vditor slots, and follows Undo', () => {
+    const r = rig()
+    const hook = r.hook as unknown as {
+      depth(v: unknown): { undo: number; redo: number }
+    }
+    expect(hook.depth(r.vditor)).toEqual({ undo: 0, redo: 0 })
+    r.record()
+    r.record(cap('A'))
+    r.record(cap('B'))
+    expect(hook.depth(r.vditor)).toEqual({ undo: 3, redo: 0 })
+    r.hook.undo(r.vditor)
+    expect(hook.depth(r.vditor)).toEqual({ undo: 2, redo: 1 })
   })
 })

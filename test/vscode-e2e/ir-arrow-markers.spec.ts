@@ -85,7 +85,9 @@ const caret = (frame: Frame) =>
       anchor: w.__t648Offset(s.anchorNode, s.anchorOffset) as number,
       focus: w.__t648Offset(s.focusNode, s.focusOffset) as number,
       value: w.vditor.getValue() as string,
-      undoStack: (w.vditor.vditor.undo.ir?.undoStack?.length ?? 0) as number,
+      undoStack: (((globalThis as any).__vmdeUnitHistory?.holds(w.vditor.vditor)
+        ? (globalThis as any).__vmdeUnitHistory.depth(w.vditor.vditor).undo
+        : w.vditor.vditor.undo.ir?.undoStack?.length) ?? 0) as number,
     }
   })
 

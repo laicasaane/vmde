@@ -335,6 +335,14 @@ describe('createUnitDom ignored records', () => {
     expect(structure).not.toHaveBeenCalled()
   })
 
+  it('ignores an id written on a heading (the outline anchor is view state)', () => {
+    const { root, dom, dirty, structure } = open(MIXED)
+    ;(root.querySelector('h1') as HTMLElement).id = 'vditorAnchor-0'
+    dom.drain()
+    expect(dirty).not.toHaveBeenCalled()
+    expect(structure).not.toHaveBeenCalled()
+  })
+
   it('ignores records inside [data-render] and child lists that only add or remove [data-render] nodes', () => {
     const { root, dom, dirty, structure } = open(MIXED)
     const preview = root.querySelector('[data-render]') as HTMLElement

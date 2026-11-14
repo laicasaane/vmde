@@ -116,7 +116,10 @@ function installRecorder(): boolean {
     },
     true,
   )
-  const depth = () => undo[inner.currentMode].undoStack.length as number
+  const depth = () =>
+    ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : undo[inner.currentMode].undoStack.length) as number
   const add = undo.addToUndoStack
   undo.addToUndoStack = function (...args: unknown[]) {
     const before = depth()
@@ -144,8 +147,12 @@ function readRecorder() {
     keys: w.__t602.keys as { key: string; t: number }[],
     entries: w.__t602.entries as { t: number; before: number; after: number }[],
     engine: w.__t602.engine.length as number,
-    depth: slot.undoStack.length as number,
-    redoDepth: slot.redoStack.length as number,
+    depth: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : slot.undoStack.length) as number,
+    redoDepth: ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+      : slot.redoStack.length) as number,
     // Task 601: an armed after-render callback means an entry is still pending.
     armed:
       !!pending?.options?.enableAddUndoStack && !!pending.options.enableInput,

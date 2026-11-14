@@ -106,7 +106,11 @@ function installProbe(mode: Mode) {
     set(value: number) {
       indexBuilds = value
       const inner = win.vditor?.vditor
-      builds.push(inner?.undo?.[inner.currentMode]?.undoStack?.length ?? -1)
+      builds.push(
+        ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner?.undo?.[inner.currentMode]?.undoStack?.length) ?? -1,
+      )
     },
   })
   win.__vmdeBlockHandleCacheMetrics = metrics
@@ -251,8 +255,11 @@ function installProbe(mode: Mode) {
   const warmBeforeCheckpoint = (editor: any, original: () => void) => {
     const inner = editor.vditor
     const root = inner[inner.currentMode]?.element as HTMLElement | undefined
-    const undoDepthAtWarm = (inner.undo[inner.currentMode].undoStack?.length ??
-      0) as number
+    const undoDepthAtWarm = (((globalThis as any).__vmdeUnitHistory?.holds(
+      inner,
+    )
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : inner.undo[inner.currentMode].undoStack?.length) ?? 0) as number
     const fail = (reason: string) => {
       probe.warm = {
         ok: false,
@@ -359,8 +366,9 @@ async function sample(frame: Frame): Promise<Sample> {
     return {
       builds: metrics.indexBuilds as number,
       snapshotPairs: metrics.blockHandleSnapshotCalls as number,
-      undoDepth: (inner.undo[inner.currentMode].undoStack?.length ??
-        0) as number,
+      undoDepth: (((globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode].undoStack?.length) ?? 0) as number,
       caret,
       log: JSON.parse(JSON.stringify(probe.log)) as MarkerLog,
       moves: probe.moves.length,

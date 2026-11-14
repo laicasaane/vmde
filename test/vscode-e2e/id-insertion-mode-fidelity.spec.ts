@@ -141,8 +141,12 @@ async function logHistory(
     const slot = inner.undo[inner.currentMode]
     return {
       mode: inner.currentMode,
-      undo: slot.undoStack.length,
-      redo: slot.redoStack.length,
+      undo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : slot.undoStack.length,
+      redo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+        : slot.redoStack.length,
       hasUndo: slot.hasUndo,
       redoDisabled: Boolean(
         inner.toolbar.elements.redo?.children[0]?.classList.contains(

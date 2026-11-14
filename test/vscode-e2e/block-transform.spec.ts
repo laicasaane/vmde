@@ -819,7 +819,14 @@ test('Task 604 non-round-tripping paragraph opens Turn Into equally from Find an
     frame
       .locator('body')
       .evaluate(
-        () => (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+        () =>
+          ((globalThis as any).__vmdeUnitHistory?.holds(
+            (window as any).vditor.vditor,
+          )
+            ? (globalThis as any).__vmdeUnitHistory.depth(
+                (window as any).vditor.vditor,
+              ).undo
+            : (window as any).vditor.vditor.undo.ir.undoStack.length) as number,
       )
   await expect.poll(undoDepth, { timeout: 10_000 }).toBeGreaterThan(0)
   const openingUndoDepth = await undoDepth()

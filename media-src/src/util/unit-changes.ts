@@ -35,7 +35,7 @@ export interface HistoryCapture {
 export interface HistoryModelPort {
   /** The model is live in IR, not stale and not awaiting: the unit engine may record and restore. */
   ready(): boolean
-  /** The unit engine may hold the history: false while the model is off for a permanent reason (the old engine takes over). */
+  /** The unit engine may hold the history: true while the model is live or a rebuild frame is pending; false otherwise (the old engine holds it). */
   claimable(): boolean
   /** Something changed since the last capture (drains the observer; O(1) otherwise, no allocation). */
   pending(): boolean

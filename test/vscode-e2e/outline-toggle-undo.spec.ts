@@ -67,7 +67,10 @@ const view = (frame: Frame) =>
     return {
       mode: inner.currentMode,
       value: outer.vditor.getValue(),
-      undoDepth: inner.undo[inner.currentMode]?.undoStack.length ?? -1,
+      undoDepth:
+        ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo[inner.currentMode]?.undoStack.length) ?? -1,
       shown:
         !!panel &&
         getComputedStyle(panel).display !== 'none' &&

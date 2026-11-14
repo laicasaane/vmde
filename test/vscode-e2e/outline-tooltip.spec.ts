@@ -55,7 +55,10 @@ const view = (frame: Frame) =>
     const rect = panel?.getBoundingClientRect()
     return {
       value: outer.vditor.getValue(),
-      undoDepth: inner.undo[inner.currentMode]?.undoStack.length ?? -1,
+      undoDepth:
+        ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo[inner.currentMode]?.undoStack.length) ?? -1,
       shown:
         !!panel &&
         getComputedStyle(panel).display !== 'none' &&
@@ -90,8 +93,8 @@ const titles = async (frame: Frame) => {
     await expect(shownBox(frame)).toBeVisible({ timeout: 5_000 })
     texts.push((await shownBox(frame).textContent()) ?? '')
   }
-  const own = await entries.evaluateAll((els) =>
-    els.filter((el) => el.hasAttribute('title')).length,
+  const own = await entries.evaluateAll(
+    (els) => els.filter((el) => el.hasAttribute('title')).length,
   )
   expect(own, 'no Outline entry carries a native title').toBe(0)
   // Park the pointer away from the Outline so the next read starts from a hidden box.

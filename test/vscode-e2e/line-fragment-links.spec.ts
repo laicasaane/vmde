@@ -299,7 +299,11 @@ async function documentState(evaluate: Evaluate, fsPath: string) {
 async function undoDepth(frame: Frame): Promise<number> {
   return frame.locator('body').evaluate(() => {
     const inner = (window as any).vditor.vditor
-    return inner.undo?.[inner.currentMode]?.undoStack?.length ?? -1
+    return (
+      ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo?.[inner.currentMode]?.undoStack?.length) ?? -1
+    )
   })
 }
 

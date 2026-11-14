@@ -102,8 +102,12 @@ function readHistory(): { undo: number; redo: number; marker: boolean } {
   const inner = (window as any).vditor.vditor
   const slot = inner.undo[inner.currentMode]
   return {
-    undo: slot.undoStack.length,
-    redo: slot.redoStack.length,
+    undo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+      : slot.undoStack.length,
+    redo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+      ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+      : slot.redoStack.length,
     marker: slot.lastText.includes('<wbr>'),
   }
 }

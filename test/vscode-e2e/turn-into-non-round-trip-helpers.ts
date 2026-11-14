@@ -758,7 +758,11 @@ export async function trustedEditControl(
   const undoStackLength = () =>
     ctx.frame.locator('body').evaluate(() => {
       const inner = (window as any).vditor.vditor
-      return inner.undo.ir.undoStack.length as number
+      return (
+        (globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : inner.undo.ir.undoStack.length
+      ) as number
     })
   // The opening snapshot and typed edit use Vditor's 800 ms Undo debounce. Wait for both
   // observable checkpoints so the one Ctrl+Z below targets the acknowledged edit.

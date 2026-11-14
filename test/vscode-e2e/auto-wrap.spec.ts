@@ -141,7 +141,9 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
       .poll(() =>
         frame.locator('body').evaluate(() => {
           const inner = (window as any).vditor.vditor
-          return inner.undo[inner.currentMode].undoStack.length
+          return (globalThis as any).__vmdeUnitHistory?.holds(inner)
+            ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+            : inner.undo[inner.currentMode].undoStack.length
         }),
       )
       .toBeGreaterThanOrEqual(1)
@@ -674,7 +676,11 @@ test('auto-wrap preserves bytes and interaction state in SV, IR, and WYSIWYG', a
       .poll(() =>
         frame.locator('body').evaluate(() => {
           const inner = (window as any).vditor.vditor
-          return inner.undo[inner.currentMode].undoStack.length as number
+          return (
+            (globalThis as any).__vmdeUnitHistory?.holds(inner)
+              ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+              : inner.undo[inner.currentMode].undoStack.length
+          ) as number
         }),
       )
       .toBeGreaterThanOrEqual(3)

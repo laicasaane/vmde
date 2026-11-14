@@ -558,7 +558,14 @@ const undoDepthOf = (frame: VmdeFrame) =>
   frame
     .locator('body')
     .evaluate(
-      () => (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+      () =>
+        ((globalThis as any).__vmdeUnitHistory?.holds(
+          (window as any).vditor.vditor,
+        )
+          ? (globalThis as any).__vmdeUnitHistory.depth(
+              (window as any).vditor.vditor,
+            ).undo
+          : (window as any).vditor.vditor.undo.ir.undoStack.length) as number,
     )
 
 // Text and direction of the live selection. A backward selection has its focus before its anchor.

@@ -55,14 +55,28 @@ test('hidden-toolbar selection bubble formats, transforms, and preserves real ho
           .locator('body')
           .evaluate(
             () =>
-              (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+              ((globalThis as any).__vmdeUnitHistory?.holds(
+                (window as any).vditor.vditor,
+              )
+                ? (globalThis as any).__vmdeUnitHistory.depth(
+                    (window as any).vditor.vditor,
+                  ).undo
+                : (window as any).vditor.vditor.undo.ir.undoStack
+                    .length) as number,
           ),
       )
       .toBeGreaterThan(0)
     const undoBefore = await frame
       .locator('body')
       .evaluate(
-        () => (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+        () =>
+          ((globalThis as any).__vmdeUnitHistory?.holds(
+            (window as any).vditor.vditor,
+          )
+            ? (globalThis as any).__vmdeUnitHistory.depth(
+                (window as any).vditor.vditor,
+              ).undo
+            : (window as any).vditor.vditor.undo.ir.undoStack.length) as number,
       )
     await frame
       .locator('.vditor-ir .vditor-reset > p')
@@ -104,7 +118,14 @@ test('hidden-toolbar selection bubble formats, transforms, and preserves real ho
           .locator('body')
           .evaluate(
             () =>
-              (window as any).vditor.vditor.undo.ir.undoStack.length as number,
+              ((globalThis as any).__vmdeUnitHistory?.holds(
+                (window as any).vditor.vditor,
+              )
+                ? (globalThis as any).__vmdeUnitHistory.depth(
+                    (window as any).vditor.vditor,
+                  ).undo
+                : (window as any).vditor.vditor.undo.ir.undoStack
+                    .length) as number,
           ),
       )
       .toBeGreaterThan(undoBefore)

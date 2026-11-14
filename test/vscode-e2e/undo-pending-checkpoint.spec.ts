@@ -120,8 +120,12 @@ function installProbe(): boolean {
         kind,
         at,
         sinceKey: Math.round(performance.now() - probe.lastKeyAt),
-        undo: undo[mode].undoStack.length,
-        redo: undo[mode].redoStack.length,
+        undo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+          : undo[mode].undoStack.length,
+        redo: (globalThis as any).__vmdeUnitHistory?.holds(inner)
+          ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo
+          : undo[mode].redoStack.length,
         // Whether the pending edit is in the live DOM (the marker is set before `W` is typed).
         hasW:
           !!probe.marker &&
@@ -167,7 +171,7 @@ function readProbe(): Probe & { stack: string } {
   const slot = inner.undo[inner.currentMode]
   return {
     ...w.__t601,
-    stack: `${slot.undoStack.length}/${slot.redoStack.length}`,
+    stack: `${(globalThis as any).__vmdeUnitHistory?.holds(inner) ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo : slot.undoStack.length}/${(globalThis as any).__vmdeUnitHistory?.holds(inner) ? (globalThis as any).__vmdeUnitHistory.depth(inner).redo : slot.redoStack.length}`,
   }
 }
 
@@ -180,7 +184,12 @@ async function waitForDepth(_body: Element, depth: number): Promise<boolean> {
   const inner = (window as any).vditor.vditor
   const started = performance.now()
   while (performance.now() - started < 3_000) {
-    if (inner.undo[inner.currentMode].undoStack.length >= depth) return true
+    if (
+      ((globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode].undoStack.length) >= depth
+    )
+      return true
     await new Promise((resolve) => setTimeout(resolve, 2))
   }
   return false

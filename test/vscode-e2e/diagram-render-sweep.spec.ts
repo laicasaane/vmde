@@ -423,7 +423,11 @@ async function runDiagramInlineZoom(
     const selectionNodeBefore = selection?.anchorNode
     const selectionOffsetBefore = selection?.anchorOffset
     const scrollBeforeControls = surface.scrollTop
-    const undoBeforeControls = inner.undo[inner.currentMode].undoStack.length
+    const undoDepth = (): number =>
+      (globalThis as any).__vmdeUnitHistory?.holds(inner)
+        ? (globalThis as any).__vmdeUnitHistory.depth(inner).undo
+        : inner.undo[inner.currentMode].undoStack.length
+    const undoBeforeControls = undoDepth()
     const control = (label: string) =>
       Array.from(
         controls?.querySelectorAll<HTMLButtonElement>('button') ?? [],
@@ -459,7 +463,7 @@ async function runDiagramInlineZoom(
       getSelection()?.anchorNode === selectionNodeBefore &&
       getSelection()?.anchorOffset === selectionOffsetBefore &&
       surface.scrollTop === scrollBeforeControls &&
-      inner.undo[inner.currentMode].undoStack.length === undoBeforeControls
+      undoDepth() === undoBeforeControls
     const barBeforeFullscreen = controls
     const parentBeforeFullscreen = wrap?.parentElement
     control('Fullscreen diagram').click()

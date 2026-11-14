@@ -148,6 +148,30 @@ function insideMarker(node: Node): boolean {
   )
 }
 
+// True when `caret` at `offset` sits at the very start of its IR block (`data-block="0"`, inside
+// `editor`): no text, marker text included, precedes it in that block. A caret there stands at the
+// left edge of the block's first word and must not word-expand: Ctrl+Home then Ctrl+B types into new
+// markers, whichever history engine placed the caret. A caret with no block ancestor is not affected.
+function atBlockStart(caret: Text, offset: number, editor: Node): boolean {
+  if (offset !== 0) return false
+  let node: Node = caret
+  while (node !== editor) {
+    if (
+      node !== caret &&
+      (node as Element).getAttribute?.('data-block') === '0'
+    ) {
+      return true
+    }
+    for (let p = node.previousSibling; p; p = p.previousSibling) {
+      if ((p.textContent ?? '').length > 0) return false
+    }
+    const parent = node.parentNode
+    if (!parent) return false
+    node = parent
+  }
+  return false
+}
+
 // The absolute character offset of `sel`'s caret within `editor` (0-based, every text node
 // depth-first, IR marker spans included). -1 when there is no selection inside the editor.
 export function caretTextOffset(editor: Node, sel: Selection): number {
@@ -242,6 +266,7 @@ export function expandCollapsedSelectionToWord(
   const caret = start as Text
   const inner = wordRangeInText(caret.data, range.startOffset)
   if (!inner) return false
+  if (atBlockStart(caret, range.startOffset, editor)) return false
 
   const rightBound = extendRight(caret, inner[1])
   const right = trimTrailingPunct(rightBound.node, rightBound.off)

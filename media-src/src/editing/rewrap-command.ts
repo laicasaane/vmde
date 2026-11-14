@@ -116,6 +116,33 @@ export function takeRewrapDocumentHistorySync(
   return takeRewrapDocumentHistoryReplay(inner, markdown)?.exact
 }
 
+/** Task 733 (task 004): the unit history undid or redid an exact action's entry with a history
+ * delta (it posts no replay): the record moves to the side the history now stands on, as the
+ * replay would have moved it, so source proofs are not declined after the move. */
+export function moveRewrapDocumentHistory(inner: InnerVditor): void {
+  const mode = inner.currentMode
+  const store = historyStoreOf(inner)
+  if (!store) return
+  for (let index = rewrapDocumentHistory.length - 1; index >= 0; index--) {
+    const history = rewrapDocumentHistory[index]
+    if (history.owner !== inner || history.mode !== mode) continue
+    if (
+      history.side === 'after' &&
+      store.redoTop(mode as HistoryMode) === history.nativeState
+    ) {
+      history.side = 'before'
+      return
+    }
+    if (
+      history.side === 'before' &&
+      store.top(mode as HistoryMode) === history.nativeState
+    ) {
+      history.side = 'after'
+      return
+    }
+  }
+}
+
 /** Task 607: the exact bytes a native Undo/Redo replays, and the record's other side, which is
  * what the host holds before the replay (`afterExact` for Undo, `beforeExact` for Redo). */
 export function takeRewrapDocumentHistoryReplay(

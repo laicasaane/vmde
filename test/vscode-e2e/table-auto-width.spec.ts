@@ -273,6 +273,10 @@ function handleAlignment(frame: Frame, mode: Mode): Promise<HandleError> {
 function undoDepth(frame: Frame): Promise<{ undo: number; redo: number }> {
   return frame.locator('body').evaluate(() => {
     const inner = (window as any).vditor.vditor
+    // Task 004: the unit engine keeps IR history outside Vditor's slots.
+    const unit = (window as any).__vmdeUnitHistory
+    if (unit?.holds(inner))
+      return unit.depth(inner) as { undo: number; redo: number }
     const history = inner.undo[inner.currentMode]
     return {
       undo: history.undoStack.length as number,
