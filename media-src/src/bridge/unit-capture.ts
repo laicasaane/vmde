@@ -132,7 +132,11 @@ const parse = (html: string): Node[] => {
 const keyOf = (nodes: ArrayLike<Node>): string => {
   let key = ''
   for (let i = 0; i < nodes.length; i += 1) {
-    key += `${historySourceProjection(nodes[i])}\u0007`
+    const node = nodes[i]
+    // An empty Text node serializes to nothing, and HTML parsed back has none (Vditor's `fixTable`
+    // leaves one after its `range.insertNode(br)` on Enter in a cell).
+    if (node.nodeType === Node.TEXT_NODE && (node as Text).data === '') continue
+    key += `${historySourceProjection(node)}\u0007`
   }
   return key
 }

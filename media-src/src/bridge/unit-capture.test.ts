@@ -316,6 +316,34 @@ describe('a block move across a list with no sync before the next capture', () =
   })
 })
 
+// DR11 (table row insert): Enter at the end of a cell runs Vditor's `fixTable`, whose
+// `range.insertNode(br)` leaves an empty Text node in the cell (`d`, BR, "", BR). The window's
+// `after` HTML parses back without it, so the restore's check of the live cell against `after`
+// must not count a Text node that holds nothing.
+describe('a cell with an empty text node after Enter', () => {
+  it("restore('before') accepts the live cell and restores its text", () => {
+    const r = open(DOC)
+    const cell = Array.from(r.root.querySelectorAll('td')).find(
+      (td) => td.textContent === 'd',
+    ) as HTMLElement
+    cell.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    cell.append(
+      document.createElement('br'),
+      document.createTextNode(''),
+      document.createElement('br'),
+    )
+    const enter = r.port.capture() as HistoryCapture
+    expect(enter).toBeDefined()
+    r.sync()
+    expect(r.port.restore(enter, 'before')).toBe(true)
+    const restored = Array.from(r.root.querySelectorAll('td')).find(
+      (td) => td.textContent === 'd',
+    ) as HTMLElement
+    expect(restored.querySelector('br')).toBeNull()
+    expect(r.sync()).toBe(DOC)
+  })
+})
+
 // DR (Details toolbar): a source enclosure (`<details>` HTML blocks around blocks) is one unit whose
 // members include the items of a list inside it. Its window must hold root children (the list, not
 // its items) on both sides, or the restore refuses and the history is lost.

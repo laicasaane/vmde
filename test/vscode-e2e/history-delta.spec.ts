@@ -481,7 +481,6 @@ test.describe('history delta (task 004)', () => {
     evaluateInVSCode,
     baseDir,
   }) => {
-    test.fail(true, 'red until task 009')
     const text = '| a | b |\n| - | - |\n| c | d |\n\nTail.\n'
     const { frame, file } = await open(
       workbox,

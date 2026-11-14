@@ -514,6 +514,39 @@ export function installUnitHistory(
     return true
   }
 
+  /**
+   * Vditor's first-position capture (`addCaret`, from its seed and its first-position keydown) put a
+   * caret marker at the caret and removed it, which splits the caret's text node there. Chromium's
+   * typing rebalances whitespace inside the text node it types into, so in one unsplit node the
+   * `\n` of a soft break right after the caret becomes a space and the two source lines join. The
+   * same split is kept here; the DOM's HTML does not change. A Range with an element endpoint is
+   * written again afterwards, as the seed does (Chromium keeps reporting it while its own selection
+   * shrank).
+   */
+  const splitAtCaret = (vditor: Vditor): void => {
+    const root = vditor.ir?.element
+    const selection = root?.ownerDocument.getSelection()
+    if (!root || !selection || selection.rangeCount === 0) return
+    const range = selection.getRangeAt(0)
+    if (!root.contains(range.startContainer) || root.querySelector('wbr'))
+      return
+    const elementEndpoint =
+      selection.anchorNode?.nodeType !== Node.TEXT_NODE ||
+      selection.focusNode?.nodeType !== Node.TEXT_NODE
+    const marker = root.ownerDocument.createElement('span')
+    marker.className = 'vditor-wbr'
+    range.insertNode(marker)
+    marker.remove()
+    if (elementEndpoint && selection.anchorNode && selection.focusNode) {
+      selection.setBaseAndExtent(
+        selection.anchorNode,
+        selection.anchorOffset,
+        selection.focusNode,
+        selection.focusOffset,
+      )
+    }
+  }
+
   const seedBaseline = (raw: unknown): boolean => {
     const vditor = raw as Vditor
     const state = stateOf(vditor)
@@ -522,6 +555,7 @@ export function installUnitHistory(
     // The base is the live state: whatever the port holds is part of it.
     deps.port()?.capture()
     createBase(vditor, state)
+    splitAtCaret(vditor)
     report(
       vditor,
       state,
@@ -568,16 +602,15 @@ export function installUnitHistory(
         return
       }
       void event
+      if (state.undo.length > 0 || state.redo.length > 0) return
       // Vditor's own rule: the base caret moves only while the DOM still equals the base, so the keys
-      // of a first edit after the first one leave the caret where that edit started.
-      if (
-        state.undo.length === 0 &&
-        state.redo.length === 0 &&
-        deps.port()?.pending() === false
-      ) {
+      // of a first edit after the first one leave the caret where that edit started. Read before the
+      // split, which leaves a textless Range across the two halves.
+      if (deps.port()?.pending() === false) {
         state.base.caret = caretNow(vditor)
         state.open = { ...state.open, caret: state.base.caret }
       }
+      splitAtCaret(vditor)
     },
     clear(raw) {
       const vditor = raw as Vditor

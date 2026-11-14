@@ -115,6 +115,8 @@ function rig(options: { port?: boolean } = {}) {
     hook.record(vditor)
   }
   const caretAt = (index: number, offset: number) => {
+    // A first-position key splits the caret's text node (as Vditor's `addCaret` did): join it again.
+    root.normalize()
     const text = root.querySelectorAll('p')[index].firstChild as Text
     const range = document.createRange()
     range.setStart(text, offset)
@@ -593,6 +595,58 @@ describe('first position and seed', () => {
     expect(requestCaret).toHaveBeenLastCalledWith(
       expect.objectContaining({ blockPath: [0], offsetInBlock: 0 }),
     )
+  })
+
+  // DR10 (README list item with a soft break): Vditor's first-position keydown (`addCaret`) inserted
+  // and removed a caret marker, which split the caret's text node. Chromium's typing then rebalanced
+  // whitespace only inside the node before the caret, so the `\n` of a soft break after the caret
+  // stayed a line break; typed into one unsplit node, it became a space and the lines joined.
+  it('recordFirstPosition splits the caret text node at the caret and leaves no marker', () => {
+    const r = rig()
+    r.root.innerHTML = '<ul><li>first line.\nsecond line</li></ul>'
+    const text = r.root.querySelector('li')?.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 'first line.'.length)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    r.record()
+    const html = r.root.innerHTML
+    r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    expect(r.root.innerHTML).toBe(html)
+    const li = r.root.querySelector('li') as HTMLElement
+    expect(Array.from(li.childNodes, (node) => node.textContent)).toEqual([
+      'first line.',
+      '\nsecond line',
+    ])
+    const live = window.getSelection()?.getRangeAt(0)
+    expect(live?.startContainer).toBe(li.firstChild)
+    expect(live?.startOffset).toBe('first line.'.length)
+  })
+
+  it('seedBaseline splits the caret text node as the old seed did', () => {
+    const r = rig()
+    r.root.innerHTML = '<p>first line.\nsecond line</p>'
+    const text = r.root.querySelector('p')?.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 'first line.'.length)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    expect(r.hook.seedBaseline(r.vditor)).toBe(true)
+    const p = r.root.querySelector('p') as HTMLElement
+    expect(p.childNodes.length).toBe(2)
+    expect(r.root.querySelector('.vditor-wbr, wbr')).toBeNull()
+  })
+
+  it('recordFirstPosition does not split once the history has an entry', () => {
+    const r = rig()
+    r.caretAt(0, 0)
+    r.record()
+    r.record(cap('A'))
+    r.caretAt(1, 2)
+    r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    expect(r.root.querySelectorAll('p')[1].childNodes.length).toBe(1)
   })
 
   // DR (large document Undo caret): the keys of one first edit each called recordFirstPosition, and
