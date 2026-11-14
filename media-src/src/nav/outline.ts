@@ -52,6 +52,22 @@ export function setupOutlineFlash(vditor: Vditor): void {
       const index = Array.from(
         outlineEl.querySelectorAll<HTMLElement>('[data-target-id]'),
       ).indexOf(item as HTMLElement)
+      // Task 733 / 012-8: in full Preview, main.css makes `.vditor-preview` `overflow: hidden` and
+      // its inner `.vditor-reset` the scroller, so Vditor's click handler (outlineRender.ts, which
+      // writes `.vditor-preview.scrollTop`) scrolls nothing. Route an entry click through the
+      // keyboard path instead; `scrollToHeadingIndex` clears the hoist, opens a fold, scrolls with
+      // `scrollIntoView` and flashes. The collapse arrow, the edit modes and Split (where the
+      // Preview pane itself scrolls) keep Vditor's handler.
+      if (
+        index >= 0 &&
+        fullPreviewShown() &&
+        !(e.target as HTMLElement).closest('.vditor-outline__action')
+      ) {
+        e.preventDefault()
+        e.stopPropagation()
+        scrollToHeadingIndex(vditor, index)
+        return
+      }
       if (index >= 0) ensureHoistTargetVisible(index)
       // Let Vditor scroll first, then flash the heading it landed on.
       setTimeout(() => flashHeading(id), SCROLL_SETTLE_MS)
@@ -79,6 +95,16 @@ export function setupInlineTocNavigation(): void {
       target.scrollIntoView({ block: 'start' })
     },
     true,
+  )
+}
+
+// Full Preview: the Preview pane is shown and no source pane is (chrome/source-pane-state.ts
+// writes this attribute on `.vditor-content`; Split removes it).
+function fullPreviewShown(): boolean {
+  const preview = innerVditor()?.preview?.element
+  return (
+    preview?.style.display === 'block' &&
+    preview.parentElement?.getAttribute('data-vmde-source-pane') === 'hidden'
   )
 }
 
