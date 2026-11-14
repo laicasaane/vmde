@@ -20,6 +20,7 @@
 import { coalescePerFrameWithRecords } from '../util/observe-coalesce'
 import {
   countDecoratorPass,
+  forEachRecordScope,
   liveFeedOf,
   onLiveChange,
   recordsOutsideFeed,
@@ -308,7 +309,7 @@ export function observeBareUrls(
     return () => {
       /* no-op disposer */
     }
-  const sync = (target: HTMLElement) =>
+  const sync = (target: Element) =>
     enabled ? applyBareUrls(target) : removeBareUrls(target)
   const within = (block: Element) => {
     if (enabled) applyBareUrlsWithin(block)
@@ -326,9 +327,22 @@ export function observeBareUrls(
       caretBlock = caretBlockOf(root)
     } else for (const block of scope.blocks) within(block)
   }
-  const run = coalescePerFrameWithRecords((records) =>
-    apply(scopeMutations(records)),
-  )
+  // A record outside a live feed root decorates only its own container, never the whole root. The
+  // container can be a whole surface (WYSIWYG beside the IR root), so only its caret block is skipped.
+  const withinScope = (scope: Element) => {
+    countDecoratorPass('scoped')
+    sync(scope)
+    const skipped = caretBlockOf(scope)
+    if (skipped) caretBlock = skipped
+  }
+  // `scopeMutations` still drops our own decoration records (task 174). The liveness is re-read when
+  // the frame runs: it can change between the records and the frame.
+  const run = coalescePerFrameWithRecords((records) => {
+    const scope = scopeMutations(records)
+    if (scope.full && records.length > 0 && liveFeedOf(root))
+      forEachRecordScope(root, records, withinScope)
+    else apply(scope)
+  })
   // Task 733: while the feed describes the IR root inside `root`, its unit changes replace the
   // records inside that root. Q-30: the decorators still skip the block that holds the caret.
   const obs = new MutationObserver((records) => {

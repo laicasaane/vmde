@@ -560,6 +560,58 @@ describe('observeCodeRefs on unit feed changes (Task 733)', () => {
     expect(cells[2][0].querySelector(CHIP)).toBeNull()
   })
 
+  it('decorates only the container of a record outside the feed root', async () => {
+    const { app, cells, fresh } = setup()
+    const outside = document.createElement('div')
+    app.appendChild(outside)
+    await flushRecords()
+    fireFrame()
+    fresh(cells[2][0])
+    await flushRecords()
+    fireFrame()
+    const win = window as {
+      __vmdeE2EReadiness?: unknown
+      __vmdeDecoratorPasses?: { full: number; scoped: number }
+    }
+    win.__vmdeE2EReadiness = {}
+    win.__vmdeDecoratorPasses = { full: 0, scoped: 0 }
+    try {
+      outside.innerHTML = `<span>${REF}</span>`
+      await flushRecords()
+      fireFrame()
+      expect(outside.querySelector(CHIP)).not.toBeNull()
+      expect(cells[2][0].querySelector(CHIP)).toBeNull()
+      expect(win.__vmdeDecoratorPasses.full).toBe(0)
+    } finally {
+      delete win.__vmdeE2EReadiness
+      delete win.__vmdeDecoratorPasses
+    }
+  })
+
+  it('decorates a surface outside the feed root around its caret block', async () => {
+    const { app, cells, fresh } = setup()
+    // A second surface beside the IR root (WYSIWYG): the caret sits in one of its blocks.
+    const surface = document.createElement('div')
+    surface.innerHTML =
+      '<p data-block="0">caret here</p><p data-block="0">other</p>'
+    app.appendChild(surface)
+    await flushRecords()
+    fireFrame()
+    fresh(cells[2][0])
+    await flushRecords()
+    fireFrame()
+    const [caretPara, other] = Array.from(surface.querySelectorAll('p'))
+    placeCaret(caretPara.firstChild as Node, 0)
+    document.dispatchEvent(new Event('selectionchange'))
+    fireFrame()
+
+    other.innerHTML = `<span>${REF}</span>`
+    await flushRecords()
+    fireFrame()
+    expect(other.querySelector(CHIP)).not.toBeNull()
+    expect(cells[2][0].querySelector(CHIP)).toBeNull()
+  })
+
   it('runs the full pass for a whole change', () => {
     const { cells, feed, fresh } = setup()
     fresh(cells[1][0])
