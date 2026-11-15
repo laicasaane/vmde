@@ -11,7 +11,12 @@
 // the real notation so it fills the column. getBBox is safe here (abc is a static one-shot render
 // with no d3 transition — unlike markmap, whose mid-fit bbox blew up). Idempotent: `:not([viewBox])`.
 
-import { observeSubtreeRafDebounced } from '../util/observe-coalesce'
+import {
+  forEachChangeScope,
+  forEachRecordScope,
+  liveFeedOf,
+  onLiveChange,
+} from '../util/mutation-impact'
 
 /** Give every abc svg lacking a viewBox one tight to its rendered content (getBBox). */
 function fitAbc(root: ParentNode): void {
@@ -63,7 +68,48 @@ function fitAbc(root: ParentNode): void {
  * Keep abc svgs responsive as the editor renders/rebuilds them. rAF-debounced; idempotent (a svg with
  * a viewBox is skipped, and the observer watches childList/subtree — not attributes — so our own
  * viewBox write doesn't re-trigger it). Returns a disposer.
+ *
+ * Task 733 (012-13, D-13 binding rules 2 and 6): while the unit feed is live, records inside its root
+ * are left to the feed. The frame fits the change scopes and the render subtrees the feed never
+ * reports (`forEachRecordScope`, which is where abcjs draws), never the whole root. Without a live
+ * feed, and for a whole change, the frame fits the whole root as before.
  */
 export function observeAbc(appEl: HTMLElement | null | undefined): () => void {
-  return observeSubtreeRafDebounced(appEl, fitAbc)
+  if (!appEl)
+    return () => {
+      /* no-op disposer */
+    }
+  let raf = 0
+  let whole = true
+  const scopes = new Set<Element>()
+  const run = () => {
+    raf = 0
+    if (whole) fitAbc(appEl)
+    else for (const scope of scopes) if (scope.isConnected) fitAbc(scope)
+    whole = false
+    scopes.clear()
+  }
+  const schedule = () => {
+    if (!raf) raf = requestAnimationFrame(run)
+  }
+  const addScope = (scope: Element) => {
+    scopes.add(scope)
+  }
+  const obs = new MutationObserver((records) => {
+    if (!liveFeedOf(appEl)) whole = true
+    else forEachRecordScope(appEl, records, addScope)
+    if (whole || scopes.size > 0) schedule()
+  })
+  obs.observe(appEl, { childList: true, subtree: true })
+  const offFeed = onLiveChange(appEl, (change) => {
+    if (change.whole) whole = true
+    else forEachChangeScope(change, addScope)
+    if (whole || scopes.size > 0) schedule()
+  })
+  schedule()
+  return () => {
+    obs.disconnect()
+    offFeed()
+    if (raf) cancelAnimationFrame(raf)
+  }
 }

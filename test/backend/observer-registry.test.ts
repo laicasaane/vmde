@@ -78,6 +78,11 @@ const FROZEN: ReadonlyArray<readonly [string, number, string]> = [
     'Maintains webview context keys from the editor DOM.',
   ],
   [
+    'diagrams/abc-fit.ts',
+    1,
+    'Fits abc pictures in render subtrees the unit feed never reports.',
+  ],
+  [
     'diagrams/custom-diagrams.ts',
     1,
     'Finds new custom diagram blocks to render.',
@@ -267,9 +272,9 @@ describe('observer freeze-list', () => {
     )
   }
 
-  it('lists 46 files and 52 sites, each with a reason', () => {
-    expect(FROZEN).toHaveLength(46)
-    expect(FROZEN.reduce((sum, [, count]) => sum + count, 0)).toBe(52)
+  it('lists 47 files and 53 sites, each with a reason', () => {
+    expect(FROZEN).toHaveLength(47)
+    expect(FROZEN.reduce((sum, [, count]) => sum + count, 0)).toBe(53)
     expect(FROZEN.every(([, , reason]) => reason.trim().length > 0)).toBe(true)
   })
 

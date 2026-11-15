@@ -20,7 +20,8 @@ import {
 import { allocateColumnWidths } from './table-column-widths'
 import {
   AUTO_WIDTH_CLASS_PREFIX,
-  createMeasureHost,
+  measureHostFor,
+  releaseMeasureHost,
   ensureSessionTableWidths,
   headerCells,
   type MeasureHost,
@@ -30,6 +31,12 @@ import {
   mountMeasureClone,
   sessionTableWidths,
 } from './table-resize'
+import {
+  type BackgroundJob,
+  backgroundSchedulerOf,
+  IDLE_SLICE_MS,
+  type SliceBudget,
+} from '../util/background-budget'
 import { findScroller } from './toolbar-scroll-guard'
 import {
   hintMeasureClone,
@@ -67,8 +74,6 @@ const MEASURE_CLONE_ROWS = 32
 const FILL_SLICE_MS = 8
 /** Cells mounted per layout pair (max-content, then min-content) in the idle fill. */
 const FILL_BATCH = 32
-/** Without idle callbacks, the delay before a fill slice. */
-const FILL_FALLBACK_MS = 50
 /** A cell measured alone differs from the stored column value only by more than this. */
 const CELL_EPS_PX = 0.5
 
@@ -245,7 +250,7 @@ export function pairReplacedTables(
 
 /**
  * Min-content and max-content width of every column, read from detached clones in the shared
- * measurement host (see `createMeasureHost`): the two layouts the contract names, read from the
+ * measurement host (see `measureHostFor`): the two layouts the contract names, read from the
  * first-row cell widths.
  */
 function measureColumns(
@@ -253,7 +258,7 @@ function measureColumns(
   root: HTMLElement,
   rowsOf: (table: HTMLTableElement) => MeasureRowFilter | undefined,
 ): Array<{ min: number[]; max: number[] }> {
-  const host = createMeasureHost(root)
+  const host = measureHostFor(root)
   try {
     // Task 733 (012-4): a large table is laid out with a bounded set of rows (`rowsOf`), not whole.
     const clones = tables.map((table) =>
@@ -488,28 +493,6 @@ function keepsStore(
 /** True when `row` holds a column minimum or maximum. */
 function holdsColumn(state: AutoState, row: number): boolean {
   return state.minRow.includes(row) || state.maxRow.includes(row)
-}
-
-interface IdleDeadlineLike {
-  timeRemaining(): number
-}
-
-/** An idle callback; without `requestIdleCallback`, a delayed timer with a `FILL_SLICE_MS` budget. Returns its cancel. */
-function requestIdle(
-  callback: (deadline: IdleDeadlineLike) => void,
-): () => void {
-  if (typeof requestIdleCallback === 'function') {
-    const handle = requestIdleCallback(callback)
-    return () => cancelIdleCallback(handle)
-  }
-  const timer = setTimeout(() => {
-    const started = performance.now()
-    callback({
-      timeRemaining: () =>
-        Math.max(0, started + FILL_SLICE_MS - performance.now()),
-    })
-  }, FILL_FALLBACK_MS)
-  return () => clearTimeout(timer)
 }
 
 /** True when the browser reports pending input (Chromium `isInputPending`); the idle fill yields to it. */
@@ -1010,8 +993,31 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   // Q-54: a changed cell is measured alone, never as a table clone. Cells wait here for the pause
   // flush (the layout read is not taken in the feed's frame callback).
   const dirtyCells = new Set<HTMLElement>()
-  /** Pending idle fills per table: their cancel functions. */
-  const fills = new Map<HTMLTableElement, () => void>()
+  // Task 733 (012-13, D-13 M1): the fill runs as the idle job `table-fill` on the shared budget. The
+  // tables with fill work left, in queue order; the job object is created once per factory.
+  const fills = new Set<HTMLTableElement>()
+  const scheduler = backgroundSchedulerOf(window)
+  /** The budget of the fill slice running now: every batch also stops at the shared deadline. */
+  let fillBudget: SliceBudget | undefined
+  const fillJob: BackgroundJob = {
+    name: 'table-fill',
+    lane: 'idle',
+    step(budget) {
+      fillBudget = budget
+      try {
+        // Each table queued at the step's start gets one turn; a table it queues again waits.
+        let turns = fills.size
+        for (const table of fills) {
+          if (turns-- === 0 || budget.spent()) break
+          fills.delete(table)
+          fillStep(table)
+        }
+      } finally {
+        fillBudget = undefined
+      }
+      return fills.size > 0
+    },
+  }
   // Reused by every fill batch (idle work, allocated once per factory).
   const batchCopies: HTMLElement[] = []
   const batchShells: HTMLTableElement[] = []
@@ -1049,11 +1055,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
 
   /** Queues one idle fill slice for `table`; at most one is pending per table. */
   function scheduleFill(table: HTMLTableElement): void {
-    if (fills.has(table)) return
-    fills.set(
-      table,
-      requestIdle((deadline) => fillStep(table, deadline)),
-    )
+    fills.add(table)
+    scheduler.post(fillJob)
   }
 
   /** Mounts the cell at store position `slot` for the batch, unless it is measured already. */
@@ -1089,7 +1092,11 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
 
   /** True when a batch holding `mounted` cells has spent the slice that ends at `end`. */
   function sliceSpent(mounted: number, end: number): boolean {
-    return performance.now() + mounted * fillCellCost >= end || inputPending()
+    return (
+      performance.now() + mounted * fillCellCost >= end ||
+      inputPending() ||
+      fillBudget?.spent() === true
+    )
   }
 
   /** The write phase of a fill batch: mounts cells from `fillAt` until the batch is full or the slice spent. */
@@ -1162,8 +1169,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
    * to pending input, and queues the next slice; once every row is known the column values are folded
    * exactly and the widths allocated again when they moved.
    */
-  function fillStep(table: HTMLTableElement, deadline: IdleDeadlineLike): void {
-    fills.delete(table)
+  function fillStep(table: HTMLTableElement): void {
     // Re-read the state after the wait: the table may be gone, edited or rebuilt.
     const state = states.get(table)
     if (
@@ -1174,11 +1180,11 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     )
       return
     const total = state.rowCount * state.rowMax.length
-    const end =
-      performance.now() + Math.min(deadline.timeRemaining(), FILL_SLICE_MS)
-    const host = createMeasureHost(root)
+    // The shared idle budget ends the slice (`fillBudget`); `end` bounds the batch projection.
+    const end = performance.now() + FILL_SLICE_MS
+    const host = measureHostFor(root)
     try {
-      while (state.fillAt < total && performance.now() < end && !inputPending())
+      while (state.fillAt < total && !sliceSpent(0, end))
         fillBatch(host, table, state, end)
     } finally {
       host.dispose()
@@ -1257,7 +1263,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   function flushDirtyCells(now: number): number {
     if (dirtyCells.size === 0) return 0
     let heldUntilCells = 0
-    const host = createMeasureHost(root)
+    const host = measureHostFor(root)
     try {
       for (const cell of dirtyCells) {
         const table = cell.closest('table')
@@ -1353,7 +1359,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       offFeed()
       soon.cancel()
       if (pauseTimer) clearTimeout(pauseTimer)
-      for (const cancel of fills.values()) cancel()
+      scheduler.cancel(fillJob)
       fills.clear()
       dirtyCells.clear()
       deferred.clear()
@@ -1496,61 +1502,75 @@ function mutationMayAffectTable(record: MutationRecord): boolean {
     )
 }
 
+/** The tables a normalizer pass over `root` owns (the root itself when it is a table). */
+function responsiveTablesIn(root: ParentNode): HTMLTableElement[] {
+  return (
+    [
+      ...(root instanceof HTMLTableElement ? [root] : []),
+      ...Array.from(root.querySelectorAll<HTMLTableElement>('table')),
+    ]
+      // Task 706: a table inside a diagram label (a d2 `|md` label, held in an svg foreignObject) is
+      // part of the diagram picture, laid out before this pass. Styling it, and the auto-width class
+      // only one pane's copy received, made the edit view and Preview markup of the same diagram
+      // differ. HTML reaches an svg only through foreignObject, and `closest('svg')` avoids the
+      // mixed-case foreignObject type selector (it does not match in jsdom). Filtered on the tables
+      // already found: no extra work for a document without diagrams.
+      .filter(
+        (table) => table.closest('.vditor-reset') && !table.closest('svg'),
+      )
+      // Task 723: the front-matter properties table (and its nested map tables) is not a Markdown
+      // table. It fits its name column to the longest name with an auto table layout (main.css), and
+      // the inline `table-layout: fixed !important` below out-ranks every stylesheet rule, which gave
+      // the name column one equal share again after a pass (measured 39 px in Preview). Left alone.
+      .filter((table) => !table.closest('.vmde-front-matter'))
+  )
+}
+
+/** The table-level step of a normalizer pass: layout, width limits, floor, auto-width tracking. */
+function normalizeTable(
+  table: HTMLTableElement,
+  autoWidths: AutoTableWidths,
+): void {
+  // Volatile width rules live outside Lute-owned DOM. The normalizer still owns every
+  // pasted/Vditor inline width, while min-width lets a wide result scroll.
+  const widths = sessionTableWidths(table)
+  if (widths) ensureSessionTableWidths(table)
+  // `width` is not an ignored attribute (class and style are): quiet, so the unit-DOM shadow model
+  // sees no edit.
+  // Quiet only when there is a width to remove: removing an absent attribute records nothing, and
+  // the quiet hand-off costs a `takeRecords` per observer on every pass.
+  if (table.hasAttribute('width'))
+    writeQuietly(() => table.removeAttribute('width'))
+  else table.removeAttribute('width')
+  // Keep pasted/Vditor tables in table layout without outranking stateful visibility rules:
+  // details collapse uses `display: none !important`, while build.mjs already patches Vditor's
+  // base `.vditor-reset table` display. A normal-priority inline value preserves both contracts.
+  table.style.setProperty('display', 'table')
+  table.style.setProperty('table-layout', 'fixed', 'important')
+  setImportantOnChange(table, 'width', TABLE_FILL)
+  setImportantOnChange(table, 'max-width', widths ? 'none' : TABLE_FILL)
+  table.style.setProperty(
+    'min-width',
+    widths ? `${widths.reduce((total, width) => total + width, 0)}px` : '0',
+    'important',
+  )
+  table.style.setProperty('box-sizing', 'border-box')
+  syncTableFloor(table)
+  autoWidths.track(table)
+}
+
+const NORMALIZED_CELLS = 'colgroup col, th, td'
+
 function normalizeResponsiveTables(
   root: ParentNode = document,
   autoWidths: AutoTableWidths = INERT_AUTO_WIDTHS,
   full = false,
 ) {
   autoWidths.beginPass(full)
-  const tables = [
-    ...(root instanceof HTMLTableElement ? [root] : []),
-    ...Array.from(root.querySelectorAll<HTMLTableElement>('table')),
-  ]
-    // Task 706: a table inside a diagram label (a d2 `|md` label, held in an svg foreignObject) is
-    // part of the diagram picture, laid out before this pass. Styling it, and the auto-width class
-    // only one pane's copy received, made the edit view and Preview markup of the same diagram
-    // differ. HTML reaches an svg only through foreignObject, and `closest('svg')` avoids the
-    // mixed-case foreignObject type selector (it does not match in jsdom). Filtered on the tables
-    // already found: no extra work for a document without diagrams.
-    .filter((table) => table.closest('.vditor-reset') && !table.closest('svg'))
-    // Task 723: the front-matter properties table (and its nested map tables) is not a Markdown
-    // table. It fits its name column to the longest name with an auto table layout (main.css), and
-    // the inline `table-layout: fixed !important` below out-ranks every stylesheet rule, which gave
-    // the name column one equal share again after a pass (measured 39 px in Preview). Left alone.
-    .filter((table) => !table.closest('.vmde-front-matter'))
-  tables.forEach((table) => {
-    // Volatile width rules live outside Lute-owned DOM. The normalizer still owns every
-    // pasted/Vditor inline width, while min-width lets a wide result scroll.
-    const widths = sessionTableWidths(table)
-    if (widths) ensureSessionTableWidths(table)
-    // `width` is not an ignored attribute (class and style are): quiet, so the unit-DOM shadow model
-    // sees no edit.
-    // Quiet only when there is a width to remove: removing an absent attribute records nothing, and
-    // the quiet hand-off costs a `takeRecords` per observer on every pass.
-    if (table.hasAttribute('width'))
-      writeQuietly(() => table.removeAttribute('width'))
-    else table.removeAttribute('width')
-    // Keep pasted/Vditor tables in table layout without outranking stateful visibility rules:
-    // details collapse uses `display: none !important`, while build.mjs already patches Vditor's
-    // base `.vditor-reset table` display. A normal-priority inline value preserves both contracts.
-    table.style.setProperty('display', 'table')
-    table.style.setProperty('table-layout', 'fixed', 'important')
-    setImportantOnChange(table, 'width', TABLE_FILL)
-    setImportantOnChange(table, 'max-width', widths ? 'none' : TABLE_FILL)
-    table.style.setProperty(
-      'min-width',
-      widths ? `${widths.reduce((total, width) => total + width, 0)}px` : '0',
-      'important',
-    )
-    table.style.setProperty('box-sizing', 'border-box')
-    syncTableFloor(table)
-    autoWidths.track(table)
-  })
-
+  const tables = responsiveTablesIn(root)
+  for (const table of tables) normalizeTable(table, autoWidths)
   for (const table of tables)
-    for (const element of table.querySelectorAll<HTMLElement>(
-      'colgroup col, th, td',
-    ))
+    for (const element of table.querySelectorAll<HTMLElement>(NORMALIZED_CELLS))
       clearCellWidth(element)
 }
 
@@ -1599,10 +1619,70 @@ export function fixResponsiveTables() {
         clearCellWidth(cell)
     }
   }
+  // Task 733 (012-13, D-13 M1): the whole-document pass runs as the idle job `table-normalize` on
+  // the shared budget: one table step, then one cell per unit, with the deadline checked before
+  // each. A new full request restarts it from the first table (the cursor is dropped).
+  const scheduler = backgroundSchedulerOf(window)
+  let normalizeTables: HTMLTableElement[] | undefined
+  let normalizeCells: NodeListOf<HTMLElement> | undefined
+  let tableAt = 0
+  let cellAt = 0
+  let inlineDeadline = 0
+  const inlineBudget: SliceBudget = {
+    spent: () => performance.now() >= inlineDeadline || inputPending(),
+  }
+  /** One table of the pass: its table step, then its cells; false when the slice ran out first. */
+  function normalizeNextTable(
+    tables: HTMLTableElement[],
+    budget: SliceBudget,
+  ): boolean {
+    if (!normalizeCells) {
+      if (budget.spent()) return false
+      const table = tables[tableAt]
+      // Re-read at each step (R-1): a table that left the document is skipped.
+      if (!table.isConnected) {
+        tableAt++
+        return true
+      }
+      normalizeTable(table, autoWidths)
+      normalizeCells = table.querySelectorAll<HTMLElement>(NORMALIZED_CELLS)
+      cellAt = 0
+    }
+    while (cellAt < normalizeCells.length) {
+      if (budget.spent()) return false
+      clearCellWidth(normalizeCells[cellAt++])
+    }
+    normalizeCells = undefined
+    tableAt++
+    return true
+  }
+  const normalizeJob: BackgroundJob = {
+    name: 'table-normalize',
+    lane: 'idle',
+    step(budget) {
+      if (!normalizeTables) {
+        if (budget.spent()) return true
+        autoWidths.beginPass(true)
+        normalizeTables = responsiveTablesIn(root)
+        tableAt = 0
+        normalizeCells = undefined
+      }
+      while (tableAt < normalizeTables.length)
+        if (!normalizeNextTable(normalizeTables, budget)) return true
+      normalizeTables = undefined
+      autoWidths.onFullPass()
+      return false
+    },
+  }
   const syncTables = debounce(() => {
-    const full = pendingFull
-    if (full) normalizeResponsiveTables(root, autoWidths, true)
-    else {
+    if (pendingFull) {
+      // The debounce timer is idle-time work already: its first slice runs here, bounded like an
+      // idle slice, so a small document is normalized in this task; the rest waits for the job.
+      normalizeTables = undefined
+      scheduler.cancel(normalizeJob)
+      inlineDeadline = performance.now() + IDLE_SLICE_MS
+      if (normalizeJob.step(inlineBudget)) scheduler.post(normalizeJob)
+    } else {
       for (const block of pendingBlocks)
         normalizeResponsiveTables(block, autoWidths)
       normalizePendingCells()
@@ -1610,7 +1690,6 @@ export function fixResponsiveTables() {
     pendingBlocks.clear()
     pendingCells.clear()
     pendingFull = false
-    if (full) autoWidths.onFullPass()
   }, 16)
 
   const queueFull = () => {
@@ -1747,6 +1826,9 @@ export function fixResponsiveTables() {
     mutationObserver.disconnect()
     resizeObserver?.disconnect()
     syncTables.cancel()
+    scheduler.cancel(normalizeJob)
+    normalizeTables = undefined
     autoWidths.dispose()
+    releaseMeasureHost(root)
   }
 }

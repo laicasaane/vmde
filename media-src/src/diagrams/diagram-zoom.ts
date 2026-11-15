@@ -21,7 +21,18 @@ import {
   createDiagramViewportController,
   registerDiagramViewportController,
 } from './diagram-viewport-controller'
-import { classifyAndRecordEditorSurfaceMutations } from '../util/mutation-impact'
+import {
+  classifyAndRecordEditorSurfaceMutations,
+  forEachChangeScope,
+  forEachRecordScope,
+  liveFeedOf,
+  onLiveChange,
+} from '../util/mutation-impact'
+import {
+  type BackgroundJob,
+  backgroundSchedulerOf,
+  type SliceBudget,
+} from '../util/background-budget'
 const STATIC_SVG_DIAGRAM = engineLangs((e) => e.zoom === 'static')
   .map((lang) => `.language-${lang}`)
   .join(',')
@@ -261,10 +272,60 @@ function decorateAll(root: ParentNode): void {
   }
 }
 
+/** The full decorate pass as a frame job: one static diagram per unit, with its own cursor. */
+function createDecoratePass(
+  app: HTMLElement,
+  disposed: () => boolean,
+): BackgroundJob & { restart(): void } {
+  let found: NodeListOf<HTMLElement> | undefined
+  let at = 0
+  return {
+    name: 'diagram-decorate',
+    lane: 'frame',
+    restart() {
+      found = undefined
+    },
+    step(budget) {
+      if (disposed() || !app.isConnected) {
+        found = undefined
+        return false
+      }
+      if (!found) {
+        if (budget.spent()) return true
+        found = app.querySelectorAll<HTMLElement>(STATIC_SVG_DIAGRAM)
+        at = 0
+      }
+      if (!decorateFrom(found, budget)) return true
+      found = undefined
+      return false
+    },
+  }
+
+  /** Decorates from the cursor; false when the slice ran out first. */
+  function decorateFrom(
+    list: NodeListOf<HTMLElement>,
+    budget: SliceBudget,
+  ): boolean {
+    for (; at < list.length; at++) {
+      if (budget.spent()) return false
+      const diagram = list[at]
+      if (diagram.isConnected && diagram.closest(PREVIEW_PANES))
+        decorate(diagram)
+    }
+    return true
+  }
+}
+
 let observer: MutationObserver | null = null
+let disposeCurrent: (() => void) | null = null
 
 /** Wire inline zoom/pan + the ⛶ button on every rendered static-SVG diagram. Idempotent; observes
- *  #app so it survives async renders, per-keystroke rebuilds, and mode switches. Returns a disposer. */
+ *  #app so it survives async renders, per-keystroke rebuilds, and mode switches. Returns a disposer.
+ *  Task 733 (012-13, D-13 M1/M2): the full pass (open, a record outside the feed root the classifier
+ *  cannot scope, a pending block that left the document without a live feed) runs as the frame job
+ *  `diagram-decorate`, one diagram per unit. While the unit feed is live, records inside its root are
+ *  left to the feed (binding rule 6); the change scopes and the render subtrees the feed never
+ *  reports (`forEachRecordScope`) are decorated in the next frame. */
 export function observeDiagramZoom(app: HTMLElement | null): () => void {
   // No editor root mounted yet — nothing to observe; hand back a no-op
   // disposer so callers can always call the returned teardown unconditionally.
@@ -272,18 +333,41 @@ export function observeDiagramZoom(app: HTMLElement | null): () => void {
     return () => {
       /* no-op disposer */
     }
-  let scheduled = false
-  let pendingFull = true
+  disposeCurrent?.()
+  const scheduler = backgroundSchedulerOf(window)
+  let disposed = false
+  const fullPass = createDecoratePass(app, () => disposed)
+  const postFull = (): void => {
+    fullPass.restart()
+    scheduler.post(fullPass)
+  }
+  let frame = 0
   const pendingBlocks = new Set<HTMLElement>()
   const run = () => {
-    scheduled = false
-    if (pendingFull || [...pendingBlocks].some((block) => !block.isConnected))
-      decorateAll(app)
-    else for (const block of pendingBlocks) decorateAll(block)
-    pendingFull = false
+    frame = 0
+    const live = liveFeedOf(app) !== undefined
+    for (const block of pendingBlocks) {
+      if (block.isConnected) decorateAll(block)
+      else if (!live) {
+        postFull()
+        break
+      }
+    }
     pendingBlocks.clear()
   }
-  const schedule = (records: MutationRecord[] = []) => {
+  const schedule = () => {
+    if (!frame) frame = requestAnimationFrame(run)
+  }
+  const add = (block: Element) => {
+    if (block instanceof HTMLElement) pendingBlocks.add(block)
+  }
+  const onRecords = (records: MutationRecord[]) => {
+    if (liveFeedOf(app)) {
+      const before = pendingBlocks.size
+      forEachRecordScope(app, records, add)
+      if (pendingBlocks.size > before) schedule()
+      return
+    }
     const classified = classifyAndRecordEditorSurfaceMutations(
       'diagram-zoom',
       records,
@@ -291,19 +375,36 @@ export function observeDiagramZoom(app: HTMLElement | null): () => void {
     if (!classified) return
     const { impact, pass } = classified
     if (pass === 'skipped') return
-    if (impact.full) pendingFull = true
-    if (!pendingFull)
-      for (const block of impact.blocks) pendingBlocks.add(block)
-    if (scheduled) return
-    scheduled = true
-    requestAnimationFrame(run)
+    if (impact.full) {
+      postFull()
+      return
+    }
+    for (const block of impact.blocks) add(block)
+    schedule()
   }
   observer?.disconnect()
-  observer = new MutationObserver(schedule)
+  observer = new MutationObserver(onRecords)
   observer.observe(app, { childList: true, subtree: true })
-  schedule()
-  return () => {
+  const offFeed = onLiveChange(app, (change) => {
+    if (change.whole) {
+      postFull()
+      return
+    }
+    const before = pendingBlocks.size
+    forEachChangeScope(change, add)
+    if (pendingBlocks.size > before) schedule()
+  })
+  postFull()
+  const dispose = () => {
+    if (disposed) return
+    disposed = true
     observer?.disconnect()
     observer = null
+    offFeed()
+    scheduler.cancel(fullPass)
+    if (frame) cancelAnimationFrame(frame)
+    if (disposeCurrent === dispose) disposeCurrent = null
   }
+  disposeCurrent = dispose
+  return dispose
 }

@@ -44,7 +44,17 @@ import {
   HOIST_SCOPE_CHANGE_EVENT,
   isSectionHoistHidden,
 } from '../util/source-map'
-import { classifyAndRecordEditorSurfaceMutations } from '../util/mutation-impact'
+import {
+  classifyAndRecordEditorSurfaceMutations,
+  forEachChangeScope,
+  forEachRecordScope,
+  liveFeedOf,
+  onLiveChange,
+} from '../util/mutation-impact'
+import {
+  type BackgroundJob,
+  backgroundSchedulerOf,
+} from '../util/background-budget'
 
 // The reusable-SVG custom-diagram languages (see scope note above). Keyed by lang+source so
 // the mechanism is engine-agnostic across these; canvas/WebGL engines (stl) and Leaflet maps
@@ -227,122 +237,160 @@ function diagramIdFor(
 
 // Post the finished renders we haven't reported yet. Engine-agnostic within CACHEABLE_LANGS:
 // walk each rendered target that now holds an <svg>, hash its source, and PUT new hashes only.
+// The PUT itself is identical for both families — only FINDING the target and its source differs
+// (see each per-lang unit below). Shared so a fix to the remember/dedup/post bookkeeping can't land
+// on one family and miss the other. Task 733 (012-13): `diagramId` is a function, called only when a
+// new hash is posted, so a scoped report never scans the root for an ordinal it does not post.
+function putRender(
+  post: (msg: WebviewMessage) => void,
+  reported: Set<string>,
+  lang: string,
+  el: HTMLElement,
+  source: string,
+  diagramId: () => string,
+): void {
+  if (isSectionHoistHidden(el)) return
+  // Task 705: a render degraded by an ELK -> dagre fallback must not be reused once ELK is available
+  // again (cache hit, mode-switch reuse, host PUT), so it is neither remembered nor reported. Other
+  // warnings (terminal-labels, empty-drawing) are deterministic for the same source and key, so
+  // they are cached together with their box.
+  if (
+    el.querySelector(
+      '.vmde-diagram-warning[data-vmde-warning~="layout-fallback"]',
+    )
+  )
+    return
+  const hash = hashOf(lang, source)
+  // STALE-RENDER GUARD (task 436, measured). This observer fires on ANY mutation, including the
+  // ones a theme flip causes — and the flip moves `themeKey` 400 ms BEFORE the re-theme runs, so
+  // `hash` is already the new theme's key while the block still holds the render made under the
+  // OLD one. Reporting that files a pre-flip SVG under the post-flip key: not a miss, a POISONED
+  // entry that the next lookup paints straight back, and the diagram stops following the theme.
+  // Measured in retheme-flip-matrix: all 12 D2 blocks, reported under the light key while still
+  // painted dark.
+  //
+  // TWO conditions, because one is not enough for an ASYNC engine:
+  //
+  // 1. The STAMP — the key the block's current markup was produced under. A mismatch means it has
+  //    not been redrawn since the flip. Dropped by every redraw entry point in both families
+  //    (`clearRenderKey`: findBlocks / resetCustomBlocks for custom; reRenderLang, reRenderMermaid,
+  //    reRenderFlowchart and adoptRender for native), so a real re-render reports normally.
+  // 2. The rendered SVG must differ from what was last reported. Clearing the stamp announces the
+  //    INTENT to redraw, and d2's WASM compile (~365 ms), mermaid's and plantuml's offscreen
+  //    passes all leave the old picture on screen while they work — a report landing in that
+  //    window would file the old markup under the new key with a cleared stamp, i.e. exactly the
+  //    poison the stamp exists to stop.
+  //
+  // The comparison is over the block's SVG(s) ONLY, deliberately NOT el.innerHTML — measured
+  // (d2-content-theme-flip.spec, 4/6 flake): rethemeCacheFirst's own MISS branch appends a
+  // `vmde-cache-miss` comment to the reserved wrapper to re-fire the observer, which mutated
+  // innerHTML, so during the async re-render window the STILL-STALE svg read as "changed" and slipped
+  // past this guard while findBlocks had already cleared the stamp (defeating condition 1). Comparing
+  // the concatenated svg outerHTML(s) ignores that trigger node and any other non-render sibling, so
+  // an un-redrawn block is correctly seen as unchanged and skipped until the engine actually swaps the
+  // svg. The no-svg case (a d2 error box) never reaches here — the loops below require an <svg>.
+  //
+  // Comparing markup ALONE (even svg-only) was tried first and is not sound in the other direction: a
+  // cached paint re-namespaces the svg's ids (task 373) and the sizing passes rewrite width/height, so
+  // a merely REPAINTED block reads as changed — which is why the STAMP (condition 1) is the primary
+  // guard and this is only its async-window backstop.
+  const stamp = el.getAttribute(RENDER_KEY_ATTR)
+  if (stamp !== null && stamp !== cfg.themeKey) return
+  // Task 491 — a `vmde-cache-miss` comment still present means resolveRequest's miss branch
+  // un-reserved this block (cleared data-processed + stamped a re-fire comment) but the engine's
+  // re-render has NOT swapped innerHTML yet. The svg is still the PRE-flip bytes while cfg.themeKey
+  // is already the post-flip one — filing them now is the exact stale-render poison the guard
+  // exists to stop. The stamp was cleared by findBlocks (render starting) so condition 1 can't
+  // catch it, and `svgOnly` deliberately ignores the comment node (it's a non-render sibling), so
+  // condition 2 can't see it either — check for the comment explicitly. Once renderD2 replaces
+  // innerHTML the comment is gone with the old svg and this block reports normally.
+  if (el.innerHTML.includes('vmde-cache-miss')) return
+  const svgMarkup = svgOnly(el)
+  if (stamp === null && lastPutMarkup.get(el) === svgMarkup) return
+  el.setAttribute(RENDER_KEY_ATTR, cfg.themeKey)
+  lastPutMarkup.set(el, svgMarkup)
+  // Remember it locally even when the host already has it — the host copy is only readable via
+  // an async round-trip that no longer happens after open (task 365).
+  rememberLocal(localKey(lang, source), el.innerHTML)
+  if (reported.has(hash)) return
+  reported.add(hash)
+  post({
+    command: 'diagram-render-cached',
+    diagramId: diagramId(),
+    hash,
+    svg: el.innerHTML,
+  })
+}
+
+/** Reports the rendered custom-family targets of `lang` under `root` (one unit of a report). */
+function reportCustomLang(
+  lang: string,
+  root: ParentNode,
+  post: (msg: WebviewMessage) => void,
+  reported: Set<string>,
+  identityRoot: ParentNode,
+): void {
+  for (const wrapper of Array.from(
+    root.querySelectorAll<HTMLElement>(`div.language-${lang}[data-code]`),
+  )) {
+    if (!wrapper.querySelector('svg')) continue // not (yet) rendered
+    const source = wrapper.getAttribute('data-code') ?? ''
+    if (!source) continue
+    putRender(post, reported, lang, wrapper, source, () =>
+      diagramIdFor(identityRoot, wrapper, lang),
+    )
+  }
+}
+
+// Native engines (incl. plantuml): the render target is the preview-pane `.language-<lang>` (now
+// holding an <svg>); hash from the editable marker source (survives render, matches the reserve).
+// Ordinal among that lang's previews in document order = a stable diagramId for the host pinned set;
+// Task 733 (012-13): the panes of `identityRoot` are listed only when a new hash is posted.
+function reportNativeLang(
+  lang: string,
+  root: ParentNode,
+  post: (msg: WebviewMessage) => void,
+  reported: Set<string>,
+  identityRoot: ParentNode,
+): void {
+  const panes = nativePanes(root, lang)
+  let allPanes: HTMLElement[] | undefined =
+    identityRoot === root ? panes : undefined
+  for (const pane of panes) {
+    const live = pane.querySelector<HTMLElement>(`.language-${lang}`)
+    if (!live?.querySelector('svg')) continue
+    // Task 466 — read the source off `live` itself (`nativePanes` is currently scoped to
+    // `PREVIEW_PANE_SEL`, IR/WYSIWYG only, which pair 1:1 with `live` anyway), not a pane-wide
+    // first-match query — see `nativeSourceForLive`'s own comment for why that matters the moment
+    // this scope ever widens to include `.vditor-preview`.
+    const source = nativeSourceForLive(live, lang)
+    if (!source) continue
+    // Remembering matters here for the same reason as above: this is what a LATER pane (the full
+    // Preview, which the open-path reserve never covers) reuses instead of running the engine again.
+    putRender(post, reported, lang, live, source, () => {
+      allPanes ??= nativePanes(identityRoot, lang)
+      return `${lang}#${Math.max(0, allPanes.indexOf(pane))}`
+    })
+  }
+}
+
+// One unit of a report per language: the custom family first, then the native engines.
+const REPORT_UNITS: ReadonlyArray<{
+  lang: string
+  run: typeof reportCustomLang
+}> = [
+  ...CACHEABLE_LANGS.map((lang) => ({ lang, run: reportCustomLang })),
+  ...NATIVE_RESERVE_LANGS.map((lang) => ({ lang, run: reportNativeLang })),
+]
+
 function reportRenders(
   root: ParentNode,
   post: (msg: WebviewMessage) => void,
   reported: Set<string>,
   identityRoot: ParentNode = root,
 ): void {
-  // The PUT itself is identical for both families — only FINDING the target and its source differs
-  // (see each loop). Shared so a fix to the remember/dedup/post bookkeeping can't land on one family
-  // and miss the other.
-  const put = (
-    lang: string,
-    el: HTMLElement,
-    source: string,
-    diagramId: string,
-  ): void => {
-    if (isSectionHoistHidden(el)) return
-    // Task 705: a render degraded by an ELK -> dagre fallback must not be reused once ELK is available
-    // again (cache hit, mode-switch reuse, host PUT), so it is neither remembered nor reported. Other
-    // warnings (terminal-labels, empty-drawing) are deterministic for the same source and key, so
-    // they are cached together with their box.
-    if (
-      el.querySelector(
-        '.vmde-diagram-warning[data-vmde-warning~="layout-fallback"]',
-      )
-    )
-      return
-    const hash = hashOf(lang, source)
-    // STALE-RENDER GUARD (task 436, measured). This observer fires on ANY mutation, including the
-    // ones a theme flip causes — and the flip moves `themeKey` 400 ms BEFORE the re-theme runs, so
-    // `hash` is already the new theme's key while the block still holds the render made under the
-    // OLD one. Reporting that files a pre-flip SVG under the post-flip key: not a miss, a POISONED
-    // entry that the next lookup paints straight back, and the diagram stops following the theme.
-    // Measured in retheme-flip-matrix: all 12 D2 blocks, reported under the light key while still
-    // painted dark.
-    //
-    // TWO conditions, because one is not enough for an ASYNC engine:
-    //
-    // 1. The STAMP — the key the block's current markup was produced under. A mismatch means it has
-    //    not been redrawn since the flip. Dropped by every redraw entry point in both families
-    //    (`clearRenderKey`: findBlocks / resetCustomBlocks for custom; reRenderLang, reRenderMermaid,
-    //    reRenderFlowchart and adoptRender for native), so a real re-render reports normally.
-    // 2. The rendered SVG must differ from what was last reported. Clearing the stamp announces the
-    //    INTENT to redraw, and d2's WASM compile (~365 ms), mermaid's and plantuml's offscreen
-    //    passes all leave the old picture on screen while they work — a report landing in that
-    //    window would file the old markup under the new key with a cleared stamp, i.e. exactly the
-    //    poison the stamp exists to stop.
-    //
-    // The comparison is over the block's SVG(s) ONLY, deliberately NOT el.innerHTML — measured
-    // (d2-content-theme-flip.spec, 4/6 flake): rethemeCacheFirst's own MISS branch appends a
-    // `vmde-cache-miss` comment to the reserved wrapper to re-fire the observer, which mutated
-    // innerHTML, so during the async re-render window the STILL-STALE svg read as "changed" and slipped
-    // past this guard while findBlocks had already cleared the stamp (defeating condition 1). Comparing
-    // the concatenated svg outerHTML(s) ignores that trigger node and any other non-render sibling, so
-    // an un-redrawn block is correctly seen as unchanged and skipped until the engine actually swaps the
-    // svg. The no-svg case (a d2 error box) never reaches here — the loops below require an <svg>.
-    //
-    // Comparing markup ALONE (even svg-only) was tried first and is not sound in the other direction: a
-    // cached paint re-namespaces the svg's ids (task 373) and the sizing passes rewrite width/height, so
-    // a merely REPAINTED block reads as changed — which is why the STAMP (condition 1) is the primary
-    // guard and this is only its async-window backstop.
-    const stamp = el.getAttribute(RENDER_KEY_ATTR)
-    if (stamp !== null && stamp !== cfg.themeKey) return
-    // Task 491 — a `vmde-cache-miss` comment still present means resolveRequest's miss branch
-    // un-reserved this block (cleared data-processed + stamped a re-fire comment) but the engine's
-    // re-render has NOT swapped innerHTML yet. The svg is still the PRE-flip bytes while cfg.themeKey
-    // is already the post-flip one — filing them now is the exact stale-render poison the guard
-    // exists to stop. The stamp was cleared by findBlocks (render starting) so condition 1 can't
-    // catch it, and `svgOnly` deliberately ignores the comment node (it's a non-render sibling), so
-    // condition 2 can't see it either — check for the comment explicitly. Once renderD2 replaces
-    // innerHTML the comment is gone with the old svg and this block reports normally.
-    if (el.innerHTML.includes('vmde-cache-miss')) return
-    const svgMarkup = svgOnly(el)
-    if (stamp === null && lastPutMarkup.get(el) === svgMarkup) return
-    el.setAttribute(RENDER_KEY_ATTR, cfg.themeKey)
-    lastPutMarkup.set(el, svgMarkup)
-    // Remember it locally even when the host already has it — the host copy is only readable via
-    // an async round-trip that no longer happens after open (task 365).
-    rememberLocal(localKey(lang, source), el.innerHTML)
-    if (reported.has(hash)) return
-    reported.add(hash)
-    post({
-      command: 'diagram-render-cached',
-      diagramId,
-      hash,
-      svg: el.innerHTML,
-    })
-  }
-  for (const lang of CACHEABLE_LANGS) {
-    for (const wrapper of Array.from(
-      root.querySelectorAll<HTMLElement>(`div.language-${lang}[data-code]`),
-    )) {
-      if (!wrapper.querySelector('svg')) continue // not (yet) rendered
-      const source = wrapper.getAttribute('data-code') ?? ''
-      if (!source) continue
-      put(lang, wrapper, source, diagramIdFor(identityRoot, wrapper, lang))
-    }
-  }
-  // Native engines (incl. plantuml): the render target is the preview-pane `.language-<lang>` (now
-  // holding an <svg>); hash from the editable marker source (survives render, matches the reserve).
-  // Ordinal among that lang's previews in document order = a stable diagramId for the host pinned set.
-  for (const lang of NATIVE_RESERVE_LANGS) {
-    const allPanes = nativePanes(identityRoot, lang)
-    nativePanes(root, lang).forEach((pane) => {
-      const live = pane.querySelector<HTMLElement>(`.language-${lang}`)
-      if (!live?.querySelector('svg')) return
-      // Task 466 — read the source off `live` itself (`nativePanes` is currently scoped to
-      // `PREVIEW_PANE_SEL`, IR/WYSIWYG only, which pair 1:1 with `live` anyway), not a pane-wide
-      // first-match query — see `nativeSourceForLive`'s own comment for why that matters the moment
-      // this scope ever widens to include `.vditor-preview`.
-      const source = nativeSourceForLive(live, lang)
-      if (!source) return
-      // Remembering matters here for the same reason as above: this is what a LATER pane (the full
-      // Preview, which the open-path reserve never covers) reuses instead of running the engine again.
-      put(lang, live, source, `${lang}#${Math.max(0, allPanes.indexOf(pane))}`)
-    })
-  }
+  for (const unit of REPORT_UNITS)
+    unit.run(unit.lang, root, post, reported, identityRoot)
 }
 
 // Task 365 — the SAME-SESSION, in-memory half of the cache: hash → the SVG markup this webview
@@ -881,24 +929,70 @@ export function installRenderCache(
   document.addEventListener(HOIST_SCOPE_CHANGE_EVENT, onHoistScopeChange)
   // PUT observer: after any render lands, report new SVGs. rAF-debounced + idempotent
   // (dedup by reported hash), so the wider #app scope is cheap.
+  // Task 733 (012-13, D-13 M1/M2): a full report (open, a record outside the feed root that the
+  // classifier cannot scope, a pending block that left the document) runs as the frame job
+  // `diagram-report`, one language per unit. While the unit feed is live, records inside its root
+  // are left to the feed (binding rule 6): the feed's change scopes, and the render subtrees the
+  // feed never reports (`forEachRecordScope`), are reported in the next frame.
+  const scheduler = backgroundSchedulerOf(window)
+  let reportAt = 0
+  let disposed = false
+  const fullReport: BackgroundJob = {
+    name: 'diagram-report',
+    lane: 'frame',
+    step(budget) {
+      // Re-read the state at each step (R-1): a disposed install or a root gone ends the pass.
+      if (disposed || !appEl.isConnected) {
+        reportAt = 0
+        return false
+      }
+      while (reportAt < REPORT_UNITS.length) {
+        if (budget.spent()) return true
+        const unit = REPORT_UNITS[reportAt++]
+        unit.run(unit.lang, appEl, post, reportedHashes, appEl)
+      }
+      reportAt = 0
+      return false
+    },
+  }
+  const postFull = (): void => {
+    // A new full pass starts over: renders that landed since the cursor passed their language count.
+    reportAt = 0
+    scheduler.post(fullReport)
+  }
   let raf = 0
-  let pendingFull = true
   const pendingBlocks = new Set<HTMLElement>()
+  const reportPending = (): void => {
+    raf = 0
+    // Without a live feed, a block that left the document has no named replacement: report all.
+    // With one, the change's scopes name the replacement (binding rule 4), so it is skipped.
+    const live = liveFeedOf(appEl) !== undefined
+    for (const block of pendingBlocks) {
+      if (block.isConnected) reportRenders(block, post, reportedHashes, appEl)
+      else if (!live) {
+        postFull()
+        break
+      }
+    }
+    pendingBlocks.clear()
+  }
   const schedule = () => {
-    if (raf) return
-    raf = requestAnimationFrame(() => {
-      raf = 0
-      const blocks = [...pendingBlocks]
-      if (pendingFull || blocks.some((block) => !block.isConnected))
-        reportRenders(appEl, post, reportedHashes)
-      else
-        for (const block of blocks)
-          reportRenders(block, post, reportedHashes, appEl)
-      pendingFull = false
-      pendingBlocks.clear()
-    })
+    if (!raf) raf = requestAnimationFrame(reportPending)
+  }
+  const addBlock = (block: Element): void => {
+    if (block instanceof HTMLElement) pendingBlocks.add(block)
   }
   const obs = new MutationObserver((records) => {
+    if (liveFeedOf(appEl)) {
+      let found = false
+      forEachRecordScope(appEl, records, (scope) => {
+        found = true
+        paintLocalHits(scope)
+        addBlock(scope)
+      })
+      if (found) schedule()
+      return
+    }
     const classified = classifyAndRecordEditorSurfaceMutations(
       'render-cache',
       records,
@@ -906,19 +1000,39 @@ export function installRenderCache(
     if (!classified) return
     const { impact, pass } = classified
     if (pass === 'skipped') return
-    if (impact.full) pendingFull = true
-    if (!pendingFull)
-      for (const block of impact.blocks) pendingBlocks.add(block)
-    const roots = pendingFull ? [appEl] : [...impact.blocks]
     // SYNCHRONOUS first — a mode switch builds a whole new pane in one batch, and this must land
     // before observeCustomDiagrams' rAF pass re-runs the engine over it (task 365).
-    for (const root of roots) paintLocalHits(root)
+    if (impact.full) {
+      paintLocalHits(appEl)
+      postFull()
+      return
+    }
+    for (const block of impact.blocks) {
+      paintLocalHits(block)
+      addBlock(block)
+    }
     schedule()
   })
   obs.observe(appEl, { childList: true, subtree: true })
-  schedule()
+  const offFeed = onLiveChange(appEl, (change) => {
+    if (change.whole) {
+      postFull()
+      return
+    }
+    let found = false
+    forEachChangeScope(change, (scope) => {
+      found = true
+      paintLocalHits(scope)
+      pendingBlocks.add(scope)
+    })
+    if (found) schedule()
+  })
+  postFull()
   return () => {
+    disposed = true
     obs.disconnect()
+    offFeed()
+    scheduler.cancel(fullReport)
     if (raf) cancelAnimationFrame(raf)
     document.removeEventListener(HOIST_SCOPE_CHANGE_EVENT, onHoistScopeChange)
   }

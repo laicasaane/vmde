@@ -1,10 +1,19 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   mountDiagramControls,
   observeDiagramControls,
 } from './diagram-controls'
+import {
+  type Factor,
+  costClock,
+  countBudget,
+  fakeLanes,
+  irFixture,
+} from '../testing/budget-harness'
+import type { UnitsChange } from '../util/unit-changes'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 function controller() {
   let pan = false
@@ -20,6 +29,17 @@ function controller() {
 }
 
 describe('diagram controls', () => {
+  // Task 733 (012-13): the open pass runs in frame slices on the shared scheduler
+  // (`diagram-decorate`, a 4 ms frame budget on the real clock). The cases here wait one real
+  // frame and then read the decorations, so on a slow clock the pass could still be running (or
+  // resume after a case's own mutation). The clock is held still in these cases, so the open pass
+  // finishes in its first frame; the cases check decoration, not slicing (the budget tests do).
+  let heldClock: { mockRestore(): void } | undefined
+  beforeEach(() => {
+    heldClock = vi.spyOn(performance, 'now').mockReturnValue(0)
+  })
+  afterEach(() => heldClock?.mockRestore())
+
   it('mounts one semantic four-button bar in fixed order', () => {
     const wrapper = document.createElement('div')
     const c = controller()
@@ -115,3 +135,181 @@ describe('diagram controls', () => {
     dispose()
   })
 })
+
+// Task 733 (012-13, D-13 test B-10): the viewport controls on the unit feed. The frame after a
+// change outside any diagram queries nothing under the root; a diagram spun inside the change's
+// scope gets its bar; the open `decorateAll` runs as the frame job `diagram-decorate` in slices of
+// at most 4 + 2 ms on the cost clock. Modules are imported again per case (fresh registries).
+describe.each([1, 4, 16] as const)(
+  'diagram controls frame budget at factor %i (D-13 B-10)',
+  { timeout: 60_000 },
+  (factor: Factor) => {
+    const fences = [
+      '',
+      '```markmap',
+      '# Root',
+      '## Branch',
+      '```',
+      '',
+      '```echarts',
+      '{"series":[]}',
+      '```',
+      '',
+    ].join('\n')
+    // A markmap picture carries its live instance on the svg; that instance is what gives the
+    // wrapper a viewport controller (no zoom observer is needed for markmap).
+    const markmapPicture = (target: Element) => {
+      target.innerHTML = '<svg><g></g></svg>'
+      ;(
+        target.querySelector('svg') as SVGSVGElement & { __vmdeMm?: unknown }
+      ).__vmdeMm = {}
+    }
+    const rendered = (fixtureRoot: HTMLElement) => {
+      for (const target of fixtureRoot.querySelectorAll(
+        '.vditor-ir__preview > .language-markmap',
+      ))
+        markmapPicture(target)
+    }
+    let root: HTMLElement
+    let lanes: ReturnType<typeof fakeLanes>
+    let clock: ReturnType<typeof costClock>
+    let notify: (change: UnitsChange & { scopes?: HTMLElement[] }) => void
+    let stop: () => void
+    let openSlowest: number
+
+    /** Every frame until none is queued: summed root queries, slowest frame on the cost clock. */
+    function settleFrames(): { rootQueries: number; slowest: number } {
+      const result = { rootQueries: 0, slowest: 0 }
+      let queued = true
+      const request = lanes.requestAnimationFrame
+      lanes.requestAnimationFrame = (callback) => {
+        queued = true
+        return request(callback)
+      }
+      try {
+        for (let frame = 0; queued && frame < 400; frame++) {
+          queued = false
+          const before = clock.now()
+          result.rootQueries += countBudget(root, () =>
+            lanes.runFrame(),
+          ).counts.rootQueries
+          result.slowest = Math.max(result.slowest, clock.now() - before)
+        }
+      } finally {
+        lanes.requestAnimationFrame = request
+      }
+      return result
+    }
+
+    beforeEach(async () => {
+      vi.resetModules()
+      root = irFixture(tableHeavyMarkdown(factor) + fences, rendered).root
+      const app = document.createElement('div')
+      app.id = 'app'
+      app.append(root.parentElement as HTMLElement)
+      document.body.replaceChildren(app)
+      clock = costClock()
+      lanes = fakeLanes(clock)
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+        lanes.requestAnimationFrame(() => callback(clock.now())),
+      )
+      vi.stubGlobal('cancelAnimationFrame', (handle: number) =>
+        lanes.cancelAnimationFrame(handle),
+      )
+      vi.spyOn(performance, 'now').mockImplementation(() => clock.now())
+      const listeners = new Set<(change: UnitsChange) => void>()
+      notify = (change) => {
+        for (const listener of [...listeners]) listener(change)
+      }
+      const changes = await import('../util/unit-changes')
+      changes.provideUnitFeed(window, {
+        root,
+        isLive: () => true,
+        liveUnitOf: () => undefined,
+        liveUnits: () => undefined,
+        onUnitsChanged(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        confirmNow: () => true,
+        confirmedLines: () => undefined,
+      })
+      const controls = await import('./diagram-controls')
+      const dispose = controls.observeDiagramControls(app)
+      stop = () => {
+        dispose()
+        changes.provideUnitFeed(window, undefined)
+      }
+      openSlowest = settleFrames().slowest
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      settleFrames()
+    }, 60_000)
+    afterEach(() => {
+      stop()
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }, 60_000)
+
+    it('mounts the open bars in frame slices of at most 4 + 2 ms', () => {
+      expect(openSlowest).toBeLessThanOrEqual(6)
+      expect(root.querySelector('.vmde-diagram-controls')).not.toBeNull()
+    })
+
+    it('queries nothing under the root after a paragraph spun twice in one frame', async () => {
+      let paragraph = root.querySelector<HTMLElement>(
+        ':scope > p',
+      ) as HTMLElement
+      for (const text of ['first key', 'second key']) {
+        const spun = paragraph.cloneNode(true) as HTMLElement
+        spun.textContent = text
+        paragraph.replaceWith(spun)
+        paragraph = spun
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+      notify({
+        cause: 'mutation',
+        whole: false,
+        changed: [
+          {
+            el: paragraph,
+            members: [paragraph],
+            kind: 'paragraph',
+            top: paragraph,
+          },
+        ],
+        structural: [paragraph],
+        scopes: [paragraph],
+      })
+
+      expect(settleFrames().rootQueries).toBe(0)
+    })
+
+    it('mounts the bar of a diagram spun inside the change scope', async () => {
+      const block = document.createElement('div')
+      block.className = 'vditor-ir__node'
+      block.dataset.block = '0'
+      block.dataset.type = 'code-block'
+      block.innerHTML =
+        '<pre class="vditor-ir__marker--pre vditor-ir__marker"><code class="language-markmap"># New\n</code></pre><pre class="vditor-ir__preview" data-render="2"><div class="language-markmap"></div></pre>'
+      markmapPicture(
+        block.querySelector('.vditor-ir__preview > .language-markmap')!,
+      )
+      root.querySelector(':scope > p')?.after(block)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      notify({
+        cause: 'mutation',
+        whole: false,
+        changed: [{ el: block, members: [block], kind: 'fence', top: block }],
+        structural: [block],
+        scopes: [block],
+      })
+      settleFrames()
+      const bar = block.querySelector(
+        '.vditor-ir__preview .vmde-diagram-controls',
+      )
+      block.remove()
+
+      expect(bar).not.toBeNull()
+    })
+  },
+)

@@ -24,6 +24,12 @@
 import { coalescePerFrame } from '../util/observe-coalesce'
 import { debounce } from '../util/debounce'
 import { reconstructCharts, reconstructMindmaps } from './echarts-retheme'
+import {
+  forEachChangeScope,
+  forEachRecordScope,
+  liveFeedOf,
+  onLiveChange,
+} from '../util/mutation-impact'
 
 type EchartsGlobal = { getInstanceByDom?: (el: Element) => unknown }
 
@@ -73,6 +79,8 @@ export function installEchartsResize(
   let ro: ResizeObserver | undefined
   let mo: MutationObserver | undefined
   let reobserve: ReturnType<typeof coalescePerFrame> | undefined
+  let scopeFrame = 0
+  let offFeed: (() => void) | undefined
   if (typeof win.ResizeObserver === 'function') {
     const onResize = () => {
       if (!raf)
@@ -87,17 +95,55 @@ export function installEchartsResize(
     // (Re)observe diagram containers as Vditor (re)builds them. ResizeObserver.observe is idempotent
     // for an already-observed element, so re-scanning is safe — coalesced per frame (185/2c) so a
     // keystroke's mutation burst pays one querySelectorAll sweep, not one per checkpoint.
-    reobserve = coalescePerFrame(() => {
+    const sweep = () => {
       for (const el of Array.from(
         win.document.querySelectorAll<HTMLElement>(SEL),
       ))
         ro?.observe(el)
-    })
+    }
+    reobserve = coalescePerFrame(sweep)
     const app = win.document.getElementById('app') || win.document.body
-    mo = new win.MutationObserver(reobserve)
+    // Task 733 (012-13, D-13 binding rules 2 and 6): while the unit feed is live, records inside its
+    // root are left to the feed. The containers are looked up inside the change scopes and inside
+    // the render subtrees the feed never reports (`forEachRecordScope`), in the next frame; the
+    // document sweep stays for a whole change and for every record without a live feed.
+    const scopes = new Set<Element>()
+    const observeScopes = () => {
+      scopeFrame = 0
+      for (const scope of scopes) {
+        if (!scope.isConnected) continue
+        if (scope.matches(SEL)) ro?.observe(scope)
+        for (const el of Array.from(scope.querySelectorAll<HTMLElement>(SEL)))
+          ro?.observe(el)
+      }
+      scopes.clear()
+    }
+    const addScope = (scope: Element) => {
+      scopes.add(scope)
+    }
+    const scheduleScopes = () => {
+      if (scopes.size > 0 && !scopeFrame)
+        scopeFrame = win.requestAnimationFrame(observeScopes)
+    }
+    mo = new win.MutationObserver((records) => {
+      if (!liveFeedOf(app)) {
+        reobserve?.()
+        return
+      }
+      forEachRecordScope(app, records, addScope)
+      scheduleScopes()
+    })
     mo.observe(app, {
       childList: true,
       subtree: true,
+    })
+    offFeed = onLiveChange(app, (change) => {
+      if (change.whole) {
+        reobserve?.()
+        return
+      }
+      forEachChangeScope(change, addScope)
+      scheduleScopes()
     })
     reobserve()
   }
@@ -111,6 +157,8 @@ export function installEchartsResize(
     ro?.disconnect()
     mo?.disconnect()
     reobserve?.cancel()
+    offFeed?.()
+    if (scopeFrame) win.cancelAnimationFrame(scopeFrame)
     if (raf) win.cancelAnimationFrame(raf)
     installed = false
   }

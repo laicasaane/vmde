@@ -45,6 +45,16 @@ import {
   rethemeCacheFirst,
 } from './render-cache-client'
 import { HOIST_SCOPE_CHANGE_EVENT } from '../nav/section-hoist'
+import {
+  type BudgetCounts,
+  type Factor,
+  costClock,
+  countBudget,
+  fakeLanes,
+  irFixture,
+} from '../testing/budget-harness'
+import type { UnitsChange } from '../util/unit-changes'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 // Leftover-timer cleanup (task 658).
 // What: `sendRequest` arms a 2000 ms host-reply fallback `window.setTimeout`
@@ -932,6 +942,14 @@ describe('rethemeCacheFirst — cache-first re-render after a theme flip', () =>
 // 12 D2 blocks). Comparing markup instead is NOT sound (a cached paint re-namespaces svg ids, the
 // sizing passes rewrite width/height), which is why the block carries the key it was rendered under.
 describe('reportRenders — a stale render is never filed under a new themeKey', () => {
+  // Task 733 (012-13): the report pass runs in frame slices on the shared scheduler
+  // (`diagram-report`, a 4 ms frame budget on the real clock); these cases wait a fixed 50 ms. The
+  // clock is held still so each pass finishes in its first frame; the budget tests cover slicing.
+  let heldClock: { mockRestore(): void } | undefined
+  beforeEach(() => {
+    heldClock = vi.spyOn(performance, 'now').mockReturnValue(0)
+  })
+  afterEach(() => heldClock?.mockRestore())
   const flush = () => new Promise((r) => setTimeout(r, 50))
   // The PUT pass is rAF-scheduled and jsdom does not run frames unless it is pretending to be
   // visual — drive it off a timer so the observer's work actually happens under test.
@@ -1159,6 +1177,14 @@ describe('reportRenders — a stale render is never filed under a new themeKey',
 // Task 705 (design 2b "Survival") — acceptance: warnings survive the render cache where valid, and a
 // degraded ELK→dagre render is never cached or reused once ELK is available again.
 describe('reportRenders — mermaid warning boxes (task 705)', () => {
+  // Task 733 (012-13): the report pass runs in frame slices on the shared scheduler
+  // (`diagram-report`, a 4 ms frame budget on the real clock); these cases wait a fixed 50 ms. The
+  // clock is held still so each pass finishes in its first frame; the budget tests cover slicing.
+  let heldClock: { mockRestore(): void } | undefined
+  beforeEach(() => {
+    heldClock = vi.spyOn(performance, 'now').mockReturnValue(0)
+  })
+  afterEach(() => heldClock?.mockRestore())
   const flush = () => new Promise((r) => setTimeout(r, 50))
   beforeEach(() => {
     vi.stubGlobal(
@@ -1231,3 +1257,224 @@ describe('reportRenders — mermaid warning boxes (task 705)', () => {
     expect(svg).toContain('data-vmde-warning="terminal-labels"')
   })
 })
+
+// Task 733 (012-13, D-13 test B-10): the render report on the unit feed. After a change outside any
+// diagram the report frame queries nothing under the root (no `nativePanes(root)` pass); a diagram
+// spun inside the change's scope is still reported; the open pass runs as the frame job
+// `diagram-report` in slices of at most 4 + 2 ms on the cost clock. The modules are imported again
+// per test so the module-level registries (feed slot, reported hashes, a scheduler) start empty and
+// take this test's fake frames and clock.
+type ReportChange = UnitsChange & { readonly scopes?: readonly HTMLElement[] }
+
+const DIAGRAM_TAIL = [
+  '',
+  '```mermaid',
+  'graph TD',
+  'A-->B',
+  '```',
+  '',
+  '```echarts',
+  '{"series":[]}',
+  '```',
+  '',
+].join('\n')
+
+/** Gives every collapsed mermaid preview of the fixture a rendered picture, as the engine would. */
+function renderMermaidPreviews(root: HTMLElement): void {
+  for (const target of root.querySelectorAll<HTMLElement>(
+    '.vditor-ir__preview > .language-mermaid',
+  ))
+    target.innerHTML = '<svg><rect width="10" height="10"></rect></svg>'
+}
+
+describe.each([1, 4, 16] as const)(
+  'render report frame budget at factor %i (D-13 B-10)',
+  { timeout: 60_000 },
+  (factor: Factor) => {
+    let app: HTMLElement
+    let root: HTMLElement
+    let clock: ReturnType<typeof costClock>
+    let lanes: ReturnType<typeof fakeLanes>
+    let emit: (change: ReportChange) => void
+    let posted: WebviewMessage[]
+    let openFrameMs: number[]
+    let nowSpy: { mockRestore(): void }
+
+    /** Runs frames until one queues no further frame; each frame counted on the cost clock. */
+    function runFrames(): Array<{ counts: BudgetCounts; ms: number }> {
+      const frames: Array<{ counts: BudgetCounts; ms: number }> = []
+      for (let more = true, guard = 0; more && guard < 400; guard++) {
+        more = false
+        const request = lanes.requestAnimationFrame
+        lanes.requestAnimationFrame = (callback) => {
+          more = true
+          return request(callback)
+        }
+        const start = clock.now()
+        try {
+          frames.push({
+            counts: countBudget(root, () => lanes.runFrame()).counts,
+            ms: clock.now() - start,
+          })
+        } finally {
+          lanes.requestAnimationFrame = request
+        }
+      }
+      return frames
+    }
+
+    const rootQueriesOf = (frames: Array<{ counts: BudgetCounts }>) =>
+      frames.reduce((sum, frame) => sum + frame.counts.rootQueries, 0)
+
+    beforeEach(async () => {
+      vi.resetModules()
+      root = irFixture(
+        tableHeavyMarkdown(factor) + DIAGRAM_TAIL,
+        renderMermaidPreviews,
+      ).root
+      app = document.createElement('div')
+      app.id = 'app'
+      app.append(root.parentElement as HTMLElement)
+      document.body.replaceChildren(app)
+      clock = costClock()
+      lanes = fakeLanes(clock)
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+        lanes.requestAnimationFrame(() => callback(clock.now())),
+      )
+      vi.stubGlobal('cancelAnimationFrame', (handle: number) =>
+        lanes.cancelAnimationFrame(handle),
+      )
+      vi.stubGlobal('requestIdleCallback', (callback: IdleRequestCallback) =>
+        lanes.requestIdle((deadline) =>
+          callback({
+            didTimeout: false,
+            timeRemaining: deadline.timeRemaining,
+          }),
+        ),
+      )
+      vi.stubGlobal('cancelIdleCallback', (handle: number) =>
+        lanes.cancelIdle(handle),
+      )
+      nowSpy = vi
+        .spyOn(performance, 'now')
+        .mockImplementation(() => clock.now())
+      const listeners = new Set<(change: UnitsChange) => void>()
+      emit = (change) => {
+        for (const listener of [...listeners]) listener(change)
+      }
+      const changes = await import('../util/unit-changes')
+      changes.provideUnitFeed(window, {
+        root,
+        isLive: () => true,
+        liveUnitOf: () => undefined,
+        liveUnits: () => undefined,
+        onUnitsChanged(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        confirmNow: () => true,
+        confirmedLines: () => undefined,
+      })
+      const client = await import('./render-cache-client')
+      client.setRenderCacheConfig({
+        version: 'v1',
+        themeKey: 't',
+        cdn: '/cdn',
+        mode: 'dark',
+      })
+      posted = []
+      installedDisposers.push(
+        client.installRenderCache(app, (message) => posted.push(message)),
+      )
+      openFrameMs = runFrames().map((frame) => frame.ms)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      runFrames()
+    }, 60_000)
+    afterEach(async () => {
+      const changes = await import('../util/unit-changes')
+      changes.provideUnitFeed(window, undefined)
+      nowSpy.mockRestore()
+      vi.unstubAllGlobals()
+    }, 60_000)
+
+    const paragraph = () =>
+      root.querySelector<HTMLElement>(':scope > p') as HTMLElement
+    const paragraphUnit = (el: HTMLElement) => ({
+      el,
+      members: [el],
+      kind: 'paragraph' as const,
+      top: el,
+    })
+
+    it('reports the open renders as frame slices of at most 4 + 2 ms', () => {
+      expect(openFrameMs.length).toBeGreaterThan(0)
+      expect(Math.max(...openFrameMs)).toBeLessThanOrEqual(6)
+      expect(
+        posted.some((message) => message.command === 'diagram-render-cached'),
+      ).toBe(true)
+    })
+
+    it('queries nothing under the root after a text change outside any diagram', async () => {
+      const target = paragraph()
+      target.firstChild!.textContent = `edited ${factor}`
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      emit({
+        cause: 'mutation',
+        whole: false,
+        changed: [paragraphUnit(target)],
+        structural: [],
+        scopes: [target],
+      })
+
+      expect(rootQueriesOf(runFrames())).toBe(0)
+    })
+
+    it('runs no nativePanes pass over the root after a spun paragraph', async () => {
+      const old = paragraph()
+      const next = old.cloneNode(true) as HTMLElement
+      next.textContent = `spun ${factor}`
+      old.replaceWith(next)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      emit({
+        cause: 'mutation',
+        whole: false,
+        changed: [paragraphUnit(next)],
+        structural: [next],
+        scopes: [next],
+      })
+
+      expect(rootQueriesOf(runFrames())).toBe(0)
+    })
+
+    it('reports a diagram spun inside the change scope', async () => {
+      const template = root
+        .querySelector('.vditor-ir__preview > .language-mermaid')
+        ?.closest<HTMLElement>('[data-type="code-block"]') as HTMLElement
+      const block = template.cloneNode(true) as HTMLElement
+      const source = `graph LR\nN${factor}-->M\n`
+      block.querySelector('code')!.textContent = source
+      const target = block.querySelector<HTMLElement>(
+        '.vditor-ir__preview > .language-mermaid',
+      ) as HTMLElement
+      for (const name of Array.from(target.attributes))
+        if (name.name !== 'class') target.removeAttribute(name.name)
+      target.innerHTML = '<svg><circle r="4"></circle></svg>'
+      paragraph().after(block)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      posted.length = 0
+      emit({
+        cause: 'mutation',
+        whole: false,
+        changed: [{ el: block, members: [block], kind: 'fence', top: block }],
+        structural: [block],
+        scopes: [block],
+      })
+      runFrames()
+      block.remove()
+
+      expect(
+        posted.filter((message) => message.command === 'diagram-render-cached'),
+      ).toHaveLength(1)
+    })
+  },
+)

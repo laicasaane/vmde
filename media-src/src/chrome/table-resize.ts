@@ -5,6 +5,11 @@ import {
   type UnitsChange,
   unitFeedOf,
 } from '../util/unit-changes'
+import {
+  type BackgroundJob,
+  backgroundSchedulerOf,
+  type SliceBudget,
+} from '../util/background-budget'
 import { requestWrapHintReplan } from '../util/wrap-hint-mark'
 import { findScroller } from './toolbar-scroll-guard'
 
@@ -176,21 +181,49 @@ export interface MeasureHost {
   dispose(): void
 }
 
-export function createMeasureHost(root: HTMLElement): MeasureHost {
-  const element = document.createElement('div')
-  element.setAttribute('data-vmde-measure', 'max')
-  element.className = root.className
-  element.style.cssText =
-    'position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;'
-  const rules = document.createElement('style')
-  rules.textContent = MEASURE_RULES
-  element.append(rules)
-  document.body.append(element)
-  return {
-    element,
-    layout: (kind) => element.setAttribute('data-vmde-measure', kind),
-    dispose: () => element.remove(),
+// Task 733 (012-13, D-13 M4): one persistent host per root. A host built per fill slice inserted and
+// removed its `<style>` each time, and every stylesheet insertion or removal invalidates style for
+// the whole document (the 1.2 to 1.8 s style recalculation of the fill rows at factor 16). The host
+// and its rules are created once per root; a slice mounts and unmounts only clones, `dispose`
+// empties it, and `releaseMeasureHost` removes it at teardown and mode switch.
+const measureHosts = new WeakMap<HTMLElement, MeasureHost>()
+
+export function measureHostFor(root: HTMLElement): MeasureHost {
+  let host = measureHosts.get(root)
+  if (!host) {
+    const element = document.createElement('div')
+    element.setAttribute('data-vmde-measure', 'max')
+    element.style.cssText =
+      'position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;contain:strict;'
+    const rules = document.createElement('style')
+    rules.textContent = MEASURE_RULES
+    element.append(rules)
+    host = {
+      element,
+      layout: (kind) => element.setAttribute('data-vmde-measure', kind),
+      dispose: () => {
+        // Everything but the rules: the clones a slice mounted.
+        while (element.lastChild && element.lastChild !== rules)
+          element.lastChild.remove()
+      },
+    }
+    measureHosts.set(root, host)
   }
+  const { element } = host
+  // Copied at each slice start, so a theme or mode class change on the root reaches the host.
+  if (element.className !== root.className) element.className = root.className
+  if (element.getAttribute('data-vmde-measure') !== 'max')
+    element.setAttribute('data-vmde-measure', 'max')
+  if (!element.isConnected) document.body.append(element)
+  return host
+}
+
+/** Removes the persistent measurement host of `root` (teardown, mode switch). */
+export function releaseMeasureHost(root: HTMLElement): void {
+  const host = measureHosts.get(root)
+  if (!host) return
+  host.element.remove()
+  measureHosts.delete(root)
 }
 
 /** Mirrors the ancestors of `table` up to `root` (exclusive) inside `host`; returns the innermost. */
@@ -331,7 +364,7 @@ export function mountCellMeasurer(
 // fraction of a pixel.
 function autoFitWidth(table: HTMLTableElement, column: number): number {
   const root = document.querySelector<HTMLElement>('.vditor') ?? document.body
-  const host = createMeasureHost(root)
+  const host = measureHostFor(root)
   try {
     const clone = mountMeasureClone(table, root, host.element)
     host.layout('max')
@@ -673,11 +706,25 @@ export function installTableColumnResize(): () => void {
     return true
   }
 
+  // Task 733 (012-13): `headerCells` per table, kept until the table's structure changes (a
+  // structural feed entry, a membership record without a live feed, or a whole change).
+  let headerCache = new WeakMap<HTMLTableElement, HTMLTableCellElement[]>()
+  const cachedHeaderCells = (
+    table: HTMLTableElement,
+  ): HTMLTableCellElement[] => {
+    let cells = headerCache.get(table)
+    if (!cells) {
+      cells = headerCells(table)
+      headerCache.set(table, cells)
+    }
+    return cells
+  }
+
   function reconcileTable(
     table: HTMLTableElement,
     found: Set<HTMLTableElement>,
   ): void {
-    const cells = headerCells(table)
+    const cells = cachedHeaderCells(table)
     if (!cells.length) {
       removeMembership(table)
       return
@@ -720,12 +767,72 @@ export function installTableColumnResize(): () => void {
       if (!table.isConnected) clearSessionTableWidths(table)
   }
 
+  // Task 733 (012-13, D-13 M1): the whole membership pass runs as the frame job `table-membership`,
+  // one table per unit; a new whole request restarts it (the cursor is dropped).
+  const scheduler = backgroundSchedulerOf(window)
+  let passTables: NodeListOf<HTMLTableElement> | undefined
+  let passAt = 0
+  const passFound = new Set<HTMLTableElement>()
+  /** Reconciles the pass's tables from its cursor; false when the slice ran out first. */
+  function reconcilePassTables(
+    tables: NodeListOf<HTMLTableElement>,
+    root: HTMLElement,
+    budget: SliceBudget,
+  ): boolean {
+    while (passAt < tables.length) {
+      if (budget.spent()) return false
+      const table = tables[passAt++]
+      if (table.isConnected && root.contains(table))
+        reconcileTable(table, passFound)
+    }
+    return true
+  }
+  const membershipJob: BackgroundJob = {
+    name: 'table-membership',
+    lane: 'frame',
+    step(budget) {
+      // Re-read the state at each step (R-1): a surface change restarts from the new root.
+      if (!activeRoot || !scroller) {
+        passTables = undefined
+        return false
+      }
+      if (!passTables) {
+        if (budget.spent()) return true
+        passTables = activeRoot.querySelectorAll<HTMLTableElement>('table')
+        passAt = 0
+        passFound.clear()
+      }
+      if (!reconcilePassTables(passTables, activeRoot, budget)) return true
+      passTables = undefined
+      removeMissingMembership(passFound)
+      passFound.clear()
+      scheduleGeometry()
+      return false
+    },
+  }
+
   function reconcileMembership(): void {
     if (!activeRoot || !scroller) return
+    passTables = undefined
+    scheduler.post(membershipJob)
+  }
+
+  /** The tables of structural feed entries: each reconciled alone (no root query). */
+  const structuralTables = new Set<HTMLTableElement>()
+
+  function reconcileStructural(): void {
+    if (!activeRoot || !scroller) {
+      structuralTables.clear()
+      return
+    }
     const found = new Set<HTMLTableElement>()
-    for (const table of activeRoot.querySelectorAll<HTMLTableElement>('table'))
-      reconcileTable(table, found)
-    removeMissingMembership(found)
+    for (const table of structuralTables) {
+      headerCache.delete(table)
+      if (table.isConnected && activeRoot.contains(table))
+        reconcileTable(table, found)
+      else removeMembership(table)
+    }
+    structuralTables.clear()
   }
 
   function surfaceIsVisible(): boolean {
@@ -813,8 +920,9 @@ export function installTableColumnResize(): () => void {
     if (refreshSurface()) membershipDirty = true
     if (membershipDirty) {
       membershipDirty = false
+      structuralTables.clear()
       reconcileMembership()
-    }
+    } else if (structuralTables.size > 0) reconcileStructural()
     if (geometryDirty) {
       geometryDirty = false
       updateGeometry()
@@ -917,8 +1025,11 @@ export function installTableColumnResize(): () => void {
           ? feedRecordEffect(record)
           : mutationEffect(record),
       )
-    if (effects.has('membership')) scheduleMembership()
-    else if (effects.has('geometry')) scheduleGeometry()
+    if (effects.has('membership')) {
+      // Without the feed nothing says which table changed shape: every header is read again.
+      headerCache = new WeakMap()
+      scheduleMembership()
+    } else if (effects.has('geometry')) scheduleGeometry()
   }
 
   /** The unit feed: a whole change or a structural table runs the membership pass; changed cells measure their own table. */
@@ -926,20 +1037,32 @@ export function installTableColumnResize(): () => void {
    * Task 733 (012-4, Q-92): true when a structural entry is or holds a table, the elements the
    * membership pass collects (`reconcileMembership`). A spun paragraph or code block holds none.
    */
-  function structuralHasTable(structural: readonly HTMLElement[]): boolean {
-    for (const element of structural)
-      if (
-        element instanceof HTMLTableElement ||
-        element.querySelector('table') !== null
-      )
-        return true
-    return false
+  function addStructuralTables(structural: readonly HTMLElement[]): void {
+    for (const element of structural) {
+      if (element instanceof HTMLTableElement) structuralTables.add(element)
+      else
+        for (const table of element.querySelectorAll<HTMLTableElement>('table'))
+          structuralTables.add(table)
+    }
   }
 
+  /**
+   * Task 733 (012-13): a whole change runs the membership job; a structural entry that is or holds a
+   * table reconciles only those tables in the next frame (no root query).
+   */
   function onFeedChange(change: UnitsChange, feed: UnitFeed): void {
     if (feed.root !== activeRoot) return
-    if (change.whole || structuralHasTable(change.structural)) {
+    if (change.whole) {
+      headerCache = new WeakMap()
       scheduleMembership()
+      return
+    }
+    const before = structuralTables.size
+    addStructuralTables(change.structural)
+    if (structuralTables.size > before) {
+      geometryDirty = true
+      geometryAll = true
+      scheduleFrame()
       return
     }
     for (const unit of change.changed)
@@ -976,6 +1099,8 @@ export function installTableColumnResize(): () => void {
   return () => {
     offFeed()
     onUp()
+    scheduler.cancel(membershipJob)
+    passTables = undefined
     if (frame) cancelAnimationFrame(frame)
     intersectionObserver?.disconnect()
     resizeObserver?.disconnect()

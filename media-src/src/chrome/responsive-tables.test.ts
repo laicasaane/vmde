@@ -16,6 +16,15 @@ import {
   pairReplacedTables,
   tableFillWidth,
 } from './responsive-tables'
+import {
+  type BudgetCounts,
+  type Factor,
+  costClock,
+  countBudget,
+  fakeLanes,
+  irFixture,
+} from '../testing/budget-harness'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 function mountTables(): {
   firstBlock: HTMLElement
@@ -1312,3 +1321,157 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
     },
   )
 })
+
+// Task 733 (012-13, D-13 test B-08, job and normalize parts): the whole-document normalizer pass runs
+// as the idle job `table-normalize` in slices of at most min(timeRemaining, 8) + 2 ms on the cost
+// clock, and a list structure change normalizes no table. Every timer and idle callback is one task,
+// run under the counters. The modules are imported again per test, so each test's fake lanes and
+// clock reach every module-level registry (feed slot, scheduler, observers).
+describe.each([1, 4, 16] as const)(
+  'table normalize budget at factor %i (D-13 B-08)',
+  { timeout: 60_000 },
+  (factor: Factor) => {
+    let root: HTMLElement
+    let clock: ReturnType<typeof costClock>
+    let lanes: ReturnType<typeof fakeLanes>
+    let idles: Set<number>
+    let emit: (change: UnitsChange & { scopes?: HTMLElement[] }) => void
+
+    /** Runs the queued timers and idle callbacks one task at a time; each task's counts and ms. */
+    function drainTasks(): Array<{ counts: BudgetCounts; ms: number }> {
+      const tasks: Array<{ counts: BudgetCounts; ms: number }> = []
+      for (let guard = 0; guard < 5000; guard++) {
+        let run: (() => void) | undefined
+        if (vi.getTimerCount() > 0) run = () => vi.advanceTimersToNextTimer()
+        else if (idles.size > 0) run = () => lanes.runIdle(50)
+        if (!run) break
+        const start = clock.now()
+        const { counts } = countBudget(root, run)
+        tasks.push({ counts, ms: clock.now() - start })
+      }
+      return tasks
+    }
+
+    beforeEach(async () => {
+      vi.resetModules()
+      vi.useFakeTimers({
+        toFake: [
+          'setTimeout',
+          'clearTimeout',
+          'setInterval',
+          'clearInterval',
+          'Date',
+        ],
+      })
+      root = irFixture(tableHeavyMarkdown(factor)).root
+      const shell = document.createElement('div')
+      shell.className = 'vditor'
+      shell.append(root.parentElement as HTMLElement)
+      document.body.replaceChildren(shell)
+      clock = costClock()
+      lanes = fakeLanes(clock)
+      idles = new Set()
+      vi.stubGlobal('requestIdleCallback', (callback: IdleRequestCallback) => {
+        const handle = lanes.requestIdle((deadline) => {
+          idles.delete(handle)
+          callback({ didTimeout: false, timeRemaining: deadline.timeRemaining })
+        })
+        idles.add(handle)
+        return handle
+      })
+      vi.stubGlobal('cancelIdleCallback', (handle: number) => {
+        idles.delete(handle)
+        lanes.cancelIdle(handle)
+      })
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+        setTimeout(() => callback(clock.now()), 16),
+      )
+      vi.stubGlobal('cancelAnimationFrame', (handle: number) =>
+        clearTimeout(handle),
+      )
+      vi.spyOn(performance, 'now').mockImplementation(() => clock.now())
+      // No table is on screen: the width fill never starts, so every task is normalizer work.
+      vi.stubGlobal(
+        'IntersectionObserver',
+        class {
+          observe() {
+            // Never intersecting.
+          }
+          unobserve() {
+            // Nothing to release in the fake.
+          }
+          disconnect() {
+            // Nothing to release in the fake.
+          }
+        },
+      )
+      const listeners = new Set<(change: UnitsChange) => void>()
+      emit = (change) => {
+        for (const listener of [...listeners]) listener(change)
+      }
+      const changes = await import('../util/unit-changes')
+      changes.provideUnitFeed(window, {
+        root,
+        isLive: () => true,
+        liveUnitOf: () => undefined,
+        liveUnits: () => undefined,
+        onUnitsChanged(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        confirmNow: () => true,
+        confirmedLines: () => undefined,
+      })
+      const responsive = await import('./responsive-tables')
+      responsive.fixResponsiveTables()
+      await Promise.resolve()
+      drainTasks()
+    }, 60_000)
+    afterEach(async () => {
+      const changes = await import('../util/unit-changes')
+      changes.provideUnitFeed(window, undefined)
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }, 60_000)
+
+    it('runs the whole-document pass of a build as idle slices of at most 8 + 2 ms', async () => {
+      const tables = Array.from(
+        root.querySelectorAll<HTMLElement>(':scope > table'),
+      )
+      for (const table of tables) table.style.removeProperty('table-layout')
+
+      emit({ cause: 'build', whole: true, changed: [], structural: [] })
+      const tasks = drainTasks()
+
+      expect(tasks.length).toBeGreaterThan(0)
+      expect(Math.max(...tasks.map((task) => task.ms))).toBeLessThanOrEqual(10)
+      for (const table of tables)
+        expect(table.style.getPropertyValue('table-layout')).toBe('fixed')
+    })
+
+    it('normalizes no table for a list item insert reported as list structure', async () => {
+      const list = root.querySelector<HTMLElement>(':scope > ul') as HTMLElement
+      const item = list.lastElementChild?.cloneNode(true) as HTMLElement
+      list.append(item)
+      await Promise.resolve()
+
+      emit({
+        cause: 'sync',
+        whole: false,
+        changed: [{ el: item, members: [item], kind: 'list-item', top: list }],
+        structural: [list],
+        scopes: [item],
+      })
+      const tasks = drainTasks()
+      item.remove()
+
+      expect(
+        tasks.reduce((sum, task) => sum + task.counts.tableQueries, 0),
+      ).toBe(0)
+      expect(
+        tasks.reduce((sum, task) => sum + task.counts.rootQueries, 0),
+      ).toBe(0)
+    })
+  },
+)
