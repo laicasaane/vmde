@@ -1036,6 +1036,93 @@ describe('011 item-level list structure', () => {
   })
 })
 
+// ---- Task 733 / 012-18: Backspace at the start of the first nested item of a tight list outdents it. ----
+
+describe('012-18 list outdent structure', () => {
+  // The `TIGHT` fixture of `list-tight.spec.ts`.
+  const TIGHT =
+    '# List\n\n1. Analysis of email threads\n   * first entry\n   * second entry\n'
+
+  /**
+   * The DOM effect of Vditor's `listOutdent` (vendored code, not runnable here) on the nested `li`: the
+   * caret marker before its text, the following nested items moved into a shallow clone of their list
+   * inside the moved item, the item inserted after its parent item, and only the list it left spun.
+   * The ordered list is not spun, so the moved item keeps its bullet `data-marker`.
+   */
+  function outdent(li: HTMLElement): void {
+    const parentItem = (li.parentElement as HTMLElement).closest(
+      'li',
+    ) as HTMLElement
+    const nested = li.parentElement as HTMLElement
+    const walker = document.createTreeWalker(li, NodeFilter.SHOW_TEXT)
+    ;(walker.nextNode() as Text).before(document.createElement('wbr'))
+    const following = nested.cloneNode(false) as HTMLElement
+    for (let next = li.nextElementSibling; next; ) {
+      const after = next.nextElementSibling
+      following.append(next)
+      next = after
+    }
+    parentItem.after(li)
+    if (following.childElementCount > 0) li.append(following)
+    // `lute` is the real Lute typed as `UnitLute`; its block spin is what `listOutdent` calls here.
+    const spin = lute as UnitLute & { SpinVditorIRDOM(html: string): string }
+    nested.outerHTML = spin.SpinVditorIRDOM(nested.outerHTML)
+  }
+
+  /** Opens `markdown`, outdents `first entry` and marks what the observer marks: the old item and the list run. */
+  function outdentFirstEntry(markdown: string): {
+    session: Session
+    list: HTMLElement
+  } {
+    const session = open(markdown)
+    proveAll(session.model)
+    const list = blockEl(session, 1)
+    outdent(list.querySelector('li > ul > li') as HTMLElement)
+    const item = unitAt(
+      session.model,
+      '1. Analysis of email threads\n   * first entry\n   * second entry',
+    )
+    session.model.markDirty(item)
+    session.model.markStructureDirty(item)
+    return { session, list }
+  }
+
+  it('the outdented item keeps the marker of the whole-list canon, its nested item and a tight list', () => {
+    const { session, list } = outdentFirstEntry(TIGHT)
+    // The replay leaves the DOM Vditor leaves: the moved item still carries its bullet marker.
+    expect(list.children).toHaveLength(2)
+    expect(list.children[1].getAttribute('data-marker')).toBe('*')
+    const canon = canonOfDom(session.root)
+    expect(canon).toBe(
+      '# List\n\n1. Analysis of email threads\n1. first entry\n   * second entry',
+    )
+    syncChecked(session.model)
+    expect(session.model.text).toBe(`${canon}\n`)
+    expect(session.model.text).toMatch(/^1\. first entry$/mu)
+    expect(session.model.text).not.toMatch(/Analysis of email threads\n\n/u)
+    expect(session.model.text).toContain('\n   * second entry\n')
+    expectConsistent(session.model)
+  })
+
+  // B-19 (D-13 design section 5.2): the saved text after the outdent equals the whole-list Lute canon,
+  // with one whole-list serialization at every document size (paragraphs after the list scale it).
+  describe.each([1, 4, 16])('B-19 at factor %i', (factor) => {
+    it('the saved text equals the whole-list canon with one whole-list call', () => {
+      const tail = Array.from(
+        { length: factor },
+        (_, k) => `\nparagraph ${k + 1}\n`,
+      ).join('')
+      const { session } = outdentFirstEntry(TIGHT + tail)
+      calls.serialize = 0
+      calls.serializeList = 0
+      syncChecked(session.model)
+      expect(session.model.text).toBe(`${canonOfDom(session.root)}\n`)
+      expect(calls.serializeList).toBe(1)
+      expectConsistent(session.model)
+    })
+  })
+})
+
 // ---- Task 733 / 011-R1: review findings F-1, F-3, F-6 and typing into a new item. ----
 
 describe('011 review repairs', () => {

@@ -577,6 +577,32 @@ function itemLevelEntries<E>(
       })
       continue
     }
+    // Task 733 / 012-18 (Q-108): the item path numbers a new ordered item from the one before it, which
+    // is the whole-list canon only when its DOM marker already says so (Enter: the unit spin renumbers
+    // the markers before the sync). An item that changed level (a nested item outdented by Vditor's
+    // `listOutdent` keeps its bullet `data-marker`) is serialized by Lute from its own marker, so the
+    // whole-list path decides it. Characters compared in place: nothing is allocated when it matches.
+    if (ordered && old === undefined) {
+      const html = host.html('list-item', entry.el as E)
+      const tagEnd = html.indexOf('>')
+      const at = html.indexOf(' data-marker="')
+      if (at < 0 || at > tagEnd) return false
+      let p = at + 14
+      let value = 0
+      let digits = 0
+      for (; digits < 10; p++, digits++) {
+        const code = html.charCodeAt(p) - 48
+        if (code < 0 || code > 9) break
+        value = value * 10 + code
+      }
+      if (
+        digits === 0 ||
+        value !== number ||
+        html[p] !== delimiter ||
+        html[p + 1] !== '"'
+      )
+        return false
+    }
     // An empty item alone serializes to nothing; in its list Lute writes the bare marker (`-`, `6.`).
     const canon =
       host.serialize('list-item', [entry.el as E]) ||
