@@ -624,6 +624,62 @@ describe('first position and seed', () => {
     expect(live?.startOffset).toBe('first line.'.length)
   })
 
+  // C7 (first key cost): the split inserted and removed a span at the caret; the native insert grew
+  // with the document. Splitting the text node itself adds no element.
+  it('recordFirstPosition splits the caret text node without inserting an element', () => {
+    const r = rig()
+    r.root.innerHTML = '<ul><li>first line.\nsecond line</li></ul>'
+    const text = r.root.querySelector('li')?.firstChild as Text
+    const range = document.createRange()
+    range.setStart(text, 'first line.'.length)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    r.record()
+    // Records are read with takeRecords; the callback has nothing to do.
+    const observer = new MutationObserver(() => undefined)
+    observer.observe(r.root, { childList: true, subtree: true })
+    r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    const added = observer
+      .takeRecords()
+      .flatMap((record) => Array.from(record.addedNodes))
+    observer.disconnect()
+    expect(added.filter((node) => node.nodeType !== Node.TEXT_NODE)).toEqual([])
+    const li = r.root.querySelector('li') as HTMLElement
+    expect(Array.from(li.childNodes, (node) => node.textContent)).toEqual([
+      'first line.',
+      '\nsecond line',
+    ])
+    const live = window.getSelection()?.getRangeAt(0)
+    expect(live?.collapsed).toBe(true)
+    expect(live?.startContainer).toBe(li.firstChild)
+    expect(live?.startOffset).toBe('first line.'.length)
+  })
+
+  // C7: a caret marker elsewhere in the document does not stop the split; one in the caret's
+  // top-level block does (the marker already splits the text there).
+  it('recordFirstPosition checks only the caret block for a caret marker', () => {
+    const r = rig()
+    r.root.innerHTML = '<p>other<wbr></p><p>first line.\nsecond line</p>'
+    const caretIn = (p: HTMLElement) => {
+      const range = document.createRange()
+      range.setStart(p.firstChild as Text, 'first line.'.length)
+      range.collapse(true)
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(range)
+    }
+    const target = r.root.querySelectorAll('p')[1] as HTMLElement
+    caretIn(target)
+    r.record()
+    r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    expect(target.childNodes.length).toBe(2)
+    target.normalize()
+    target.appendChild(document.createElement('wbr'))
+    caretIn(target)
+    r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    expect(target.childNodes.length).toBe(2)
+  })
+
   it('seedBaseline splits the caret text node as the old seed did', () => {
     const r = rig()
     r.root.innerHTML = '<p>first line.\nsecond line</p>'

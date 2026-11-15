@@ -246,6 +246,39 @@ function caretNow(vditor: Vditor): CaretIntent | undefined {
   return focus ? { anchor, focus } : anchor
 }
 
+/**
+ * True when the caret's top-level block holds a caret marker, which already splits the text there.
+ * Only that block is searched, never the whole root (a whole-root search ran on every first key).
+ */
+function caretBlockHasMarker(root: Element, range: Range): boolean {
+  const start = range.startContainer
+  let block: Node | null =
+    start === root ? (root.childNodes[range.startOffset] ?? null) : start
+  while (block?.parentNode && block.parentNode !== root)
+    block = block.parentNode
+  return (
+    block instanceof Element &&
+    (block.localName === 'wbr' || block.querySelector('wbr') !== null)
+  )
+}
+
+/**
+ * Splits the text at the range start. A text node is split with `splitText`, which inserts no
+ * element (an inserted and removed span cost a native insert that grew with the document on the
+ * first key). An element endpoint keeps the inserted and removed caret marker.
+ */
+function splitAtRangeStart(range: Range): void {
+  const start = range.startContainer
+  if (start.nodeType === Node.TEXT_NODE) {
+    ;(start as Text).splitText(range.startOffset)
+    return
+  }
+  const marker = (start.ownerDocument ?? document).createElement('span')
+  marker.className = 'vditor-wbr'
+  range.insertNode(marker)
+  marker.remove()
+}
+
 export function installUnitHistory(
   win: Window,
   deps: UnitHistoryDeps,
@@ -523,24 +556,24 @@ export function installUnitHistory(
    * caret marker at the caret and removed it, which splits the caret's text node there. Chromium's
    * typing rebalances whitespace inside the text node it types into, so in one unsplit node the
    * `\n` of a soft break right after the caret becomes a space and the two source lines join. The
-   * same split is kept here; the DOM's HTML does not change. A Range with an element endpoint is
-   * written again afterwards, as the seed does (Chromium keeps reporting it while its own selection
-   * shrank).
+   * same split is kept here (`splitAtRangeStart`); the DOM's HTML does not change. A Range with an
+   * element endpoint is written again afterwards, as the seed does (Chromium keeps reporting it
+   * while its own selection shrank).
    */
   const splitAtCaret = (vditor: Vditor): void => {
     const root = vditor.ir?.element
     const selection = root?.ownerDocument.getSelection()
     if (!root || !selection || selection.rangeCount === 0) return
     const range = selection.getRangeAt(0)
-    if (!root.contains(range.startContainer) || root.querySelector('wbr'))
+    if (
+      !root.contains(range.startContainer) ||
+      caretBlockHasMarker(root, range)
+    )
       return
     const elementEndpoint =
       selection.anchorNode?.nodeType !== Node.TEXT_NODE ||
       selection.focusNode?.nodeType !== Node.TEXT_NODE
-    const marker = root.ownerDocument.createElement('span')
-    marker.className = 'vditor-wbr'
-    range.insertNode(marker)
-    marker.remove()
+    splitAtRangeStart(range)
     if (elementEndpoint && selection.anchorNode && selection.focusNode) {
       // The same live endpoints, written again: a transparent write that keeps any caret intent.
       writeSelectionKeepingIntent({
