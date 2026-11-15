@@ -80,13 +80,21 @@ const isList = (element: Element): boolean =>
 const isBlockKind = (kind: UnitKind): boolean =>
   kind !== 'cell' && kind !== 'row' && kind !== 'table'
 
-/** Prove one queued unit if it still needs it; false when the proof could not run (Lute not ready). */
+/** Pre-touch deadline check of a table: it is always spent, so a table proof never runs its rows there. */
+const ALWAYS_SPENT = (): boolean => true
+
+/**
+ * Prove one queued unit if it still needs it. `'none'`: the proof could not run (Lute not ready);
+ * `'pending'`: `spent` cut a table proof off, and the unit stays at the head of its queue.
+ */
 function proveIfDue(
   model: Pick<TextModel<HTMLElement>, 'prove'>,
   unit: U,
-): boolean {
-  if (unit.proof !== 'none' || unit.dirty) return true
-  return model.prove(unit) !== 'none'
+  spent: () => boolean,
+): 'done' | 'none' | 'pending' {
+  if (unit.proof !== 'none' || unit.dirty) return 'done'
+  const result = model.prove(unit, spent)
+  return result === 'none' || result === 'pending' ? result : 'done'
 }
 
 /** The proof queue in proof order (viewport first, then document order) and the oversize units. */
@@ -337,15 +345,28 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
     return true
   }
 
+  // The deadline of the running slice, read by one check made once per schedule: a table proof
+  // checks it between rows without a closure per call (012-10).
+  let sliceDeadline = 0
+  const sliceSpent = (): boolean => deps.now() >= sliceDeadline
+
   /** Proves queued units until the slice is spent; false when a proof could not run (Lute not ready). */
   const runProofs = (deadline: number): boolean => {
+    sliceDeadline = deadline
     while (cursor < queue.length && deps.now() < deadline) {
-      if (!proveIfDue(model, queue[cursor++])) return false
+      const result = proveIfDue(model, queue[cursor], sliceSpent)
+      // A table cut off by the deadline is offered first in the next slice.
+      if (result === 'pending') return true
+      cursor += 1
+      if (result === 'none') return false
     }
     // Oversize units follow all others, at most one per frame.
     const othersDone = cursor >= queue.length
-    if (othersDone && largeCursor < large.length && deps.now() < deadline)
-      return proveIfDue(model, large[largeCursor++])
+    if (othersDone && largeCursor < large.length && deps.now() < deadline) {
+      const result = proveIfDue(model, large[largeCursor], sliceSpent)
+      if (result !== 'pending') largeCursor += 1
+      return result !== 'none'
+    }
     return true
   }
 
@@ -503,8 +524,11 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
         if (unit.proof === 'none') todo.push(unit)
       const refusal = preTouchRefusal(todo, deps.htmlLength)
       if (refusal) return fallback(refusal)
+      // A table is checked as always spent: the pre-touch proves the touched cells and rows only,
+      // never every row of a partly proven table in one call; the idle slices finish the table.
       for (const unit of todo)
-        if (model.prove(unit) === 'none') return fallback('unproven-selection')
+        if (model.prove(unit, ALWAYS_SPENT) === 'none')
+          return fallback('unproven-selection')
       return 'proven'
     },
     requestAudit,

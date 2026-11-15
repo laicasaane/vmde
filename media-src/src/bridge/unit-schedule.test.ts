@@ -249,6 +249,22 @@ describe('idle proof slices', () => {
     expect(r.proofs.indexOf(big1)).toBeGreaterThan(7)
   })
 
+  it('012-10: passes the slice deadline into every idle proof', () => {
+    const r = rig(3)
+    const deadlines: unknown[] = []
+    const prove = r.deps.model.prove
+    // The schedule reads `model.prove` at each call, so the wrapper sees every idle proof.
+    r.deps.model.prove = (unit, ...rest: unknown[]) => {
+      deadlines.push(rest[0])
+      return prove(unit)
+    }
+    r.schedule.start()
+    r.runFrames(5)
+    expect(r.proofs).toHaveLength(3)
+    expect(deadlines).toHaveLength(3)
+    expect(deadlines.every((deadline) => deadline !== undefined)).toBe(true)
+  })
+
   it('does not spin while Lute is not ready', () => {
     const r = rig(5)
     r.options.luteReady = false

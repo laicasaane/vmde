@@ -15,6 +15,8 @@ import type { ColumnAlign } from './unit-lute'
 
 export type UnitKind = MovableKind | 'cell' | 'row'
 type UnitProof = 'none' | 'proven' | 'opaque'
+/** `prove` result: a unit proof, or `'pending'` when the deadline check cut a table proof off (Task 733 / 012-10). */
+type ProveResult = UnitProof | 'pending'
 interface UnitForm {
   canon: string
   bytes: string
@@ -35,6 +37,7 @@ export interface Unit<E> {
   dirty: boolean
   explicit: boolean // Task 390 explicit edit pending: the next sync writes the canon
   changedAt: number // delta sequence that last changed this unit's bytes in the epoch; 0 when none
+  proofRow?: number // table cut off by a deadline: the row its proof resumes at; absent means row 0
 }
 
 /** One top-level DOM unit as the adapter lists it. */
@@ -126,7 +129,7 @@ export interface TextModel<E> {
   rebind(text: string): void // new text, same DOM; a unit whose bytes equal its bytes before the call keeps html, canon, proof and forms; dirty flags are kept
   turnOff(reason: OffReason): void
   unitOf(el: E): Unit<E> | undefined // leaf unit whose members or cells hold el
-  prove(unit: Unit<E>): UnitProof // first rule that holds; stores html and canon
+  prove(unit: Unit<E>, spent?: () => boolean): ProveResult // first rule that holds; stores html and canon; `spent` cuts a table proof off between rows
   markDirty(unit: Unit<E>): void
   markStructureDirty(scope: 'root' | Unit<E>): void // root, a table, or the list run of an item
   markExplicit(unit: Unit<E>): void // Task 390 explicit edit: the next sync writes the canon
@@ -607,17 +610,66 @@ function proveRow<E>(
   if (unit.members.length === 0) return 'proven'
   if (unit.children.length === 0)
     return proveSpanlessRow(internals.host, unit, bytes)
-  const results = unit.children.map((cell) => proveUnit(internals, cell))
-  if (results.includes('opaque')) return 'opaque'
-  return results.includes('none') ? 'none' : 'proven'
+  // A loop, not a mapped array: the idle path allocates nothing on success (012-10).
+  let opaque = false
+  let none = false
+  for (const cell of unit.children) {
+    const proof = proveUnit(internals, cell)
+    if (proof === 'opaque') opaque = true
+    else if (proof === 'none') none = true
+  }
+  if (opaque) return 'opaque'
+  return none ? 'none' : 'proven'
+}
+
+/** A row that is dirty, or holds a dirty cell: it is proven only after its sync. */
+function hasDirtyPart<E>(row: Unit<E>): boolean {
+  if (row.dirty) return true
+  for (const cell of row.children) if (cell.dirty) return true
+  return false
+}
+
+/**
+ * Proves a table row by row from its resume row (Task 733 / 012-10). `spent` is checked before each
+ * row; when it holds, the resume row is kept on the unit and the proof answers `'pending'`, so one
+ * call costs at most one row past the deadline. The table is proven when every row was attempted;
+ * each row keeps its own proof. A dirty row is skipped: the idle queue proves it after its sync.
+ */
+function proveTable<E>(
+  internals: ModelInternals<E>,
+  unit: Unit<E>,
+  spent: (() => boolean) | undefined,
+): ProveResult {
+  const rows = unit.children
+  if (rows.length === 0) return 'opaque'
+  for (let at = unit.proofRow ?? 0; at < rows.length; at++) {
+    if (spent?.()) {
+      unit.proofRow = at
+      return 'pending'
+    }
+    const row = rows[at]
+    if (hasDirtyPart(row)) continue
+    if (proveUnit(internals, row) === 'none') {
+      unit.proofRow = at
+      return 'none'
+    }
+  }
+  unit.proofRow = undefined
+  return 'proven'
 }
 
 /** First rule that holds (handoff 6.4); stores `html` and `canon`. */
 export function proveUnit<E>(
   internals: ModelInternals<E>,
   unit: Unit<E>,
-): UnitProof {
+  spent?: () => boolean,
+): ProveResult {
   if (unit.proof !== 'none') return unit.proof
+  if (unit.kind === 'table') {
+    const result = proveTable(internals, unit, spent)
+    if (result !== 'pending') unit.proof = result
+    return result
+  }
   const bytes = internals.text.slice(unit.start, unit.end)
   let proof: UnitProof
   if (
@@ -627,8 +679,6 @@ export function proveUnit<E>(
     )
   ) {
     proof = 'opaque'
-  } else if (unit.kind === 'table') {
-    proof = unit.children.length > 0 ? 'proven' : 'opaque'
   } else if (unit.kind === 'row') {
     proof = proveRow(internals, unit, bytes)
   } else if (unit.kind === 'cell') {
@@ -765,7 +815,7 @@ export function createTextModel<E>(
       goOff(reason)
     },
     unitOf: (el) => internals.byElement.get(el),
-    prove: (unit) => proveUnit(internals, unit),
+    prove: (unit, spent) => proveUnit(internals, unit, spent),
     markDirty(unit) {
       unit.dirty = true
       internals.dirty.add(unit)
