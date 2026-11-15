@@ -1,7 +1,23 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
+import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { createModelSession, type ModelSession } from '../bridge/model-session'
+import type { UnitLute } from '../bridge/unit-lute'
+import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
+import { createRealLute } from '../testing/real-lute'
 import { historyStoreOf } from './history-store'
 import { invalidateCaret, requestCaret } from './caret'
+import { tagCodeSource } from './code-source'
 import {
   hasRewrapDocumentHistoryTransition,
   recordRewrapDocumentHistory,
@@ -22,10 +38,24 @@ vi.mock('./history-store', async (original) => ({
     return engine.value
   },
 }))
-vi.mock('./caret', async (original) => ({
-  ...(await original<typeof import('./caret')>()),
-  requestCaret: vi.fn(() => true),
-  invalidateCaret: vi.fn(),
+// The caret authority is a fake by default; the B-14 Undo and Redo tests run the real one, so the
+// placement's selection writes and paint check are counted with the restore.
+const caretMode = vi.hoisted(() => ({ real: false }))
+vi.mock('./caret', async (original) => {
+  const actual = await original<typeof import('./caret')>()
+  return {
+    ...actual,
+    requestCaret: vi.fn((intent: Parameters<typeof actual.requestCaret>[0]) =>
+      caretMode.real ? actual.requestCaret(intent) : true,
+    ),
+    invalidateCaret: vi.fn(() => {
+      if (caretMode.real) actual.invalidateCaret()
+    }),
+  }
+})
+// A restored code block renders its preview through Vditor; the render itself is not under test.
+vi.mock('vditor/src/ts/util/processCode', () => ({
+  processCodeRender: vi.fn(),
 }))
 
 interface Hook {
@@ -54,12 +84,14 @@ const cap = (name: string) => ({ name }) as unknown as HistoryCapture
 
 let uninstall: (() => void) | undefined
 
-function rig(options: { port?: boolean } = {}) {
-  const root = document.createElement('div')
-  root.className = 'vditor-reset vditor-ir'
-  root.setAttribute('contenteditable', 'true')
-  root.innerHTML = '<p>first</p><p>second</p><p>third</p>'
-  document.body.appendChild(root)
+function rig(options: { port?: boolean; root?: HTMLElement } = {}) {
+  const root = options.root ?? document.createElement('div')
+  if (!options.root) {
+    root.className = 'vditor-reset vditor-ir'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = '<p>first</p><p>second</p><p>third</p>'
+    document.body.appendChild(root)
+  }
   const button = (): HTMLElement => {
     const wrap = document.createElement('div')
     wrap.appendChild(document.createElement('button'))
@@ -997,5 +1029,248 @@ describe('depth (a read for the end-to-end specs)', () => {
     expect(hook.depth(r.vditor)).toEqual({ undo: 3, redo: 0 })
     r.hook.undo(r.vditor)
     expect(hook.depth(r.vditor)).toEqual({ undo: 2, redo: 1 })
+  })
+})
+
+// C7 (D-13 design section 1.3): at an element endpoint the caret is already at a node boundary, so the
+// split has nothing to split. The inserted and removed marker changed no HTML and cost a native
+// insert. The text after the caret stays its own node, which is what the split exists for (a soft
+// break after the caret keeps its `\n` when Chromium types into the node before it).
+describe('first position at an element endpoint', () => {
+  it('recordFirstPosition inserts no node and keeps the text after the caret as its own node', () => {
+    const r = rig()
+    r.root.innerHTML = '<ul><li><b>first</b>\nsecond line</li></ul>'
+    const li = r.root.querySelector('li') as HTMLElement
+    const range = document.createRange()
+    range.setStart(li, 1)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    r.record()
+    const html = r.root.innerHTML
+    const observer = new MutationObserver(() => undefined)
+    observer.observe(r.root, { childList: true, subtree: true })
+    r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    const records = observer.takeRecords()
+    observer.disconnect()
+    expect(records.flatMap((record) => Array.from(record.addedNodes))).toEqual(
+      [],
+    )
+    expect(r.root.innerHTML).toBe(html)
+    expect(Array.from(li.childNodes, (node) => node.textContent)).toEqual([
+      'first',
+      '\nsecond line',
+    ])
+    const selection = window.getSelection()
+    expect([selection?.anchorNode, selection?.anchorOffset]).toEqual([li, 1])
+    expect([selection?.focusNode, selection?.focusOffset]).toEqual([li, 1])
+  })
+})
+
+// ---- B-14 (D-13 design sections 5.2, 11.3 and 12.2) ----
+// One flush per operation: no layout-dependent call (selection write, live-range mutation, layout
+// read) between two DOM writes of one operation, at most one after its last write. Counted at
+// factors 1, 4 and 16 of the table-heavy fixture.
+
+const FACTORS: Factor[] = [1, 4, 16]
+
+/** The probe's tagging of the code block (as 012-11's `probeCodeBlock`). */
+function tagProbe(root: HTMLElement): void {
+  tagCodeSource(root)
+  root
+    .querySelector('[data-type="code-block"]')
+    ?.classList.add('vditor-ir__node--expand')
+}
+
+type Unit = 'cell' | 'item' | 'paragraph' | 'code block'
+const UNIT_SELECTOR: Record<Unit, string> = {
+  cell: 'tbody td',
+  item: 'li',
+  paragraph: ':scope > p',
+  'code block': '[data-type="code-block"] .vditor-ir__marker--pre > code',
+}
+
+/** The first text node of `unit` with more than one visible character. */
+function unitText(root: HTMLElement, unit: Unit): Text {
+  const element = root.querySelector(UNIT_SELECTOR[unit]) as HTMLElement
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+  for (let node = walker.nextNode(); node; node = walker.nextNode())
+    if ((node as Text).data.trim().length > 1) return node as Text
+  throw new Error(`no text in the ${unit}`)
+}
+
+function collapseAt(node: Node, offset: number): void {
+  const range = document.createRange()
+  range.setStart(node, offset)
+  range.collapse(true)
+  window.getSelection()?.removeAllRanges()
+  window.getSelection()?.addRange(range)
+}
+
+describe('B-14: one flush per first-key split', () => {
+  describe.each(FACTORS)('factor %i', (factor) => {
+    const fixture = () => {
+      const { root } = irFixture(tableHeavyMarkdown(factor), tagProbe)
+      if (!root.isConnected) document.body.append(root.parentElement as Element)
+      return root
+    }
+
+    it.each(['cell', 'item', 'paragraph', 'code block'] as const)(
+      'a text endpoint in a %s: flushes <= 1',
+      (unit) => {
+        const root = fixture()
+        const r = rig({ root })
+        const text = unitText(root, unit)
+        collapseAt(text, 1)
+        r.record()
+        const { counts } = countBudget(root, () =>
+          r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown')),
+        )
+        root.normalize()
+        expect(counts.flushes).toBeLessThanOrEqual(1)
+      },
+    )
+
+    it.each(['cell', 'item', 'paragraph'] as const)(
+      'an element endpoint in a %s: flushes <= 1',
+      (unit) => {
+        const root = fixture()
+        const r = rig({ root })
+        const element = root.querySelector(UNIT_SELECTOR[unit]) as HTMLElement
+        collapseAt(element, 0)
+        r.record()
+        const { counts } = countBudget(root, () =>
+          r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown')),
+        )
+        expect(counts.flushes).toBeLessThanOrEqual(1)
+      },
+    )
+  })
+})
+
+describe('B-14: one flush per Undo and Redo', () => {
+  let lute: UnitLute
+  const sessions: ModelSession[] = []
+  beforeAll(() => {
+    const real = createRealLute('ir')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    lute = real.lute
+  })
+  beforeEach(() => {
+    caretMode.real = true
+  })
+  afterEach(() => {
+    caretMode.real = false
+    for (const session of sessions.splice(0)) session.dispose()
+    ;(window as unknown as Record<string, unknown>).vditor = undefined
+  })
+
+  /**
+   * The unit engine over a real model session (its history port restores the units), real Lute,
+   * the real caret authority and the probe's IR root shape `div.vditor-ir > pre.vditor-reset`.
+   */
+  function sessionRig(factor: Factor) {
+    const markdown = tableHeavyMarkdown(factor)
+    const container = document.createElement('div')
+    container.className = 'vditor-ir'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    container.append(root)
+    document.body.append(container)
+    const frames: Array<() => void> = []
+    const session = createModelSession({
+      win: window,
+      getRoot: () => root,
+      getLute: () => lute,
+      getMode: () => 'ir',
+      isPreviewShowing: () => false,
+      isStreaming: () => false,
+      isComposing: () => false,
+      e2e: true,
+      countFallbackPublication: () => undefined,
+      requestAnimationFrame: (cb) => frames.push(cb),
+      cancelAnimationFrame: () => undefined,
+      now: () => 0,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      inViewport: () => false,
+    })
+    sessions.push(session)
+    root.innerHTML = lute.Md2VditorIRDOM(markdown)
+    tagProbe(root)
+    session.onHostText(markdown, 1)
+    session.onEditDomComplete()
+    const port = (
+      session as ModelSession & {
+        historyPort(): Parameters<
+          Parameters<typeof installUnitHistory>[1]['port']
+        > extends never[]
+          ? never
+          : ReturnType<Parameters<typeof installUnitHistory>[1]['port']>
+      }
+    ).historyPort()
+    const delta = session.deltaPort()
+    let sequence = 0
+    const vditor = {
+      currentMode: 'ir',
+      ir: { element: root, composingLock: false, processTimeoutId: undefined },
+      undo: { ir: slot(), sv: slot(), wysiwyg: slot() },
+      toolbar: { elements: {} },
+      options: {},
+    }
+    // The caret authority finds the editor through the outer Vditor's `vditor`.
+    ;(window as unknown as Record<string, unknown>).vditor = { vditor }
+    uninstall = installUnitHistory(window, {
+      port: () => port,
+      publishHistory: () => 'delta',
+      lastPostedSequence: () => sequence,
+      epoch: () => 1,
+    })
+    const hook = hookOf()
+    return {
+      root,
+      vditor,
+      hook,
+      sync(): string | undefined {
+        sequence += 1
+        delta.prepareDelta(sequence)
+        return delta.modelText()
+      },
+    }
+  }
+
+  describe.each(FACTORS)('factor %i', (factor) => {
+    it.each(['cell', 'item', 'paragraph', 'code block'] as const)(
+      'a %s Undo and its Redo: flushes <= 1 each',
+      (unit) => {
+        const r = sessionRig(factor)
+        const before = r.sync()
+        let text = unitText(r.root, unit)
+        collapseAt(text, 1)
+        r.hook.record(r.vditor)
+        // One typed character, as the editor types it: the pre-touch proof, then the text change.
+        text.parentElement?.dispatchEvent(
+          new Event('beforeinput', { bubbles: true }),
+        )
+        text.data = `${text.data.slice(0, 1)}x${text.data.slice(1)}`
+        collapseAt(text, 2)
+        r.hook.record(r.vditor)
+        const after = r.sync()
+        expect(after).not.toBe(before)
+
+        const undo = countBudget(r.root, () => r.hook.undo(r.vditor))
+        expect(r.sync()).toBe(before)
+        expect(undo.counts.flushes).toBeLessThanOrEqual(1)
+        text = unitText(r.root, unit)
+        expect(window.getSelection()?.anchorNode).toBe(text)
+
+        const redo = countBudget(r.root, () => r.hook.redo(r.vditor))
+        expect(r.sync()).toBe(after)
+        expect(redo.counts.flushes).toBeLessThanOrEqual(1)
+      },
+      60_000,
+    )
   })
 })

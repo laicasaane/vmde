@@ -20,6 +20,9 @@ import {
   writeSelection,
   writeSelectionKeepingIntent,
 } from './caret'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
+import { tagCodeSource } from './code-source'
 
 // Deterministic rAF: capture callbacks, fire them explicitly as "the next frame" instead of
 // waiting on a real timer.
@@ -1303,5 +1306,154 @@ describe('Task 708: restoreUndoSnapshotCaret', () => {
         }
       ).__vmdeRestoreUndoSnapshotCaret,
     ).toBe(restoreUndoSnapshotCaret)
+  })
+})
+
+// ---------------------------------------------------------------------------------------
+// Task 733 / 012-16 B-14 (D-13 design sections 5.2, 11.3 and 12.2): one placement after a DOM write
+// costs at most one flush (a layout-dependent call after the write) and one paint check, whatever
+// the document size. The write stands for a restored unit; the placement is the Undo or Redo caret.
+// jsdom has no layout, so the real paint check (`measureHeight`) would always answer "not paintable"
+// and every placement would take the unpainted branch, which reads twice (D-13 design section 13.3).
+// The block installs a counting paintability probe instead: it reads the Range's rectangle (a stub
+// defined for this block only, which the harness counts as a layout read) and answers from `painted`.
+describe('B-14: one flush and one paint check per placement', () => {
+  const FACTORS: Factor[] = [1, 4, 16]
+  // The probe's tagging of the code block (as 012-11's `probeCodeBlock`).
+  const prepare = (root: HTMLElement): void => {
+    tagCodeSource(root)
+    root
+      .querySelector('[data-type="code-block"]')
+      ?.classList.add('vditor-ir__node--expand')
+  }
+  let painted = true
+  let paintChecks = 0
+  beforeEach(() => {
+    painted = true
+    paintChecks = 0
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: painted ? 16 : 0 }) as DOMRect,
+    })
+    setCaretPaintabilityProbeForTests((range) => {
+      paintChecks++
+      return range.getBoundingClientRect().height > 0
+    })
+  })
+  afterEach(() => {
+    delete (Range.prototype as { getBoundingClientRect?: unknown })
+      .getBoundingClientRect
+  })
+
+  /** The fixture root, attached again (this file's beforeEach clears the body) and made current. */
+  function fixtureAt(factor: Factor): HTMLElement {
+    const { root } = irFixture(tableHeavyMarkdown(factor), prepare)
+    if (!root.isConnected) document.body.append(root.parentElement as Element)
+    ;(window as unknown as Record<string, unknown>).vditor = {
+      vditor: { currentMode: 'ir', ir: { element: root } },
+    }
+    return root
+  }
+
+  /** The first text node of each unit the probe edits: a body cell, a list item, a paragraph, the code. */
+  function unitText(
+    root: HTMLElement,
+    unit: 'cell' | 'item' | 'paragraph' | 'code block',
+  ): Text {
+    const selector = {
+      cell: 'tbody td',
+      item: 'li',
+      paragraph: ':scope > p',
+      'code block': '[data-type="code-block"] .vditor-ir__marker--pre > code',
+    }[unit]
+    const element = root.querySelector(selector) as HTMLElement
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode())
+      if ((node as Text).data.trim().length > 1) return node as Text
+    throw new Error(`no text in the ${unit}`)
+  }
+
+  /**
+   * The DOM write of a restore, standing in for the restored unit: an empty text node appended to
+   * the unit element (it moves no selection endpoint) and removed after the test.
+   */
+  const written: Text[] = []
+  function restoreWrite(text: Text): void {
+    const extra = document.createTextNode('')
+    written.push(extra)
+    text.parentNode?.appendChild(extra)
+  }
+  afterEach(() => {
+    for (const extra of written.splice(0)) extra.remove()
+  })
+
+  function collapseAt(node: Node, offset: number): void {
+    const range = document.createRange()
+    range.setStart(node, offset)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+  }
+
+  describe.each(FACTORS)('factor %i', (factor) => {
+    it.each(['cell', 'item', 'paragraph', 'code block'] as const)(
+      'a %s placement after a write: flushes <= 1, layoutReads <= 1',
+      (unit) => {
+        const root = fixtureAt(factor)
+        const text = unitText(root, unit)
+        collapseAt(root, 0)
+        const { result, counts } = countBudget(root, () => {
+          restoreWrite(text)
+          return requestCaret({ node: text, offset: 1 })
+        })
+        const live = window.getSelection()?.getRangeAt(0)
+        expect([live?.startContainer, live?.startOffset]).toEqual([text, 1])
+        expect(result).toBe(true)
+        expect(paintChecks).toBeGreaterThan(0)
+        expect(counts.flushes).toBeLessThanOrEqual(1)
+        expect(counts.layoutReads).toBeLessThanOrEqual(1)
+      },
+    )
+
+    it.each(['cell', 'item', 'paragraph', 'code block'] as const)(
+      'a %s placement at a painted same target: flushes <= 1, layoutReads <= 1',
+      (unit) => {
+        const root = fixtureAt(factor)
+        const text = unitText(root, unit)
+        collapseAt(text, 1)
+        const { result, counts } = countBudget(root, () => {
+          restoreWrite(text)
+          return requestCaret({ node: text, offset: 1 })
+        })
+        const live = window.getSelection()?.getRangeAt(0)
+        expect([live?.startContainer, live?.startOffset]).toEqual([text, 1])
+        expect(result).toBe(true)
+        expect(paintChecks).toBeGreaterThan(0)
+        expect(counts.flushes).toBeLessThanOrEqual(1)
+        expect(counts.layoutReads).toBeLessThanOrEqual(1)
+      },
+    )
+
+    // The selection already sits at the target but does not paint (in a browser: after Vditor split
+    // and rejoined the text around its undo marker). The placement recreates the Range and checks the
+    // paint again; the second read follows no DOM write, so it is no second flush.
+    it.each(['cell', 'item', 'paragraph', 'code block'] as const)(
+      'a %s placement at an unpainted same target: layoutReads <= 2, flushes <= 1',
+      (unit) => {
+        const root = fixtureAt(factor)
+        const text = unitText(root, unit)
+        collapseAt(text, 1)
+        painted = false
+        const { result, counts } = countBudget(root, () => {
+          restoreWrite(text)
+          return requestCaret({ node: text, offset: 1 })
+        })
+        const live = window.getSelection()?.getRangeAt(0)
+        expect([live?.startContainer, live?.startOffset]).toEqual([text, 1])
+        expect(result).toBe(true)
+        expect(counts.flushes).toBeLessThanOrEqual(1)
+        expect(counts.layoutReads).toBeLessThanOrEqual(2)
+      },
+    )
   })
 })

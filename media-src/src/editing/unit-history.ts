@@ -265,18 +265,14 @@ function caretBlockHasMarker(root: Element, range: Range): boolean {
 /**
  * Splits the text at the range start. A text node is split with `splitText`, which inserts no
  * element (an inserted and removed span cost a native insert that grew with the document on the
- * first key). An element endpoint keeps the inserted and removed caret marker.
+ * first key). An element endpoint is already a node boundary: the text after it is its own node, so
+ * there is nothing to split and the DOM is left unchanged (C7; the marker Vditor's seed inserted and
+ * removed there changed no HTML).
  */
 function splitAtRangeStart(range: Range): void {
   const start = range.startContainer
-  if (start.nodeType === Node.TEXT_NODE) {
-    ;(start as Text).splitText(range.startOffset)
-    return
-  }
-  const marker = (start.ownerDocument ?? document).createElement('span')
-  marker.className = 'vditor-wbr'
-  range.insertNode(marker)
-  marker.remove()
+  if (start.nodeType === Node.TEXT_NODE)
+    (start as Text).splitText(range.startOffset)
 }
 
 export function installUnitHistory(

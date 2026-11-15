@@ -5935,3 +5935,131 @@ describe('patchIrBackspaceRootRead (task 733 / 009 — test the child count befo
     expect(evaluate(patched, '<p></p>').reads).toBe(1)
   })
 })
+
+// Task 733 / 012-16 (D-13 design sections 2, 11.3 and 12.2): V-3a `patchIrCodeEnterDetachedRange`. The IR
+// code block Enter branch of `fixCodeBlock` works on the live Range (`extractContents`, `insertNode`,
+// `collapse`, then `setSelectionFocus`) before `IRInput`, so a DOM write alternates with live-range
+// mutations and a selection write: about four layout flushes per Enter. With the guard constant
+// `VDITOR_SINGLE_SELECTION_WRITE` on and the IR mode, the branch works on `range.cloneRange()`, skips the
+// intermediate `setSelectionFocus` and passes the clone to `IRInput`, whose `setRangeByWbr` makes the only
+// selection write. With the guard off (or in WYSIWYG) Vditor's branch runs unchanged. V-2 and V-3b are
+// dropped (design section 12.2), so no other selection patch is tested here.
+describe('patchIrCodeEnterDetachedRange (012-16 V-3a — one flush per IR code block Enter)', () => {
+  const ENTER_ANCHOR =
+    'range.extractContents();\n' +
+    '        range.insertNode(document.createTextNode("\\n"));\n' +
+    '        range.collapse(false);\n' +
+    '        setSelectionFocus(range);'
+  const BRANCH_START =
+    'if (!isCtrl(event) && !event.altKey && event.key === "Enter") {\n' +
+    '        if (!codeRenderElement.firstElementChild.textContent.endsWith("\\n")) {'
+  const patch = (): ((code: string) => string) => {
+    const fn = (sourcePatches as Record<string, unknown>)
+      .patchIrCodeEnterDetachedRange
+    expect(typeof fn, 'patchIrCodeEnterDetachedRange is exported').toBe(
+      'function',
+    )
+    return fn as (code: string) => string
+  }
+  const count = (haystack: string, needle: string): number =>
+    haystack.split(needle).length - 1
+  /** The Enter branch of `fixCodeBlock`: from its condition to its `scrollCenter`. */
+  const enterBranch = (code: string): string => {
+    const start = code.indexOf(BRANCH_START)
+    expect(start, 'the fixCodeBlock Enter branch').toBeGreaterThan(0)
+    const end = code.indexOf('scrollCenter(vditor);', start)
+    expect(end).toBeGreaterThan(start)
+    return code.slice(start, end)
+  }
+
+  it('the shipped fixBrowserBehavior.ts has the Enter anchor exactly once, inside the fixCodeBlock Enter branch (pre-patch)', () => {
+    expect(count(fixBrowserSource, ENTER_ANCHOR)).toBe(1)
+    expect(count(fixBrowserSource, BRANCH_START)).toBe(1)
+    expect(enterBranch(fixBrowserSource)).toContain(ENTER_ANCHOR)
+    expect(enterBranch(fixBrowserSource)).toContain('IRInput(vditor, range);')
+  })
+
+  it('in IR with the guard on, the branch works on a clone, skips the intermediate write and passes the clone to IRInput', () => {
+    const branch = enterBranch(patch()(fixBrowserSource))
+    expect(branch).toContain('VDITOR_SINGLE_SELECTION_WRITE')
+    expect(branch).toContain('vditor.currentMode === "ir"')
+    expect(branch).toContain('range.cloneRange()')
+    // The clone, not the live Range, reaches IRInput on the patched path.
+    expect(branch).toMatch(/IRInput\(vditor, (?!range\))[A-Za-z_$][\w$]*\);/)
+    // The patched path holds no setSelectionFocus: the only one left is Vditor's own branch.
+    expect(count(branch, 'setSelectionFocus(')).toBe(1)
+  })
+
+  it('with the guard off (and in WYSIWYG) Vditor branch runs unchanged', () => {
+    const branch = enterBranch(patch()(fixBrowserSource))
+    expect(count(branch, ENTER_ANCHOR)).toBe(1)
+    expect(branch).toContain('input(vditor, range);')
+    expect(branch).toContain('IRInput(vditor, range);')
+  })
+
+  it('throws when the anchor count drifts (version-bump guard)', () => {
+    const fn = patch()
+    expect(() => fn('// unrelated source')).toThrow(
+      /patchIrCodeEnterDetachedRange/,
+    )
+    expect(() => fn(fixBrowserSource + fixBrowserSource)).toThrow(
+      /patchIrCodeEnterDetachedRange/,
+    )
+  })
+
+  it('is chained into the fixBrowserBehavior.ts registry entry', () => {
+    const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/util/fixBrowserBehavior.ts'),
+    )
+    const branch = enterBranch(entry!.transform(fixBrowserSource))
+    expect(branch).toContain('range.cloneRange()')
+    expect(branch).toContain('VDITOR_SINGLE_SELECTION_WRITE')
+  })
+
+  // The clone must reach `setRangeByWbr` (`ir/input.ts`), or the patched branch would leave the caret
+  // unwritten. Every `return` of the registry-transformed IR `input` before that call sits in the block
+  // that excludes code blocks, or in the fence-skip hook, which needs an `insertText` event that
+  // `fixCodeBlock` does not pass.
+  it('no early return of the patched IR input before setRangeByWbr is reachable with a code-block range', () => {
+    const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/ir/input.ts'),
+    )
+    const code = entry!.transform(irInputSource)
+    const start = code.indexOf('export const input = (')
+    const end = code.indexOf('setRangeByWbr(vditor.ir.element, range);', start)
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    const guard =
+      'if (blockElement && !ignoreSpace && blockElement.getAttribute("data-type") !== "code-block") {'
+    const guardAt = code.indexOf(guard, start)
+    expect(guardAt).toBeGreaterThan(start)
+    // The guarded block ends at the brace that closes its opening one.
+    let depth = 0
+    let guardEnd = -1
+    for (let i = guardAt + guard.length - 1; i < end; i++) {
+      if (code[i] === '{') depth++
+      else if (code[i] === '}' && --depth === 0) {
+        guardEnd = i
+        break
+      }
+    }
+    expect(guardEnd).toBeGreaterThan(guardAt)
+    const body = code.slice(start, end)
+    const returns = [...body.matchAll(/\breturn\b/g)].map(
+      (m) => start + (m.index ?? 0),
+    )
+    for (const at of returns) {
+      const line = code.slice(
+        code.lastIndexOf('\n', at) + 1,
+        code.indexOf('\n', at),
+      )
+      const inGuard = at > guardAt && at < guardEnd
+      const inFenceSkip = line.includes('__vmdeTrySkipFenceSpin')
+      const inNestedFunction = /=>|function\b/.test(line)
+      expect(
+        inGuard || inFenceSkip || inNestedFunction,
+        `reachable return before setRangeByWbr: ${line.trim()}`,
+      ).toBe(true)
+    }
+  })
+})

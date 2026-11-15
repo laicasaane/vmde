@@ -908,6 +908,61 @@ export function patchPasteInlineCodePreview(code) {
     'codeElement.parentElement?.nextElementSibling?.classList',
   )
 }
+// Task 733 / 012-16 V-3a (D-13 design sections 2, 11.3, 12.2 and 13.2): one layout flush per IR code
+// block Enter. Vditor's `fixCodeBlock` Enter branch mutates the live Range (`extractContents`,
+// `insertNode`, `collapse`), writes it with `setSelectionFocus`, and then `IRInput` inserts its `wbr`,
+// spins the block and writes the selection again in `setRangeByWbr`. Each live-range mutation or
+// selection write after a DOM write forces a whole-document layout (measured: about four per Enter,
+// 79 ms against 20 ms at factor 16 in the Chromium harness). In IR, with the guard constant on and
+// outside Firefox (where Vditor skips `IRInput`, so its own write is the only one), the branch works
+// on a clone and leaves the one selection write to `setRangeByWbr`. With the guard off, in WYSIWYG
+// and in Firefox, Vditor's branch runs unchanged. The guard is imported from
+// `src/util/selection-write.ts` (`VDITOR_SINGLE_SELECTION_WRITE`).
+const CODE_ENTER_IMPORT_ANCHOR = 'import {input as IRInput} from "../ir/input";'
+const CODE_ENTER_ANCHOR =
+  '        range.extractContents();\n' +
+  '        range.insertNode(document.createTextNode("\\n"));\n' +
+  '        range.collapse(false);\n' +
+  '        setSelectionFocus(range);\n' +
+  '        if (!isFirefox()) {\n' +
+  '            if (vditor.currentMode === "wysiwyg") {\n' +
+  '                input(vditor, range);\n' +
+  '            } else {\n' +
+  '                IRInput(vditor, range);\n' +
+  '            }\n' +
+  '        }\n'
+export function patchIrCodeEnterDetachedRange(code) {
+  for (const anchor of [CODE_ENTER_IMPORT_ANCHOR, CODE_ENTER_ANCHOR])
+    assertAnchorCount(
+      code,
+      anchor,
+      'patchIrCodeEnterDetachedRange',
+      'util/fixBrowserBehavior.ts',
+    )
+  return code
+    .replace(
+      CODE_ENTER_IMPORT_ANCHOR,
+      `${CODE_ENTER_IMPORT_ANCHOR}\n` +
+        '// Task 733 / 012-16 V-3a (VMDE patch): the guard of the detached IR code block Enter.\n' +
+        'import {VDITOR_SINGLE_SELECTION_WRITE as vmdeDetachedEnter} from "../../../../../src/util/selection-write";',
+    )
+    .replace(
+      CODE_ENTER_ANCHOR,
+      '        // Task 733 / 012-16 V-3a (VMDE patch): in IR the Enter works on a clone and IRInput makes\n' +
+        "        // the operation's one selection write (setRangeByWbr); the live Range is never mutated.\n" +
+        '        // Guard: VDITOR_SINGLE_SELECTION_WRITE (imported as vmdeDetachedEnter).\n' +
+        '        if (vmdeDetachedEnter && vditor.currentMode === "ir" && !isFirefox()) {\n' +
+        '            const vmdeEnterRange = range.cloneRange();\n' +
+        '            vmdeEnterRange.extractContents();\n' +
+        '            vmdeEnterRange.insertNode(document.createTextNode("\\n"));\n' +
+        '            vmdeEnterRange.collapse(false);\n' +
+        '            IRInput(vditor, vmdeEnterRange);\n' +
+        '        } else {\n' +
+        CODE_ENTER_ANCHOR +
+        '        }\n',
+    )
+}
+
 // Tasks 428/461/462 — `fixList`'s own Backspace-at-start handling is wrong in two ways:
 //   1. Its "first item → paragraph" branch (:474 below) is gated only on
 //      `!liElement.previousElementSibling`, NOT on top-level-ness, so it also fires for a NESTED
@@ -4167,7 +4222,8 @@ export const VDITOR_TS_PATCHES = [
   {
     // chain every fixBrowserBehavior.ts patch (list-toggle null-deref + callout arrow-nav + the two
     // paste ones + the inline-code paste null guard, Task 719, + the list-outdent seam, tasks
-    // 428/461/462, + the modified-arrow block-escape guard, Task 580 CP2-14). patchPasteTransform must be able to run before patchPasteUrlAsLink's anchor
+    // 428/461/462, + the modified-arrow block-escape guard, Task 580 CP2-14, + the detached IR code block
+    // Enter, Task 733 / 012-16 V-3a). patchPasteTransform must be able to run before patchPasteUrlAsLink's anchor
     // is read, but they touch different lines, so composition order here is free.
     file: /vditor[/\\]src[/\\]ts[/\\]util[/\\]fixBrowserBehavior\.ts$/,
     transform: (code) =>
@@ -4177,7 +4233,9 @@ export const VDITOR_TS_PATCHES = [
             patchPasteTransform(
               patchPasteUrlAsLink(
                 patchPasteInlineCodePreview(
-                  patchCalloutArrowNav(patchListToggle(code)),
+                  patchIrCodeEnterDetachedRange(
+                    patchCalloutArrowNav(patchListToggle(code)),
+                  ),
                 ),
               ),
             ),
