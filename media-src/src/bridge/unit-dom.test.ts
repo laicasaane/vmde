@@ -500,6 +500,31 @@ describe('createUnitDom onBatch (Task 733 / 005-A)', () => {
     expect([...onBatch.mock.calls[0][1]]).toContain('root')
   })
 
+  // Task 733 / 012-1: the feed scopes a block spin, but the model and the history capture still need
+  // the root notice: the root stage relists the top level, and the capture copies the top-level units.
+  it('keeps the root notice for the block spin of a top-level paragraph', () => {
+    const onBatch = vi.fn()
+    const { root, dom, structure } = open(MIXED, { onBatch })
+    const old = root.querySelector(':scope > p') as HTMLElement
+    old.outerHTML = lute.Md2VditorIRDOM('para2\n')
+    dom.drain()
+    expect(structure).toHaveBeenCalledWith('root')
+    expect(onBatch).toHaveBeenCalledTimes(1)
+    expect(onBatch.mock.calls[0][1].has('root')).toBe(true)
+  })
+
+  it('keeps the root notice for the block spin of a top-level code block', () => {
+    const onBatch = vi.fn()
+    const { root, dom, structure } = open(MIXED, { onBatch })
+    const old = root.querySelector(
+      ':scope > [data-type="code-block"]',
+    ) as HTMLElement
+    old.outerHTML = lute.Md2VditorIRDOM('```js\nxy\n```\n')
+    dom.drain()
+    expect(structure).toHaveBeenCalledWith('root')
+    expect(onBatch.mock.calls[0][1].has('root')).toBe(true)
+  })
+
   it('reports nothing for a quiet write and for an ignored attribute', () => {
     const onBatch = vi.fn()
     const { root, dom } = open(MIXED, { onBatch })

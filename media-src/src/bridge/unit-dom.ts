@@ -39,6 +39,12 @@ export interface UnitDomControl {
   drain(): void
   /** Stop observing and drop what is queued. */
   detach(): void
+  /**
+   * Task 733 / 012-1: the new top-level elements of the batch `onBatch` is reporting, when every root
+   * notice of that batch is a block spin (one top-level block replaced, removed or inserted by
+   * unit-shaped elements); undefined when a root notice has another cause. Valid only inside `onBatch`.
+   */
+  takeSpun(): ReadonlySet<HTMLElement> | undefined
 }
 
 const VIEW_ONLY_ATTRIBUTES = [
@@ -310,11 +316,85 @@ export function createUnitDom(
     batchChanged.add(unit)
   }
 
-  const markStructure = (scope: 'root' | Unit<HTMLElement>): void => {
+  // Task 733 / 012-1: what the root notices of the current batch were. A block spin keeps the root
+  // notice (the model's root stage relists, the history capture copies the top level on it), but the
+  // unit feed reports the spun blocks instead of a whole change. Reused across batches.
+  const spunTops = new Set<HTMLElement>()
+  let rootUnexplained = false
+
+  const noteStructure = (scope: 'root' | Unit<HTMLElement>): void => {
     model?.markStructureDirty(scope)
     if (!options?.onBatch) return
     if (!batchStructure) batchStructure = new Set()
     batchStructure.add(scope)
+  }
+
+  const markStructure = (scope: 'root' | Unit<HTMLElement>): void => {
+    if (scope === 'root') rootUnexplained = true
+    noteStructure(scope)
+  }
+
+  /** A top-level element the model lists units for: a unit's element, or a list with an item unit. */
+  const holdsUnits = (el: HTMLElement): boolean => {
+    if (!model) return false
+    if (model.unitOf(el)) return true
+    if (el.tagName !== 'UL' && el.tagName !== 'OL') return false
+    for (let item = el.firstElementChild; item; item = item.nextElementSibling)
+      if (model.unitOf(item as HTMLElement)) return true
+    return false
+  }
+
+  /** An element the model maps once its root stage relists it (the kind check of `unitsOfElement`). */
+  const isUnitShaped = (el: HTMLElement): boolean => {
+    if (!el.hasAttribute('data-block') || isViewOnlyChild(el)) return false
+    if (el.tagName !== 'UL' && el.tagName !== 'OL')
+      return domKind(el) !== undefined
+    if (!el.firstElementChild) return false
+    for (let item = el.firstElementChild; item; item = item.nextElementSibling)
+      if (item.tagName !== 'LI') return false
+    return true
+  }
+
+  /** The elements of `nodes` that pass `test`, or -1 when another element or text is among them. */
+  const countBlocks = (
+    nodes: NodeList,
+    test: (el: HTMLElement) => boolean,
+  ): number => {
+    let blocks = 0
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i]
+      // Comments and whitespace are harmless (`isForeignNode` is false for them).
+      if (!isForeignNode(node)) continue
+      if (!(node instanceof HTMLElement && test(node))) return -1
+      blocks += 1
+    }
+    return blocks
+  }
+
+  /**
+   * A child-list record on the root that only removes unit elements and inserts unit-shaped elements:
+   * Vditor's block spin (`ir/input.ts` `outerHTML`), the browser's paragraph insertion on Enter, and
+   * the removal of the previous block the spin takes in. Harmless nodes (comments, whitespace) may join.
+   */
+  const isBlockSpin = (record: MutationRecord): boolean => {
+    // A removed block may come from an earlier spin that no sync has mapped yet (keys between syncs).
+    const removed = countBlocks(
+      record.removedNodes,
+      (el) => holdsUnits(el) || isUnitShaped(el),
+    )
+    if (removed < 0) return false
+    const added = countBlocks(record.addedNodes, isUnitShaped)
+    return added >= 0 && removed + added > 0
+  }
+
+  const markSpin = (record: MutationRecord): void => {
+    noteStructure('root')
+    if (!options?.onBatch) return
+    const { addedNodes } = record
+    for (let i = 0; i < addedNodes.length; i += 1) {
+      const node = addedNodes[i]
+      if (node instanceof HTMLElement) spunTops.add(node)
+    }
   }
   let observer: MutationObserver | undefined
   let unregister: (() => void) | undefined
@@ -343,11 +423,25 @@ export function createUnitDom(
     return undefined
   }
 
+  /**
+   * Task 733 / 012-1: a unit-shaped top-level element the model does not map yet was inserted by a
+   * spin that the next root stage relists (Vditor's `setRangeByWbr` and post-render steps write into
+   * the new block before any sync). It is the same spin: the spun block, not a whole change.
+   */
+  const markUnmapped = (block: HTMLElement | undefined): void => {
+    if (!block || !isUnitShaped(block)) {
+      markStructure('root')
+      return
+    }
+    noteStructure('root')
+    if (options?.onBatch) spunTops.add(block)
+  }
+
   const markBlock = (block: HTMLElement | undefined): void => {
     const unit = block ? model?.unitOf(block) : undefined
-    // A block without a unit is a view-only or foreign element: the root structure decides.
+    // A block without a unit is a spun block (see markUnmapped), a view-only or a foreign element.
     if (unit) markDirty(unit)
-    else markStructure('root')
+    else markUnmapped(block)
   }
 
   const markTableStructure = (block: HTMLElement | undefined): void => {
@@ -378,7 +472,8 @@ export function createUnitDom(
     if (element.closest('[data-render]')) return
     if (record.type === 'childList' && onlyRenderNodes(record)) return
     if (element === root) {
-      markStructure('root')
+      if (record.type === 'childList' && isBlockSpin(record)) markSpin(record)
+      else markStructure('root')
       return
     }
     const cell = element.closest('td, th')
@@ -409,20 +504,28 @@ export function createUnitDom(
         // A child-list record on the list itself: the list run changed.
         const item = itemUnitOf(block, record.removedNodes)
         if (item) markStructure(item)
-        else markStructure('root')
+        else markUnmapped(block)
         return
       }
       let item: Element = element
       while (item.parentElement !== block) item = item.parentElement as Element
       const unit = model.unitOf(item as HTMLElement)
-      if (unit) markDirty(unit)
-      else markStructure('root')
+      if (unit) {
+        markDirty(unit)
+        return
+      }
+      // A new item (an Enter split) that the list run's relisting maps: the list run changed.
+      const listed = itemUnitOf(block, record.removedNodes)
+      if (listed) markStructure(listed)
+      else markUnmapped(block)
       return
     }
     markBlock(block)
   }
 
   const process = (records: readonly MutationRecord[]): void => {
+    spunTops.clear()
+    rootUnexplained = false
     for (const record of records) mark(record)
     const changed = batchChanged
     const structure = batchStructure
@@ -597,6 +700,7 @@ export function createUnitDom(
     drain() {
       if (observer) process(observer.takeRecords())
     },
+    takeSpun: () => (rootUnexplained ? undefined : spunTops),
     detach() {
       unregister?.()
       unregister = undefined
@@ -605,6 +709,8 @@ export function createUnitDom(
       model = undefined
       batchChanged = undefined
       batchStructure = undefined
+      spunTops.clear()
+      rootUnexplained = false
     },
   }
 }

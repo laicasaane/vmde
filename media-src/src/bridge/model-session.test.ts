@@ -1292,6 +1292,146 @@ describe('unit change feed (Task 733 / 005-A)', () => {
   })
 })
 
+// Task 733 / 012-1: a publication after the feed frame and the block spin of a top-level block report
+// only the changed units; `whole` stays for a change the model cannot name.
+describe('scoped feed emissions (Task 733 / 012-1)', () => {
+  const SPIN_DOC = 'alpha\n\nbeta\n\n```js\nx\n```\n\ngamma\n'
+
+  /** An open session whose build frames have run, with a recording listener. */
+  function openFeed(markdown = SPIN_DOC) {
+    const r = open(markdown)
+    r.runFrames()
+    const changes: UnitsChange[] = []
+    r.session.onUnitsChanged((change) => {
+      changes.push(change)
+    })
+    return { r, changes }
+  }
+
+  /** Replaces a top-level block the way Vditor's IR input spins it: one `outerHTML` write on the root. */
+  function spin(block: HTMLElement, markdown: string): void {
+    block.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    block.outerHTML = lute.Md2VditorIRDOM(markdown)
+  }
+
+  const codeBlock = (r: Rig): HTMLElement =>
+    r.root.querySelector(':scope > [data-type="code-block"]') as HTMLElement
+
+  /** Every emitted change after the feed frame and the publication's sync. */
+  function frameThenDelta(r: Rig, changes: UnitsChange[]): UnitsChange[] {
+    r.session.confirmedUnits() // drains the batch
+    r.runFrames()
+    expect(r.session.deltaPort().prepareDelta(1).kind).toBe('changes')
+    r.runFrames()
+    return changes
+  }
+
+  it('a delta prepared after the feed frame is no whole change', () => {
+    const { r, changes } = openFeed()
+    type(r, 0, 'alpha2')
+    frameThenDelta(r, changes)
+    const first = r.root.querySelectorAll('p')[0]
+    expect(changes.map((c) => [c.cause, c.whole])).not.toContainEqual([
+      'sync',
+      true,
+    ])
+    // The sync reports the unit it wrote, or nothing new.
+    for (const change of changes.filter((c) => c.cause === 'sync'))
+      expect(change.changed.map((unit) => unit.el)).toEqual([first])
+  })
+
+  it('a whole-text post after the feed frame is no whole change', () => {
+    const { r, changes } = openFeed()
+    type(r, 1, 'beta2')
+    r.session.confirmedUnits()
+    r.runFrames()
+    expect(r.session.beforeWholeTextPost(1)).toEqual({ rebind: true })
+    const second = r.root.querySelectorAll('p')[1]
+    const sync = changes.filter((c) => c.cause === 'sync')
+    expect(sync.map((c) => c.whole)).not.toContain(true)
+    for (const change of sync)
+      expect(change.changed.map((unit) => unit.el)).toEqual([second])
+  })
+
+  it('a spun top-level paragraph is reported as that block, not as a whole change', () => {
+    const { r, changes } = openFeed()
+    spin(r.root.querySelectorAll('p')[0], 'alpha2\n')
+    frameThenDelta(r, changes)
+    const spun = r.root.querySelectorAll('p')[0]
+    expect(r.session.deltaPort().modelText()).toBe(
+      SPIN_DOC.replace('alpha', 'alpha2'),
+    )
+    expect(changes.map((c) => c.whole)).not.toContain(true)
+    expect(changes.flatMap((c) => c.structural)).toContain(spun)
+  })
+
+  it('a paragraph spun into two paragraphs (Enter) reports both new blocks', () => {
+    const { r, changes } = openFeed()
+    spin(r.root.querySelectorAll('p')[0], 'al\n\npha\n')
+    frameThenDelta(r, changes)
+    const [left, right] = Array.from(r.root.querySelectorAll('p'))
+    expect(r.session.deltaPort().modelText()).toBe(
+      SPIN_DOC.replace('alpha', 'al\n\npha'),
+    )
+    expect(changes.map((c) => c.whole)).not.toContain(true)
+    const structural = changes.flatMap((c) => c.structural)
+    expect(structural).toContain(left)
+    expect(structural).toContain(right)
+  })
+
+  it('a spun top-level code block is reported as that block, not as a whole change', () => {
+    const { r, changes } = openFeed()
+    spin(codeBlock(r), '```js\nxy\n```\n')
+    frameThenDelta(r, changes)
+    expect(r.session.deltaPort().modelText()).toBe(
+      SPIN_DOC.replace('```js\nx\n```', '```js\nxy\n```'),
+    )
+    expect(changes.map((c) => c.whole)).not.toContain(true)
+    expect(changes.flatMap((c) => c.structural)).toContain(codeBlock(r))
+  })
+
+  it('a write inside a spun block before any sync (the wbr removal) is no whole change', () => {
+    const { r, changes } = openFeed()
+    const old = r.root.querySelectorAll('p')[0]
+    old.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    old.outerHTML = lute.Md2VditorIRDOM('alpha2\n')
+    const spun = r.root.querySelectorAll('p')[0]
+    spun.append(document.createElement('wbr'))
+    r.session.confirmedUnits()
+    spun.querySelector('wbr')?.remove()
+    frameThenDelta(r, changes)
+    expect(changes.map((c) => c.whole)).not.toContain(true)
+    expect(changes.flatMap((c) => c.structural)).toContain(spun)
+  })
+
+  it('a second spin of a block no sync has mapped yet is no whole change', () => {
+    const { r, changes } = openFeed()
+    spin(r.root.querySelectorAll('p')[0], 'alpha2\n')
+    r.session.confirmedUnits()
+    r.runFrames()
+    spin(r.root.querySelectorAll('p')[0], 'alpha23\n')
+    frameThenDelta(r, changes)
+    expect(r.session.deltaPort().modelText()).toBe(
+      SPIN_DOC.replace('alpha', 'alpha23'),
+    )
+    expect(changes.map((c) => c.whole)).not.toContain(true)
+    expect(changes.flatMap((c) => c.structural)).toContain(
+      r.root.querySelectorAll('p')[0],
+    )
+  })
+
+  it('a root record whose new element the model cannot map is still a whole change', () => {
+    const { r, changes } = openFeed()
+    const foreign = document.createElement('div')
+    foreign.textContent = 'foreign'
+    r.root.querySelectorAll('p')[0].replaceWith(foreign)
+    r.session.confirmedUnits()
+    r.runFrames()
+    expect(changes.filter((c) => c.cause === 'mutation')).toHaveLength(1)
+    expect(changes[0].whole).toBe(true)
+  })
+})
+
 // Task 733 / 010-T: `applyText` writes a text change into the IR DOM unit by unit (shared rules 3.7).
 describe('applyText (Task 733 / 010)', () => {
   const THREE = 'alpha\n\nbeta\n\ngamma\n'

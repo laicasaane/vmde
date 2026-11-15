@@ -94,6 +94,26 @@ const resetCounters = (frame: Frame) =>
     ).__vmdeEditCounters.reset(length as number)
   }, fixture.length)
 
+interface DecoratorPasses {
+  full: number
+  scoped: number
+}
+
+const resetDecoratorPasses = (frame: Frame) =>
+  frame.locator('body').evaluate(() => {
+    ;(
+      window as unknown as { __vmdeDecoratorPasses?: DecoratorPasses }
+    ).__vmdeDecoratorPasses = { full: 0, scoped: 0 }
+  })
+
+const readDecoratorPasses = (frame: Frame): Promise<DecoratorPasses> =>
+  frame.locator('body').evaluate(() => {
+    const passes = (
+      window as unknown as { __vmdeDecoratorPasses?: DecoratorPasses }
+    ).__vmdeDecoratorPasses
+    return { full: passes?.full ?? 0, scoped: passes?.scoped ?? 0 }
+  })
+
 /** The IR model state (`live` or `off`), from the end-to-end model statistics. */
 const modelState = (frame: Frame) =>
   frame.locator('body').evaluate(
@@ -267,12 +287,7 @@ test.describe('edit counter gates', () => {
         place.name,
       )
       expect.soft(counters.fullGetValue, `${place.name} fullGetValue`).toBe(0)
-      // Q-18 (b): typing in a table cell makes whole-table Lute calls from Vditor's own input handling
-      // (it spins the edited block, here the whole table; a list item shows the same with `luteList`,
-      // 26 calls for 23 keys, with the model not involved). That is design step S5: the assertion for
-      // this place lives in the S5 test "keys in a table cell" below.
-      if (place.name !== 'table cell')
-        expect.soft(counters.luteDocument, `${place.name} luteDocument`).toBe(0)
+      expect.soft(counters.luteDocument, `${place.name} luteDocument`).toBe(0)
       expect
         .soft(counters.legacyEditPosts, `${place.name} legacyEditPosts`)
         .toBe(0)
@@ -288,6 +303,47 @@ test.describe('edit counter gates', () => {
       expect
         .soft(counters.maxPostBytes, `${place.name} maxPostBytes`)
         .toBeLessThan(1024)
+    }
+  })
+
+  // Task 733 / 012-1 (G2): a whole unit-feed change makes every feed consumer walk the whole root
+  // without a Lute call, so the counters above cannot see it; the decorator pass counter
+  // (`__vmdeDecoratorPasses`, end-to-end runs only) can.
+  test('local edits make no whole decorator pass', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await expect.poll(() => modelState(frame), { timeout: 30_000 }).toBe('live')
+    // Soft assertions: every place runs and logs its passes even when one fails.
+    for (const place of PLACES) {
+      await placeCaret(workbox, frame, place)
+      await settleForPublication(workbox)
+      await resetDecoratorPasses(frame)
+      await typeLetters(workbox, 300)
+      for (let i = 0; i < 5; i++) {
+        await workbox.keyboard.press('Backspace')
+        await workbox.waitForTimeout(300)
+      }
+      // A letter after each Enter keeps the second Enter in a line with text (a second Enter in an
+      // empty list item would leave the list, a root structure change).
+      for (const ch of 'xy') {
+        await workbox.keyboard.press('Enter')
+        await workbox.waitForTimeout(300)
+        await workbox.keyboard.press(ch)
+        await workbox.waitForTimeout(300)
+      }
+      await settleForPublication(workbox)
+      const passes = await readDecoratorPasses(frame)
+      console.log(
+        `DECORATOR-PASSES ${JSON.stringify({ test: 'local edits make no whole decorator pass', place: place.name, passes })}`,
+      )
+      expect.soft(passes.full, `${place.name} full passes`).toBe(0)
+      // The instrument fired: the edits reached the feed consumers as scoped passes.
+      expect
+        .soft(passes.scoped, `${place.name} scoped passes`)
+        .toBeGreaterThanOrEqual(1)
     }
   })
 

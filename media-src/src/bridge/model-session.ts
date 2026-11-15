@@ -369,8 +369,8 @@ function resolveUnits(
   root: HTMLElement | null,
   changed: LiveUnit[],
   structural: Set<HTMLElement>,
+  seen: Set<HTMLElement>,
 ): void {
-  const seen = new Set<HTMLElement>()
   for (const unit of units ?? []) {
     const first = unit.el ?? unit.members[0]
     if (!first?.isConnected) continue
@@ -383,27 +383,61 @@ function resolveUnits(
   }
 }
 
-/** The batch sets as live units and top-level elements; units whose element left the document are dropped. */
-function resolveBatch(
-  changedUnits: ReadonlySet<Unit<HTMLElement>> | undefined,
-  structure: ReadonlySet<'root' | Unit<HTMLElement>> | undefined,
+/** The marks of one or more observer batches, collected for one emitted change. */
+interface BatchSets {
+  changed: ReadonlySet<Unit<HTMLElement>> | undefined
+  structure: ReadonlySet<'root' | Unit<HTMLElement>> | undefined
+  /** The top-level elements of block spins (Task 733 / 012-1). */
+  spun: ReadonlySet<HTMLElement>
+  /** A root notice that is no block spin: consumers run their full pass. */
+  rootUnexplained: boolean
+}
+
+function resolveStructure(
+  sets: BatchSets,
   root: HTMLElement | null,
-): ResolvedBatch {
+  structural: Set<HTMLElement>,
+): boolean {
   let whole = false
-  const changed: LiveUnit[] = []
-  const structural = new Set<HTMLElement>()
-  resolveUnits(changedUnits, root, changed, structural)
-  for (const scope of structure ?? []) {
+  for (const scope of sets.structure ?? []) {
     if (scope === 'root') {
-      whole = true
+      // A block spin keeps the root notice; only a root notice of another cause is a whole change.
+      if (sets.rootUnexplained) whole = true
       continue
     }
     const first = scope.el ?? scope.members[0]
     if (first?.isConnected) structural.add(rootChild(first, root))
   }
+  for (const top of sets.spun)
+    if (top.isConnected && top.parentElement === root) structural.add(top)
+  return whole
+}
+
+/**
+ * The batch sets as live units and top-level elements; units whose element left the document are
+ * dropped. `kept` is what a feed frame already reported and the sync now writes (Task 733 / 012-1).
+ */
+function resolveBatch(
+  sets: BatchSets,
+  root: HTMLElement | null,
+  kept?: BatchSets,
+): ResolvedBatch {
+  const changed: LiveUnit[] = []
+  const structural = new Set<HTMLElement>()
+  const seen = new Set<HTMLElement>()
+  resolveUnits(sets.changed, root, changed, structural, seen)
+  let whole = resolveStructure(sets, root, structural)
+  if (kept) {
+    resolveUnits(kept.changed, root, changed, structural, seen)
+    if (resolveStructure(kept, root, structural)) whole = true
+  }
   changed.sort(documentOrder)
   return { whole, changed, structural: Array.from(structural) }
 }
+
+/** A root notice of these sets came only from block spins. */
+const spinOnlyRoot = (sets: BatchSets): boolean =>
+  sets.structure?.has('root') === true && !sets.rootUnexplained
 
 const documentOrder = (a: LiveUnit, b: LiveUnit): number =>
   a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
@@ -457,8 +491,29 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let buildFrame: number | undefined
   const listeners = new Set<(change: UnitsChange) => void>()
   /** What the observer batches marked since the last emitted change (merged per animation frame). */
-  let pendingChanged: Set<Unit<HTMLElement>> | undefined
-  let pendingStructure: Set<'root' | Unit<HTMLElement>> | undefined
+  // Task 733 / 012-1: `spun` holds the spun top-level elements of the pending batches. One object for
+  // the session; the spun set is reused, never reallocated.
+  const pending: {
+    changed: Set<Unit<HTMLElement>> | undefined
+    structure: Set<'root' | Unit<HTMLElement>> | undefined
+    spun: Set<HTMLElement>
+    rootUnexplained: boolean
+  } = {
+    changed: undefined,
+    structure: undefined,
+    spun: new Set(),
+    rootUnexplained: false,
+  }
+  /**
+   * Task 733 / 012-1: what the feed frames reported since the last sync. The next sync writes these
+   * units, so it reports them again (scoped) instead of a whole change. Reused, never reallocated.
+   */
+  const kept = {
+    changed: new Set<Unit<HTMLElement>>(),
+    structure: new Set<'root' | Unit<HTMLElement>>(),
+    spun: new Set<HTMLElement>(),
+    rootUnexplained: false,
+  }
   let feedFrame: number | undefined
   const fallbacks: Partial<Record<DeltaFallbackReason, number>> = {}
   /** A sync with a sequence may have set `changedAt` since the last reset: only then is a reset walk due (010-R F12). */
@@ -477,23 +532,33 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   const cancelFeedFrame = (): void => {
     if (feedFrame !== undefined) deps.cancelAnimationFrame(feedFrame)
     feedFrame = undefined
-    pendingChanged = undefined
-    pendingStructure = undefined
+    pending.changed = undefined
+    pending.structure = undefined
+    pending.spun.clear()
+    pending.rootUnexplained = false
   }
 
-  /** Resolves the pending sets against the model as it is now: removed units are dropped. */
-  const takePending = (cause: UnitsChange['cause']): UnitsChange => {
-    const changedUnits = pendingChanged
-    const structure = pendingStructure
+  const dropKept = (): void => {
+    kept.changed.clear()
+    kept.structure.clear()
+    kept.spun.clear()
+    kept.rootUnexplained = false
+  }
+
+  /** Resolves the pending sets (and `withKept`, the kept ones) against the model as it is now: removed units are dropped. */
+  const takePending = (
+    cause: UnitsChange['cause'],
+    withKept?: BatchSets,
+  ): UnitsChange => {
+    // Resolved before the cancel: it clears the reused spun set.
+    const resolved = resolveBatch(pending, deps.getRoot(), withKept)
     cancelFeedFrame()
-    return {
-      cause,
-      ...resolveBatch(changedUnits, structure, deps.getRoot()),
-    }
+    return { cause, ...resolved }
   }
 
   const emitWhole = (cause: UnitsChange['cause']): void => {
     cancelFeedFrame()
+    dropKept()
     emit({ cause, whole: true, changed: [], structural: [] })
   }
 
@@ -504,6 +569,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       return
     }
     cancelFeedFrame()
+    dropKept()
     emit({
       cause: 'sync',
       whole: result.kind === 'fallback',
@@ -532,6 +598,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     neighbours: readonly (Element | null | undefined)[],
   ): void => {
     cancelFeedFrame()
+    dropKept()
     const root = deps.getRoot()
     // A row apply changed its table (its rows are no top-level units, 010-R F11); a deletion renders
     // nothing, so the units beside the removed ones name the place it changed.
@@ -552,10 +619,22 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
 
   /** A sync wrote changes: the units marked since the last change are the changed ones. */
   const emitSync = (): void => {
-    const change = takePending('sync')
-    const known = change.changed.length > 0 || change.structural.length > 0
+    const spinOnly = spinOnlyRoot(pending) || spinOnlyRoot(kept)
+    // Task 733 / 012-1: the units a feed frame already reported are the ones this sync wrote.
+    const change = takePending('sync', kept)
+    dropKept()
+    const known =
+      change.changed.length > 0 || change.structural.length > 0 || spinOnly
     // A sync with changes that no batch explains cannot be scoped: consumers run their full pass.
     emit(known || change.whole ? change : { ...change, whole: true })
+  }
+
+  /** Keeps what the feed frame reports until the sync that writes it. */
+  const keepPending = (): void => {
+    for (const unit of pending.changed ?? []) kept.changed.add(unit)
+    for (const scope of pending.structure ?? []) kept.structure.add(scope)
+    for (const top of pending.spun) kept.spun.add(top)
+    if (pending.rootUnexplained) kept.rootUnexplained = true
   }
 
   /** The frame callback is one closure for the session: a batch allocates no function. */
@@ -565,10 +644,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     feedFrame = undefined
     // Re-read after the frame: a model that went off meanwhile has nothing to report.
     if (!model || !live()) {
-      pendingChanged = undefined
-      pendingStructure = undefined
+      cancelFeedFrame()
+      dropKept()
       return
     }
+    keepPending()
     emit(takePending('mutation'))
   }
 
@@ -593,8 +673,14 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   ): void => {
     // The history capture reads the units before a sync can overwrite their HTML.
     capture.onBatch(changed, structure)
-    pendingChanged = mergeBatch(pendingChanged, changed)
-    pendingStructure = mergeBatch(pendingStructure, structure)
+    pending.changed = mergeBatch(pending.changed, changed)
+    pending.structure = mergeBatch(pending.structure, structure)
+    if (structure.has('root')) {
+      // Read inside the batch: the adapter's spun set belongs to the batch it is reporting.
+      const spun = dom?.takeSpun()
+      if (spun) for (const top of spun) pending.spun.add(top)
+      else pending.rootUnexplained = true
+    }
     if (feedFrame !== undefined) return
     feedFrame = deps.requestAnimationFrame(feedFrameDone)
   }
@@ -610,6 +696,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     dom = undefined
     model = undefined
     cancelFeedFrame()
+    dropKept()
     prediction = undefined
     preTouchFallback = false
     exactSequences.clear()
