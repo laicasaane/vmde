@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { planBlockAction } from '../../../src/shared/block-move'
+import {
+  planBlockAction,
+  type BlockActionIntent,
+  type BlockActionScope,
+} from '../../../src/shared/block-move'
 import {
   acquireBlockActionAuthority,
   cancelPendingBlockActions,
@@ -18,6 +22,34 @@ const state = vi.hoisted(() => ({
   unitCalls: [] as string[],
   refuseUnits: false,
 }))
+// Task 733 / 012-17 (B-15): the planner as the client calls it, with a scan counter added to a passed
+// scope; the arguments show which units the client handed over.
+const planning = vi.hoisted(() => ({
+  scopes: [] as (unknown | undefined)[],
+  plans: [] as unknown[],
+  scanned: { before: 0, after: 0 },
+}))
+vi.mock('../../../src/shared/block-move', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../src/shared/block-move')>()
+  return {
+    ...actual,
+    planBlockAction: (
+      markdown: string,
+      action: BlockActionIntent,
+      scope?: BlockActionScope,
+    ) => {
+      planning.scopes.push(scope)
+      const result = actual.planBlockAction(
+        markdown,
+        action,
+        scope && { ...scope, scanned: planning.scanned },
+      )
+      planning.plans.push(result)
+      return result
+    },
+  }
+})
 vi.mock('../util/inner-vditor', () => ({ innerVditor: () => state.inner }))
 vi.mock('../util/source-map', () => ({ activeModeElement: () => state.editor }))
 vi.mock('../nav/block-handle', () => ({
@@ -526,4 +558,111 @@ it('places the caret from the plan when no model units are confirmed after the a
   // The caret fallback resolved units on the planned bytes.
   expect(state.unitCalls.length).toBeGreaterThan(0)
   expect(setValue).not.toHaveBeenCalled()
+})
+
+// Task 733 / 012-17 (B-15): on the model route the client passes the confirmed model units, so the
+// first block action in a 2,000-block document scans a bounded block count and plans as the whole
+// scan; on every other route it passes none and the planner scans the whole document.
+const LARGE = `${Array.from({ length: 2000 }, (_, index) => `p${index}`).join('\n\n')}\n`
+const largeStart = (index: number) => LARGE.indexOf(`p${index}\n`)
+const LARGE_MOVE = {
+  kind: 'move',
+  sourceStart: largeStart(1000),
+  targetStart: largeStart(1001),
+  placement: 'after',
+} as const
+
+function largeModelUnits() {
+  return [...LARGE.matchAll(/[^\n]+/gu)].map((match) => {
+    const element = document.createElement('p')
+    element.textContent = match[0]
+    state.editor!.append(element)
+    return {
+      element,
+      members: [element],
+      kind: 'paragraph' as const,
+      start: match.index!,
+      end: match.index! + match[0].length,
+      movable: true,
+    }
+  })
+}
+
+function configureLarge(
+  model: () =>
+    | { exact: string; units: ReturnType<typeof largeModelUnits> }
+    | undefined,
+) {
+  owned = LARGE
+  rendered = LARGE
+  acquire.mockResolvedValue({ exact: LARGE, rendered: LARGE })
+  planning.scopes = []
+  planning.plans = []
+  planning.scanned = { before: 0, after: 0 }
+  dispose?.()
+  dispose = configureBlockActionClient({
+    settleInput: vi.fn(),
+    snapshotExactMarkdown: () => owned,
+    acquireExactAuthority: acquire,
+    setApplying: vi.fn(),
+    onError: vi.fn(),
+    applyExactText: vi.fn(() => 'applied' as const),
+    modelUnits: model,
+    modelText: () => (model() ? LARGE : undefined),
+  })
+}
+
+async function requestLarge() {
+  const done = requestBlockAction(LARGE_MOVE, { exact: LARGE })
+  await vi.waitFor(() => expect(requests()).toHaveLength(1))
+  const request = requests()[0]
+  const whole = (
+    await vi.importActual<typeof import('../../../src/shared/block-move')>(
+      '../../../src/shared/block-move',
+    )
+  ).planBlockAction(LARGE, LARGE_MOVE)
+  if (whole.status !== 'ok') throw new Error('fixture move must plan')
+  return { done, request, whole }
+}
+
+it('passes the confirmed model units so the first move scans a bounded block count (B-15)', async () => {
+  const units = largeModelUnits()
+  configureLarge(() => ({ exact: LARGE, units }))
+  const { done, request, whole } = await requestLarge()
+  expect(planning.scopes).toHaveLength(1)
+  const scope = planning.scopes[0] as BlockActionScope | undefined
+  expect(
+    scope?.units.some((unit) => unit.start === LARGE_MOVE.sourceStart),
+  ).toBe(true)
+  expect(
+    scope?.units.some((unit) => unit.start === LARGE_MOVE.targetStart),
+  ).toBe(true)
+  // Window: the moved paragraph, the target and their neighbours (4 blocks), plus 4.
+  expect(planning.scanned.before).toBeGreaterThan(0)
+  expect(planning.scanned.before).toBeLessThanOrEqual(8)
+  expect(planning.scanned.after).toBeLessThanOrEqual(8)
+  expect(request.before).toBe(LARGE)
+  expect(planning.plans).toEqual([whole])
+  expect(state.unitCalls).toEqual([])
+  cancelPendingBlockActions()
+  await expect(done).resolves.toBe(false)
+})
+
+it('passes no units and plans on the whole scan when the model units are unconfirmed (B-15)', async () => {
+  configureLarge(() => undefined)
+  const { done, whole } = await requestLarge()
+  expect(planning.scopes).toEqual([undefined])
+  expect(planning.plans).toEqual([whole])
+  cancelPendingBlockActions()
+  await expect(done).resolves.toBe(false)
+})
+
+it('passes no units when the model units are of other text (B-15)', async () => {
+  const units = largeModelUnits()
+  configureLarge(() => ({ exact: `${LARGE}tail\n`, units }))
+  const { done, whole } = await requestLarge()
+  expect(planning.scopes).toEqual([undefined])
+  expect(planning.plans).toEqual([whole])
+  cancelPendingBlockActions()
+  await expect(done).resolves.toBe(false)
 })

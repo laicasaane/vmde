@@ -301,7 +301,12 @@ function planAndRequest(
     countBlockActionDecline('plan-units')
     return Promise.resolve(false)
   }
-  const plan = planBlockAction(before, action)
+  // Task 733 / 012-17: the confirmed model units let the planner scan only the action's block window.
+  const plan = planBlockAction(
+    before,
+    action,
+    modelRoute ? { units } : undefined,
+  )
   if (plan.status !== 'ok') {
     countBlockActionDecline('plan-rejected')
     return Promise.resolve(false)

@@ -596,7 +596,6 @@ function trailingNewlineStart(
 }
 
 /** Raw UTF-16 splice plus block/list separator ownership and EOF newline transfer. */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: exact block identity, list-depth guard and EOF separator transfer are one coupled move decision.
 export function planBlockMove(
   markdown: string,
   sourceStart: number,
@@ -606,8 +605,22 @@ export function planBlockMove(
   if (placement !== 'before' && placement !== 'after')
     return { status: 'rejected', reason: 'invalid-placement' }
   const blocks = scanMovableBlocks(markdown)
-  const source = blocks.find((block) => block.start === sourceStart)
-  const target = blocks.find((block) => block.start === targetStart)
+  return moveBlock(
+    markdown,
+    blocks.find((block) => block.start === sourceStart),
+    blocks.find((block) => block.start === targetStart),
+    placement,
+  )
+}
+
+/** The move of `source` beside `target`, both scanned blocks of `markdown` (whole or windowed scan). */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: exact block identity, list-depth guard and EOF separator transfer are one coupled move decision.
+function moveBlock(
+  markdown: string,
+  source: MovableBlock | undefined,
+  target: MovableBlock | undefined,
+  placement: 'before' | 'after',
+): BlockMoveResult {
   if (
     !source ||
     !target ||
@@ -770,14 +783,25 @@ export function planBlockDelete(
   sourceStart: number,
 ): BlockEditResult {
   const blocks = scanMovableBlocks(markdown)
-  const source = blocks.find((block) => block.start === sourceStart)
+  return deleteBlock(
+    markdown,
+    blocks.find((block) => block.start === sourceStart),
+    // YAML owns the separator before the first body block, including when that block is last.
+    blocks[0]?.kind === 'front-matter' ? blocks[0].sectionEnd : 0,
+  )
+}
+
+/** `floor`: the end of the front matter section, or 0; only the block after the front matter reads it. */
+function deleteBlock(
+  markdown: string,
+  source: MovableBlock | undefined,
+  floor: number,
+): BlockEditResult {
   if (!source || source.kind === 'front-matter')
     return { status: 'rejected', reason: 'stale-block' }
   if (source.kind === 'heading')
     return { status: 'rejected', reason: 'heading-section' }
   const final = source.sectionEnd === markdown.length
-  // YAML owns the separator before the first body block, including when that block is last.
-  const floor = blocks[0]?.kind === 'front-matter' ? blocks[0].sectionEnd : 0
   const removeStart = final
     ? trailingNewlineStart(markdown, floor, source.start)
     : source.start
@@ -796,7 +820,13 @@ export function planBlockDuplicate(
   markdown: string,
   sourceStart: number,
 ): BlockEditResult {
-  const source = actionBlock(markdown, sourceStart)
+  return duplicateBlock(markdown, actionBlock(markdown, sourceStart))
+}
+
+function duplicateBlock(
+  markdown: string,
+  source: MovableBlock | null | undefined,
+): BlockEditResult {
   if (!source || source.kind === 'front-matter')
     return { status: 'rejected', reason: 'stale-block' }
   if (source.kind === 'heading')
@@ -853,39 +883,347 @@ function groupSignature(markdown: string, block: MovableBlock): string {
   })
 }
 
+/**
+ * The confirmed top-level units of the planned text, in document order (the client passes the model's
+ * units). The planner trusts a unit only when a scan of its window yields the same range and kind;
+ * any mismatch plans on the whole document.
+ */
+export interface BlockActionScope {
+  readonly units: readonly {
+    readonly start: number
+    readonly end: number
+    readonly kind: MovableKind
+  }[]
+  /** Caller-owned counter: blocks scanned in the original text and in the planned text. */
+  scanned?: { before: number; after: number }
+}
+
+/** Places `action` into `expected`, the signatures of the blocks in which it happens. */
+function applyToSignatures(
+  expected: string[],
+  sourceIndex: number,
+  targetIndex: number,
+  action: BlockActionIntent,
+): void {
+  if (action.kind === 'delete') expected.splice(sourceIndex, 1)
+  else if (action.kind === 'duplicate')
+    expected.splice(sourceIndex + 1, 0, expected[sourceIndex])
+  else {
+    const [moved] = expected.splice(sourceIndex, 1)
+    const remaining = targetIndex - (targetIndex > sourceIndex ? 1 : 0)
+    expected.splice(
+      remaining + (action.placement === 'after' ? 1 : 0),
+      0,
+      moved,
+    )
+  }
+}
+
 /** A splice must not reparse any untouched group into a new kind or enclosure. */
 function preservesGroupOrder(
   before: string,
   after: string,
   action: BlockActionIntent,
+  scanned: BlockActionScope['scanned'],
 ): boolean {
   const original = scanMovableBlocks(before)
   const next = scanMovableBlocks(after)
+  if (scanned) {
+    scanned.before += original.length
+    scanned.after += next.length
+  }
   const sourceIndex = original.findIndex(
     (block) => block.start === action.sourceStart,
   )
   if (sourceIndex < 0) return false
   const expected = original.map((block) => groupSignature(before, block))
-  if (action.kind === 'delete') expected.splice(sourceIndex, 1)
-  else if (action.kind === 'duplicate')
-    expected.splice(sourceIndex + 1, 0, expected[sourceIndex])
-  else {
-    const target = original.find((block) => block.start === action.targetStart)
-    if (!target) return false
-    const [moved] = expected.splice(sourceIndex, 1)
-    const remaining = original.filter((_, index) => index !== sourceIndex)
-    const targetIndex = remaining.indexOf(target)
-    if (targetIndex < 0) return false
-    expected.splice(
-      targetIndex + (action.placement === 'after' ? 1 : 0),
-      0,
-      moved,
+  let targetIndex = sourceIndex
+  if (action.kind === 'move') {
+    targetIndex = original.findIndex(
+      (block) => block.start === action.targetStart,
     )
+    if (targetIndex < 0) return false
   }
+  applyToSignatures(expected, sourceIndex, targetIndex, action)
   return (
     JSON.stringify(expected) ===
     JSON.stringify(next.map((block) => groupSignature(after, block)))
   )
+}
+
+// A windowed check covers a move's two splice points with at most this many blocks each.
+const WINDOW_LIMIT = 64
+// Unchanged blocks kept on each side of a splice point, so no block outside a window reads changed
+// lines when it looks ahead (a lazy continuation or a table delimiter reads up to two lines).
+const WINDOW_MARGIN = 2
+
+/**
+ * Scans `count` top-level blocks of `text` from `from`, a top-level block start, reading lines up to
+ * `until` only (the following block is included for look-ahead). `boundary` is the start of the block
+ * after them, or `undefined` when they end the document. `undefined` result: the region does not scan
+ * as the same plain blocks (an HTML block, whose enclosure pairing spans the document, included).
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the windowed copy of scanMovableBlocks keeps its front matter, list run and boundary rules in one pass.
+function scanWindow(
+  text: string,
+  from: number,
+  until: number,
+  count: number,
+  boundary: number | undefined,
+): MovableBlock[] | undefined {
+  const lines = linesOf(text.slice(from, until))
+  const blocks: MovableBlock[] = []
+  let index = 0
+  if (from === 0) {
+    index = appendFrontMatter(lines, blocks)
+    if (index < 0) return undefined
+  }
+  let listRun = 0
+  let previousLine = -1
+  while (blocks.length < count) {
+    while (index < lines.length && !lines[index].text.trim()) index++
+    if (index >= lines.length) return undefined
+    const parsed = blockAt(lines, index)
+    if (!parsed || parsed.kind === 'html') return undefined
+    const start = from + lines[index].start
+    const previous = blocks.at(-1)
+    const run =
+      parsed.kind === 'list-item'
+        ? previous?.kind === 'list-item' &&
+          previousLine >= 0 &&
+          /^(?:\r\n|\n|\r){1,2}$/u.test(text.slice(previous.end, start)) &&
+          listStyle(lines[previousLine].text) === listStyle(lines[index].text)
+          ? previous.listRun
+          : ++listRun
+        : -1
+    blocks.push({
+      kind: parsed.kind,
+      start,
+      end: from + lines[parsed.endLine].end,
+      sectionEnd: 0,
+      listRun: run,
+    })
+    previousLine = index
+    index = parsed.endLine + 1
+  }
+  while (index < lines.length && !lines[index].text.trim()) index++
+  if (
+    boundary === undefined
+      ? index < lines.length || until !== text.length
+      : index >= lines.length || from + lines[index].start !== boundary
+  )
+    return undefined
+  for (let block = 0; block < blocks.length; block++)
+    blocks[block].sectionEnd =
+      blocks[block + 1]?.start ?? boundary ?? text.length
+  return blocks
+}
+
+interface UnitWindow {
+  first: number
+  last: number
+}
+
+function unitIndex(units: BlockActionScope['units'], start: number): number {
+  let low = 0
+  let high = units.length - 1
+  while (low <= high) {
+    const middle = (low + high) >> 1
+    const unit = units[middle]
+    if (unit.start === start) return middle
+    if (unit.start < start) low = middle + 1
+    else high = middle - 1
+  }
+  return -1
+}
+
+/** Scans one window of `markdown` and keeps it only when every block equals its unit. */
+function scanUnits(
+  markdown: string,
+  units: BlockActionScope['units'],
+  window: UnitWindow,
+): MovableBlock[] | undefined {
+  const boundary = units[window.last + 1]?.start
+  const until =
+    boundary === undefined
+      ? markdown.length
+      : (units[window.last + 2]?.start ?? markdown.length)
+  const blocks = scanWindow(
+    markdown,
+    units[window.first].start,
+    until,
+    window.last - window.first + 1,
+    boundary,
+  )
+  if (!blocks) return undefined
+  for (let index = 0; index < blocks.length; index++) {
+    const unit = units[window.first + index]
+    const block = blocks[index]
+    if (
+      unit.start !== block.start ||
+      unit.end !== block.end ||
+      unit.kind !== block.kind
+    )
+      return undefined
+  }
+  return blocks
+}
+
+/**
+ * Checks one window in the planned text: from `start` it scans the expected blocks, which must end at
+ * `boundary` (`undefined`: the document end). `lookAhead` is the length read past the boundary.
+ */
+function windowMatches(
+  after: string,
+  start: number,
+  boundary: number | undefined,
+  lookAhead: number,
+  expected: readonly string[],
+  scanned: BlockActionScope['scanned'],
+): boolean {
+  const until =
+    boundary === undefined
+      ? after.length
+      : Math.min(after.length, boundary + lookAhead)
+  const blocks = scanWindow(after, start, until, expected.length, boundary)
+  if (!blocks) return false
+  if (scanned) scanned.after += blocks.length
+  for (let index = 0; index < blocks.length; index++)
+    if (groupSignature(after, blocks[index]) !== expected[index]) return false
+  return true
+}
+
+/**
+ * Plans `action` on windows of the confirmed units: one window around delete, duplicate and close
+ * moves, one at each splice point of a far move. `undefined`: plan on the whole document instead.
+ */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: window choice, unit trust, the shared move and edit cores and the planned-text check are one fail-closed decision.
+function planInWindows(
+  markdown: string,
+  action: BlockActionIntent,
+  scope: BlockActionScope,
+): BlockActionPlan | undefined {
+  const { units, scanned } = scope
+  const sourceIndex = unitIndex(units, action.sourceStart)
+  if (sourceIndex < 0) return undefined
+  let targetIndex = sourceIndex
+  if (action.kind === 'move') {
+    if (action.placement !== 'before' && action.placement !== 'after')
+      return undefined
+    targetIndex = unitIndex(units, action.targetStart)
+    // A heading moves with its section, a grouping across the document: the whole scan plans it.
+    if (targetIndex < 0 || units[sourceIndex].kind === 'heading')
+      return undefined
+  }
+  const low = Math.min(sourceIndex, targetIndex)
+  const high = Math.max(sourceIndex, targetIndex)
+  const around = (first: number, last: number): UnitWindow => ({
+    first: Math.max(0, first - WINDOW_MARGIN),
+    last: Math.min(units.length - 1, last + WINDOW_MARGIN),
+  })
+  // List items of one run compare their run identity, which only a scan across the run proves.
+  const bothItems =
+    units[sourceIndex].kind === 'list-item' &&
+    units[targetIndex].kind === 'list-item'
+  const lower = around(low, low)
+  const upper = around(high, high)
+  const windows =
+    action.kind === 'move' && !bothItems && lower.last < upper.first
+      ? [lower, upper]
+      : [around(low, high)]
+  if (windows.some((window) => window.last - window.first >= WINDOW_LIMIT))
+    return undefined
+  const scans: MovableBlock[][] = []
+  for (const window of windows) {
+    const blocks = scanUnits(markdown, units, window)
+    if (!blocks) return undefined
+    if (scanned) scanned.before += blocks.length
+    scans.push(blocks)
+  }
+  const blockAtIndex = (index: number): MovableBlock => {
+    const slot = windows.length > 1 && index >= upper.first ? 1 : 0
+    return scans[slot][index - windows[slot].first]
+  }
+  const source = blockAtIndex(sourceIndex)
+  const target = blockAtIndex(targetIndex)
+  const first = scans[0][0]
+  let after: string
+  let caretOffset: number
+  let mapOffset: ((offset: number) => number) | undefined
+  if (action.kind === 'move') {
+    if (
+      action.placement === 'before' &&
+      first.kind === 'front-matter' &&
+      action.targetStart === 0
+    )
+      return { status: 'rejected', reason: 'stale-block' }
+    const moved = moveBlock(markdown, source, target, action.placement)
+    if (moved.status !== 'ok') return moved
+    after = moved.markdown
+    caretOffset = moved.movedRange.start
+    mapOffset = moved.mapOffset
+  } else {
+    const edited =
+      action.kind === 'delete'
+        ? deleteBlock(
+            markdown,
+            source,
+            first.kind === 'front-matter' ? first.sectionEnd : 0,
+          )
+        : duplicateBlock(markdown, source)
+    if (edited.status !== 'ok') return edited
+    after = edited.markdown
+    caretOffset = edited.caretOffset
+  }
+  const delta = after.length - markdown.length
+  for (const [index, window] of windows.entries()) {
+    const blocks = scans[index]
+    const expected = blocks.map((block) => groupSignature(markdown, block))
+    const hasSource = sourceIndex >= window.first && sourceIndex <= window.last
+    const hasTarget = targetIndex >= window.first && targetIndex <= window.last
+    if (windows.length === 1)
+      applyToSignatures(
+        expected,
+        sourceIndex - window.first,
+        targetIndex - window.first,
+        action,
+      )
+    else if (hasSource) expected.splice(sourceIndex - window.first, 1)
+    else if (hasTarget)
+      expected.splice(
+        targetIndex -
+          window.first +
+          (action.kind === 'move' && action.placement === 'after' ? 1 : 0),
+        0,
+        groupSignature(markdown, source),
+      )
+    const start = units[window.first].start
+    const boundary = units[window.last + 1]?.start
+    const lookAhead =
+      boundary === undefined
+        ? 0
+        : (units[window.last + 2]?.start ?? markdown.length) - boundary
+    // The lower window starts before every splice point; a far move shifts the text between windows.
+    const mappedStart = index === 0 || !mapOffset ? start : mapOffset(start)
+    const mappedBoundary =
+      boundary === undefined
+        ? undefined
+        : index === 0 && windows.length > 1 && mapOffset
+          ? mapOffset(boundary)
+          : boundary + delta
+    if (
+      !windowMatches(
+        after,
+        mappedStart,
+        mappedBoundary,
+        lookAhead,
+        expected,
+        scanned,
+      )
+    )
+      return undefined
+  }
+  return { status: 'ok', markdown: after, caretOffset }
 }
 
 /** One exact source planner for handle drag, Alt+Arrow and handle menu actions. */
@@ -893,18 +1231,25 @@ function preservesGroupOrder(
 export function planBlockAction(
   markdown: string,
   action: BlockActionIntent,
+  scope?: BlockActionScope,
 ): BlockActionPlan {
+  if (scope) {
+    const windowed = planInWindows(markdown, action, scope)
+    if (windowed) return windowed
+  }
+  const scanned = scope?.scanned
   if (action.kind === 'delete' || action.kind === 'duplicate') {
     const result =
       action.kind === 'delete'
         ? planBlockDelete(markdown, action.sourceStart)
         : planBlockDuplicate(markdown, action.sourceStart)
     return result.status === 'ok' &&
-      !preservesGroupOrder(markdown, result.markdown, action)
+      !preservesGroupOrder(markdown, result.markdown, action, scanned)
       ? { status: 'rejected', reason: 'ownership-drift' }
       : result
   }
   const blocks = scanMovableBlocks(markdown)
+  if (scanned) scanned.before += blocks.length
   const source = blocks.find((block) => block.start === action.sourceStart)
   if (
     action.placement === 'before' &&
@@ -946,7 +1291,7 @@ export function planBlockAction(
     action.placement,
   )
   if (moved.status !== 'ok') return moved
-  return preservesGroupOrder(markdown, moved.markdown, action)
+  return preservesGroupOrder(markdown, moved.markdown, action, scanned)
     ? {
         status: 'ok',
         markdown: moved.markdown,

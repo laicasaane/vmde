@@ -6,7 +6,11 @@ import {
   planBlockDelete,
   planBlockDuplicate,
   scanMovableBlocks,
+  type BlockActionIntent,
+  type BlockActionScope,
+  type MovableBlock,
 } from '../../src/shared/block-move'
+import { tableHeavyMarkdown } from '../vscode-e2e/table-heavy-markdown'
 
 function startOf(markdown: string, needle: string, occurrence = 0): number {
   let from = 0
@@ -887,5 +891,267 @@ describe('Task 733 bare list marker', () => {
     expect(
       scanMovableBlocks('para\n\n---\n').map((block) => block.kind),
     ).not.toContain('list-item')
+  })
+})
+
+// Task 733 / 012-17 (B-15): with the confirmed top-level units of `markdown`, the planner scans only
+// the block window of the action (the moved blocks, their neighbours and the enclosing list run) and
+// yields the plan of the whole-document scan; without confirmed units it scans the whole document.
+function unitsOf(blocks: readonly MovableBlock[]): BlockActionScope['units'] {
+  return blocks.map(({ start, end, kind }) => ({ start, end, kind }))
+}
+
+/** Distinct whole-scan blocks of the window: source, target, their neighbours, the source's list run. */
+function windowSize(
+  blocks: readonly MovableBlock[],
+  action: BlockActionIntent,
+): number {
+  const picked = new Set<number>()
+  const around = (index: number) => {
+    for (let near = index - 1; near <= index + 1; near++)
+      if (near >= 0 && near < blocks.length) picked.add(near)
+  }
+  const source = blocks.findIndex((block) => block.start === action.sourceStart)
+  if (source < 0) throw new Error('fixture action must name a block')
+  around(source)
+  if (action.kind === 'move')
+    around(blocks.findIndex((block) => block.start === action.targetStart))
+  const run = blocks[source].listRun
+  if (run >= 0)
+    blocks.forEach((block, index) => {
+      if (block.listRun === run) picked.add(index)
+    })
+  return picked.size
+}
+
+function countedPlan(
+  markdown: string,
+  action: BlockActionIntent,
+  units: BlockActionScope['units'],
+) {
+  const scanned = { before: 0, after: 0 }
+  const plan = planBlockAction(markdown, action, { units, scanned })
+  return { plan, scanned }
+}
+
+/** 2,000 top-level blocks: front matter, paragraphs, fences, tables, quotes and one list run. */
+function largeDocument(): string {
+  const blocks = ['---\ntitle: large\n---']
+  for (let index = 1; index < 2000; index++) {
+    if (index >= 1500 && index < 1505) blocks.push(`- item ${index}`)
+    else if (index % 100 === 50) blocks.push(`\`\`\`\ncode ${index}\n\`\`\``)
+    else if (index % 100 === 70) blocks.push(`| h |\n| --- |\n| ${index} |`)
+    else if (index % 100 === 90) blocks.push(`> quote ${index}`)
+    else blocks.push(`Paragraph ${index}.`)
+  }
+  return `${blocks.join('\n\n')}\n`
+}
+
+describe('Task 733 / 012-17 block action plan scope (B-15)', () => {
+  const markdown = largeDocument()
+  const blocks = scanMovableBlocks(markdown)
+  const units = unitsOf(blocks)
+  const at = (index: number) => blocks[index].start
+  const move = (
+    source: number,
+    target: number,
+    placement: 'before' | 'after',
+  ): BlockActionIntent => ({
+    kind: 'move',
+    sourceStart: at(source),
+    targetStart: at(target),
+    placement,
+  })
+
+  it('builds a 2,000-block fixture', () => {
+    expect(blocks).toHaveLength(2000)
+    expect(blocks[1500].kind).toBe('list-item')
+    expect(blocks[1504].listRun).toBe(blocks[1500].listRun)
+  })
+
+  it.each<[string, BlockActionIntent]>([
+    ['Move Block Down on a paragraph', move(1000, 1001, 'after')],
+    ['Move Block Up on a paragraph', move(1000, 999, 'before')],
+    ['a far drag of a paragraph', move(1000, 1300, 'after')],
+    ['a fenced block down', move(1050, 1051, 'after')],
+    ['a table up', move(1070, 1069, 'before')],
+    ['a list item within its run', move(1502, 1500, 'before')],
+    ['a paragraph onto a list item (rejected)', move(1499, 1500, 'after')],
+    ['the final block up', move(1999, 1998, 'before')],
+    ['the first body block below front matter', move(2, 1, 'before')],
+    ['a paragraph delete', { kind: 'delete', sourceStart: at(1000) }],
+    ['a paragraph duplicate', { kind: 'duplicate', sourceStart: at(1000) }],
+  ])(
+    '%s scans the window only and plans as the whole scan',
+    (_name, action) => {
+      const whole = planBlockAction(markdown, action)
+      const { plan, scanned } = countedPlan(markdown, action, units)
+      expect(plan).toEqual(whole)
+      const budget = windowSize(blocks, action) + 4
+      expect(scanned.before).toBeGreaterThan(0)
+      expect(scanned.before).toBeLessThanOrEqual(budget)
+      expect(scanned.after).toBeLessThanOrEqual(budget)
+    },
+  )
+
+  it.each<
+    [string, (units: BlockActionScope['units']) => BlockActionScope['units']]
+  >([
+    ['no units', () => []],
+    [
+      'units without the source block',
+      (all) => all.filter((unit) => unit.start !== at(1000)),
+    ],
+    [
+      'units of other text (offsets shifted by one)',
+      (all) =>
+        all.map((unit) => ({
+          ...unit,
+          start: unit.start + 1,
+          end: unit.end + 1,
+        })),
+    ],
+  ])(
+    'scans the whole document when the units are unconfirmed: %s',
+    (_name, pick) => {
+      const action = move(1000, 1001, 'after')
+      const { plan, scanned } = countedPlan(markdown, action, pick(units))
+      expect(plan).toEqual(planBlockAction(markdown, action))
+      expect(scanned.before).toBeGreaterThanOrEqual(blocks.length)
+    },
+  )
+})
+
+describe.each([1, 4, 16] as const)(
+  'Task 733 / 012-17 block action plan scope on tableHeavyMarkdown(%i) (B-15)',
+  (factor) => {
+    const markdown = tableHeavyMarkdown(factor)
+    const blocks = scanMovableBlocks(markdown)
+    const units = unitsOf(blocks)
+    const startOfText = (text: string) => {
+      const block = blocks.find((candidate) =>
+        markdown.slice(candidate.start, candidate.end).startsWith(text),
+      )
+      if (!block) throw new Error(`missing block ${text}`)
+      return block.start
+    }
+    const firstItem = startOfText('- list item 1')
+    const cases: [string, BlockActionIntent][] = [
+      [
+        'the first paragraph down',
+        {
+          kind: 'move',
+          sourceStart: startOfText('First paragraph'),
+          targetStart: startOfText('Second paragraph'),
+          placement: 'after',
+        },
+      ],
+      [
+        'the probe paragraph down onto the list (rejected)',
+        {
+          kind: 'move',
+          sourceStart: startOfText('Third paragraph'),
+          targetStart: firstItem,
+          placement: 'after',
+        },
+      ],
+      [
+        'the paragraph before the tables down past table A',
+        {
+          kind: 'move',
+          sourceStart: startOfText('Sixth paragraph'),
+          targetStart: startOfText('| Name'),
+          placement: 'after',
+        },
+      ],
+      [
+        'a list item up',
+        {
+          kind: 'move',
+          sourceStart: startOfText('- list item 2'),
+          targetStart: firstItem,
+          placement: 'before',
+        },
+      ],
+      [
+        'a paragraph delete',
+        { kind: 'delete', sourceStart: startOfText('Fifth paragraph') },
+      ],
+    ]
+
+    it.each(cases)(
+      '%s scans the window only and plans as the whole scan',
+      (_name, action) => {
+        const { plan, scanned } = countedPlan(markdown, action, units)
+        expect(plan).toEqual(planBlockAction(markdown, action))
+        const budget = windowSize(blocks, action) + 4
+        expect(scanned.before).toBeGreaterThan(0)
+        expect(scanned.before).toBeLessThanOrEqual(budget)
+        expect(scanned.after).toBeLessThanOrEqual(budget)
+      },
+    )
+
+    it('scans the same block count for a paragraph move at every factor', () => {
+      const action: BlockActionIntent = {
+        kind: 'move',
+        sourceStart: startOfText('First paragraph'),
+        targetStart: startOfText('Second paragraph'),
+        placement: 'after',
+      }
+      const { scanned } = countedPlan(markdown, action, units)
+      const reference = scanMovableBlocks(tableHeavyMarkdown(1))
+      const referenceMarkdown = tableHeavyMarkdown(1)
+      const referenceStart = (text: string) =>
+        reference.find((block) =>
+          referenceMarkdown.slice(block.start, block.end).startsWith(text),
+        )!.start
+      const base = countedPlan(
+        referenceMarkdown,
+        {
+          kind: 'move',
+          sourceStart: referenceStart('First paragraph'),
+          targetStart: referenceStart('Second paragraph'),
+          placement: 'after',
+        },
+        unitsOf(reference),
+      ).scanned
+      expect(scanned.before).toBeGreaterThan(0)
+      expect(scanned).toEqual(base)
+    })
+  },
+)
+
+describe('Task 733 / 012-17 scoped plans equal whole-scan plans on small fixtures', () => {
+  it.each([
+    'A\n\nB\n\nC\n',
+    'A\n\nB',
+    'A\r\n\r\nB\r\n\r\nC\r\n',
+    '---\nt: 1\n---\n\nA\n\nB\n',
+    '- a\n  - child\n- b\n\nAfter\n\n1. one\n2. two\n',
+    '# H1\n\nbody\n\n## H2\n\nx\n\n# H3\n\ny\n',
+    '```js\nx\n```\n\n| a |\n| --- |\n| 1 |\n\n> q\n> r\n\n* * *\n\nEnd',
+    '$$\nx\n\ny\n$$\n\nA\n',
+    '<details>\n<summary>S</summary>\n\nbody\n\n</details>\n\nA\n\nB\n',
+  ])('every action on %j', (markdown) => {
+    const blocks = scanMovableBlocks(markdown)
+    const units = unitsOf(blocks)
+    const actions: BlockActionIntent[] = []
+    for (const source of blocks) {
+      actions.push({ kind: 'delete', sourceStart: source.start })
+      actions.push({ kind: 'duplicate', sourceStart: source.start })
+      for (const target of blocks)
+        for (const placement of ['before', 'after'] as const)
+          actions.push({
+            kind: 'move',
+            sourceStart: source.start,
+            targetStart: target.start,
+            placement,
+          })
+    }
+    for (const action of actions)
+      expect(
+        planBlockAction(markdown, action, { units }),
+        JSON.stringify(action),
+      ).toEqual(planBlockAction(markdown, action))
   })
 })
