@@ -1018,6 +1018,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   const batchTops: Element[] = []
   const batchSlots: number[] = []
   const batchMax: number[] = []
+  const batchHintWidth: number[] = [0]
 
   /** The min-content and max-content widths of `cell` alone in the measurement host. */
   function measureCellAlone(
@@ -1081,16 +1082,24 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
   }
 
   /**
-   * Mounts up to `FILL_BATCH` unmeasured cells of the store, each alone in its own shell, lays them out
-   * at max-content and then min-content (two layouts for the batch, not per cell) and stores both.
+   * Task 733 (012-9): the layout and read cost of one mounted cell in the last fill batch, in ms. A
+   * batch stops mounting when the cells it holds would spend the rest of the slice on their layouts.
    */
-  function fillBatch(
+  let fillCellCost = 0
+
+  /** True when a batch holding `mounted` cells has spent the slice that ends at `end`. */
+  function sliceSpent(mounted: number, end: number): boolean {
+    return performance.now() + mounted * fillCellCost >= end || inputPending()
+  }
+
+  /** The write phase of a fill batch: mounts cells from `fillAt` until the batch is full or the slice spent. */
+  function mountFillBatch(
     host: MeasureHost,
     table: HTMLTableElement,
     state: AutoState,
+    end: number,
   ): void {
-    const columns = state.rowMax.length
-    const total = state.rowCount * columns
+    const total = state.rowCount * state.rowMax.length
     batchCopies.length = 0
     batchShells.length = 0
     batchTops.length = 0
@@ -1099,24 +1108,53 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       ;
       state.fillAt < total && batchSlots.length < FILL_BATCH;
       state.fillAt++
-    )
+    ) {
+      if (batchSlots.length > 0 && sliceSpent(batchSlots.length, end)) break
       mountFillCell(host, table, state, state.fillAt)
+    }
+  }
+
+  /**
+   * Mounts up to `FILL_BATCH` unmeasured cells of the store, each alone in its own shell, lays them out
+   * at max-content and then min-content (two layouts for the batch, not per cell) and stores both.
+   * Task 733 (012-9): the slice deadline `end` is checked per mounted cell, so a batch stops when the
+   * slice is spent and the cells left stay queued at `fillAt`. The first cell is always mounted, so
+   * every slice makes progress. The reads of each layout run in one phase after the writes.
+   */
+  function fillBatch(
+    host: MeasureHost,
+    table: HTMLTableElement,
+    state: AutoState,
+    end: number,
+  ): void {
+    const columns = state.rowMax.length
+    mountFillBatch(host, table, state, end)
     if (batchSlots.length === 0) return
+    const laidOut = performance.now()
     host.layout('max')
     batchMax.length = 0
     for (const copy of batchCopies)
       batchMax.push(copy.getBoundingClientRect().width)
-    for (const [index, shell] of batchShells.entries())
-      hintMeasureClone(shell, [batchMax[index]], MIN_TABLE_COLUMN_WIDTH)
+    // One reused width list: the hinter reads it synchronously, and each shell has one column.
+    for (let index = 0; index < batchShells.length; index++) {
+      batchHintWidth[0] = batchMax[index]
+      hintMeasureClone(
+        batchShells[index],
+        batchHintWidth,
+        MIN_TABLE_COLUMN_WIDTH,
+      )
+    }
     host.layout('min')
-    for (const [index, copy] of batchCopies.entries()) {
+    for (let index = 0; index < batchCopies.length; index++) {
       const slot = batchSlots[index]
       const row = Math.floor(slot / columns)
       const column = slot % columns
-      state.rowMin[column][row] = copy.getBoundingClientRect().width
+      state.rowMin[column][row] =
+        batchCopies[index].getBoundingClientRect().width
       state.rowMax[column][row] = batchMax[index]
     }
     for (const top of batchTops) top.remove()
+    fillCellCost = (performance.now() - laidOut) / batchSlots.length
   }
 
   /**
@@ -1141,7 +1179,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     const host = createMeasureHost(root)
     try {
       while (state.fillAt < total && performance.now() < end && !inputPending())
-        fillBatch(host, table, state)
+        fillBatch(host, table, state, end)
     } finally {
       host.dispose()
     }
@@ -1613,20 +1651,37 @@ export function fixResponsiveTables() {
     return true
   }
 
-  /** The feed went off since a record was handed to it: those tables get their own pass now. */
-  function releaseDeferredTables(): void {
-    if (deferredTables.size === 0 || unitFeedOf(window)?.isLive()) return
+  /** The tables whose records were handed to the feed get their own pass. */
+  function passDeferredTables(): void {
+    if (deferredTables.size === 0) return
     if (!pendingFull)
       for (const table of deferredTables) pendingBlocks.add(table)
     deferredTables.clear()
     syncTables()
   }
 
+  /** The feed went off since a record was handed to it: those tables get their own pass now. */
+  function releaseDeferredTables(): void {
+    if (deferredTables.size === 0 || unitFeedOf(window)?.isLive()) return
+    passDeferredTables()
+  }
+
   function onFeedChange(change: UnitsChange, feed: UnitFeed): void {
     if (!root.contains(feed.root)) return
-    if (change.whole) {
+    // Task 733 (012-9): only a build (open, mode switch) or a rebind (external update) is a
+    // whole-document cause. A whole `mutation` or `sync` change is an edit the session could not
+    // scope (a list structure change, for one); this observer saw its records, so the tables those
+    // records touched get their pass: the ones handed to the feed here, the rest from the observer.
+    if (
+      change.whole &&
+      (change.cause === 'build' || change.cause === 'rebind')
+    ) {
       deferredTables.clear()
       queueFull()
+      return
+    }
+    if (change.whole) {
+      passDeferredTables()
       return
     }
     deferredTables.clear()

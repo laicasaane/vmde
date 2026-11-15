@@ -953,6 +953,74 @@ describe('fixResponsiveTables on the unit feed (Task 733 007)', () => {
 
     expect(otherCell.hasAttribute('width')).toBe(false)
   })
+
+  /**
+   * Task 733 (012-9): inserts a list item into a top-level list before the tables and returns spies on
+   * both tables' `removeAttribute`, which every table of a full normalization pass calls.
+   */
+  async function insertListItem(): Promise<{
+    list: HTMLElement
+    removeA: ReturnType<typeof vi.spyOn>
+    removeB: ReturnType<typeof vi.spyOn>
+  }> {
+    surface.insertAdjacentHTML('afterbegin', '<ul id="list"><li>one</li></ul>')
+    await vi.advanceTimersByTimeAsync(700)
+    cloneCount = 0
+    const list = document.getElementById('list') as HTMLElement
+    const removeA = vi.spyOn(
+      document.getElementById('ta') as HTMLElement,
+      'removeAttribute',
+    )
+    const removeB = vi.spyOn(
+      document.getElementById('tb') as HTMLElement,
+      'removeAttribute',
+    )
+    const item = document.createElement('li')
+    item.textContent = 'two'
+    list.append(item)
+    await Promise.resolve()
+    return { list, removeA, removeB }
+  }
+
+  it('normalizes no table outside the list for a list item insert reported as list structure', async () => {
+    const { list, removeA, removeB } = await insertListItem()
+
+    emit(change({ cause: 'sync', structural: [list] }))
+    await vi.advanceTimersByTimeAsync(700)
+
+    expect(removeA).not.toHaveBeenCalled()
+    expect(removeB).not.toHaveBeenCalled()
+    expect(cloneCount).toBe(0)
+  })
+
+  // A list structure change that the session reports without a scope (a root notice that is no block
+  // spin, or a sync that no batch explains) is not a whole-document cause: no full table pass.
+  it.each(['mutation', 'sync'] as const)(
+    'runs no full table pass for a list item insert reported as a whole %s change',
+    async (cause) => {
+      const { removeA, removeB } = await insertListItem()
+
+      emit(change({ cause, whole: true }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(removeA).not.toHaveBeenCalled()
+      expect(removeB).not.toHaveBeenCalled()
+      expect(cloneCount).toBe(0)
+    },
+  )
+
+  it.each(['build', 'rebind'] as const)(
+    'keeps the full table pass for a whole %s change (open, mode switch, external update)',
+    async (cause) => {
+      const { removeA, removeB } = await insertListItem()
+
+      emit(change({ cause, whole: true }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(removeA).toHaveBeenCalledWith('width')
+      expect(removeB).toHaveBeenCalledWith('width')
+    },
+  )
 })
 
 // Measuring every cell of 2,000 rows alone takes seconds in jsdom (no real layout to amortize).
@@ -1001,7 +1069,7 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
       rows.push(
         `<tr><td>${index === WIDE_ROW ? 'w'.repeat(80) : `r${index}`}</td><td>v${index}</td></tr>`,
       )
-    document.body.innerHTML = `<div class="vditor"><pre class="vditor-reset"><table id="big"><thead><tr><th>k</th><th>v</th></tr></thead><tbody>${rows.join('')}</tbody></table></pre></div>`
+    document.body.innerHTML = `<div class="vditor"><pre class="vditor-reset"><p id="para">intro</p><table id="big"><thead><tr><th>k</th><th>v</th></tr></thead><tbody>${rows.join('')}</tbody></table></pre></div>`
     surface = document.querySelector('.vditor-reset') as HTMLElement
     big = document.getElementById('big') as HTMLTableElement
     Object.defineProperty(surface, 'clientWidth', {
@@ -1143,4 +1211,104 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
     expect(cellMeasures).toBeLessThanOrEqual(1)
     expect(storedWidth(1)).toBeLessThan(wide)
   })
+
+  /** The idle slice budget of the fill (`FILL_SLICE_MS`). */
+  const SLICE_MS = 8
+  /** Store cells of the table: every row (head included) times two columns. */
+  const STORE_CELLS = (BODY_ROWS + 1) * 2
+
+  /** Cells mounted alone in each idle slice, in slice order. */
+  let sliceMounts: number[]
+  /** Per live cell, how often the fill mounted a copy of it. */
+  let cellCopies: Map<Element, number>
+  let inSlice: boolean
+
+  /**
+   * Task 733 (012-9): a fake clock where each cell mounted alone costs 1 ms, and idle slices whose
+   * deadline is spent `SLICE_MS` after they start. A fill that checks the deadline per mounted cell
+   * mounts at most `SLICE_MS` cells per slice.
+   */
+  function useCostedSlices(): void {
+    sliceMounts = []
+    cellCopies = new Map()
+    inSlice = false
+    const now = () => Date.now() + cellMeasures
+    vi.spyOn(performance, 'now').mockImplementation(now)
+    vi.stubGlobal(
+      'requestIdleCallback',
+      (callback: IdleRequestCallback) =>
+        setTimeout(() => {
+          const start = now()
+          const before = cellMeasures
+          inSlice = true
+          try {
+            callback({
+              didTimeout: false,
+              timeRemaining: () => Math.max(0, start + SLICE_MS - now()),
+            })
+          } finally {
+            inSlice = false
+            sliceMounts.push(cellMeasures - before)
+          }
+        }, 1) as unknown as number,
+    )
+    const clone = HTMLTableCellElement.prototype.cloneNode
+    vi.spyOn(HTMLTableCellElement.prototype, 'cloneNode').mockImplementation(
+      function (this: HTMLTableCellElement, deep?: boolean) {
+        if (deep && inSlice)
+          cellCopies.set(this, (cellCopies.get(this) ?? 0) + 1)
+        return clone.call(this, deep)
+      },
+    )
+  }
+
+  /** Cells the fill mounted more than once (a restarted or repeated fill). */
+  const repeatedCells = () =>
+    [...cellCopies.values()].filter((count) => count > 1).length
+
+  it('mounts no cell after the slice deadline is spent and keeps the cells left queued', async () => {
+    useCostedSlices()
+    fixResponsiveTables()
+    await settle()
+
+    expect(sliceMounts.length).toBeGreaterThan(1)
+    expect(Math.max(...sliceMounts)).toBeLessThanOrEqual(SLICE_MS)
+    // The cells a slice left were measured by later slices, each once.
+    expect(cellCopies.size).toBe(STORE_CELLS)
+    expect(repeatedCells()).toBe(0)
+    expect(storedWidth(1)).toBeGreaterThan(storedWidth(2))
+  })
+
+  // Research question 1 of the 012-M2 re-measurement: a paragraph edit outside the table, reported
+  // scoped or whole by the feed, neither measures the table again nor starts its fill over.
+  it.each(['scoped', 'whole'] as const)(
+    'keeps the fill queue across a %s paragraph edit outside the table',
+    async (form) => {
+      useCostedSlices()
+      fixResponsiveTables()
+      for (let step = 0; step < 1000 && cellCopies.size < 200; step++)
+        await vi.advanceTimersByTimeAsync(1)
+      expect(cellCopies.size).toBeGreaterThan(0)
+      expect(cellCopies.size).toBeLessThan(STORE_CELLS)
+      const clonesBefore = tableClones
+      const para = document.getElementById('para') as HTMLElement
+
+      para.firstChild!.textContent = 'edited intro'
+      await Promise.resolve()
+      emit({
+        cause: 'mutation',
+        whole: form === 'whole',
+        changed:
+          form === 'whole'
+            ? []
+            : [{ el: para, members: [para], kind: 'paragraph', top: para }],
+        structural: [],
+      })
+      await settle()
+
+      expect(tableClones).toBe(clonesBefore)
+      expect(cellCopies.size).toBe(STORE_CELLS)
+      expect(repeatedCells()).toBe(0)
+    },
+  )
 })
