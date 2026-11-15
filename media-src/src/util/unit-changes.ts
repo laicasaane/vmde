@@ -23,6 +23,13 @@ export interface UnitsChange {
   readonly changed: readonly LiveUnit[]
   /** Top-level tables and lists whose shape changed. */
   readonly structural: readonly HTMLElement[]
+  /**
+   * Task 733 (D-13): the elements consumers rescan for this change, all inside `feed.root`: the members of
+   * `changed` and the elements a structural change inserted (list items, table rows, spun top-level blocks).
+   * Never a whole table or list for a cell, row or item change. Document order, connected when emitted, no
+   * duplicates; empty when `whole`. Absent: derive it as today (`structural` tops, then members of `changed`).
+   */
+  readonly scopes?: readonly HTMLElement[]
 }
 
 declare const captureBrand: unique symbol

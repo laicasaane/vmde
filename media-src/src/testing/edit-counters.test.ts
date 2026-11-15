@@ -11,6 +11,21 @@ const originalInnerHtml = Object.getOwnPropertyDescriptor(
   Element.prototype,
   'innerHTML',
 ) as PropertyDescriptor
+// Task 733 / 012-19: the Selection methods the `selectionWrites` counter wraps, put back after each test.
+const SELECTION_WRITES = [
+  'addRange',
+  'removeAllRanges',
+  'setBaseAndExtent',
+  'collapse',
+  'collapseToStart',
+  'collapseToEnd',
+  'extend',
+  'selectAllChildren',
+] as const
+const originalSelectionWrites = SELECTION_WRITES.map(
+  (name) =>
+    [name, Object.getOwnPropertyDescriptor(Selection.prototype, name)] as const,
+)
 
 // The module keeps once-per-window state, so each test loads a fresh copy and the afterEach below
 // puts the prototypes back.
@@ -69,6 +84,9 @@ afterEach(() => {
   Node.prototype.cloneNode = originalCloneNode
   Element.prototype.querySelectorAll = originalQueryAll
   Object.defineProperty(Element.prototype, 'innerHTML', originalInnerHtml)
+  for (const [name, descriptor] of originalSelectionWrites)
+    if (descriptor) Object.defineProperty(Selection.prototype, name, descriptor)
+  window.getSelection()?.removeAllRanges()
   delete (window as any).__vmdeE2EReadiness
   delete (window as any).__vmdeEditCounters
 })
@@ -265,6 +283,71 @@ describe('task 001 counters', () => {
     expect(counters().deltaPosts).toBe(1)
     counters().reset(10)
     expect(counters().historyDeltaPosts).toBe(0)
+  })
+})
+
+// Task 733 / 012-19 (D-13 design section 1.3, kept by section 12.2 as a recorded end-to-end counter):
+// `selectionWrites` counts the Selection writes made while the selection is in a mode root, or that
+// put it there (so a `removeAllRanges` plus `addRange` pair counts 2). Counts only, no text (SR-5).
+describe('selectionWrites (012-19)', () => {
+  const selectionWrites = () =>
+    (counters() as EditCounters & { selectionWrites?: number }).selectionWrites
+
+  it('counts every Selection write method inside a mode root', () => {
+    const { root, vditor } = makeFixture()
+    installEditCounters(window, vditor as any)
+    const paragraph = root.querySelector('p') as HTMLElement
+    const text = paragraph.firstChild as Text
+    const selection = window.getSelection() as Selection
+    selection.setBaseAndExtent(text, 0, text, 0)
+    counters().reset(10)
+    expect(selectionWrites()).toBe(0)
+
+    const range = document.createRange()
+    range.setStart(text, 1)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    selection.setBaseAndExtent(text, 0, text, 2)
+    selection.collapse(text, 1)
+    selection.collapseToStart()
+    selection.collapseToEnd()
+    selection.extend(text, 3)
+    selection.selectAllChildren(paragraph)
+    expect(selectionWrites()).toBe(8)
+    // Reads are not writes.
+    selection.getRangeAt(0)
+    void selection.anchorNode
+    expect(selectionWrites()).toBe(8)
+    counters().reset(10)
+    expect(selectionWrites()).toBe(0)
+  })
+
+  it('does not count writes outside every mode root', () => {
+    const { vditor } = makeFixture()
+    installEditCounters(window, vditor as any)
+    const elsewhere = document.createElement('div')
+    elsewhere.textContent = 'outside'
+    document.body.appendChild(elsewhere)
+    const text = elsewhere.firstChild as Text
+    const selection = window.getSelection() as Selection
+    selection.setBaseAndExtent(text, 0, text, 0)
+    counters().reset(10)
+    selection.setBaseAndExtent(text, 1, text, 2)
+    selection.collapse(text, 3)
+    selection.collapseToEnd()
+    expect(selectionWrites()).toBe(0)
+  })
+
+  it('installs no second Selection wrapper on a second call', () => {
+    const { root, vditor } = makeFixture()
+    installEditCounters(window, vditor as any)
+    installEditCounters(window, vditor as any)
+    const text = (root.querySelector('p') as HTMLElement).firstChild as Text
+    window.getSelection()?.setBaseAndExtent(text, 0, text, 0)
+    counters().reset(10)
+    window.getSelection()?.collapse(text, 2)
+    expect(selectionWrites()).toBe(1)
   })
 })
 

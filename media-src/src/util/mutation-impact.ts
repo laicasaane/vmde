@@ -99,7 +99,7 @@ function topLevelBlockOf(node: Node): HTMLElement | null {
   return el && el.parentElement === root ? el : null
 }
 
-interface MutationScope {
+export interface MutationScope {
   /** true → the caller should fall back to a full walk of the observed root. */
   full: boolean
   /** distinct top-level blocks to re-scan (meaningful only when `!full`; empty + `!full` means the
@@ -179,6 +179,65 @@ export function forEachScopeElement(
     if (change.structural.includes(unit.top)) continue
     for (const member of unit.members) if (member.isConnected) visit(member)
   }
+}
+
+// Task 733 / 012-19 (D-13 design section 1.2): change-scope helpers. Consumers migrated by 012-12 to
+// 012-14 rescan the elements a change names (`UnitsChange.scopes`) instead of the top-level tables
+// and lists that hold them (`scopeUnits` maps a changed item to its whole list). Hot path: no root
+// query, no allocation when nothing applies (shared constants below, never mutated by callers).
+
+const WHOLE_SCOPE: MutationScope = { full: true, blocks: new Set() }
+const EMPTY_SCOPE: MutationScope = { full: false, blocks: new Set() }
+
+/** Visits the rescan scope of a non-whole change: `change.scopes` when present, else `forEachScopeElement`.
+ * @knipignore — knip cannot see the use in its test, which reads it through a cast; the first
+ *   consumer (tasks 012-12 to 012-16) imports it by name, and the tag is removed then. */
+export function forEachChangeScope(
+  change: UnitsChange,
+  visit: (element: HTMLElement) => void,
+): void {
+  if (change.whole) return
+  const scopes = change.scopes
+  if (!scopes) {
+    forEachScopeElement(change, visit)
+    return
+  }
+  for (const element of scopes) if (element.isConnected) visit(element)
+}
+
+/** The scope of a change as a `MutationScope` whose `blocks` are the scope elements (not their tops).
+ * @knipignore — knip cannot see the use in its test, which reads it through a cast; the first
+ *   consumer (tasks 012-12 to 012-16) imports it by name, and the tag is removed then. */
+export function scopeOfChange(change: UnitsChange): MutationScope {
+  if (change.whole) return WHOLE_SCOPE
+  let blocks: Set<Element> | undefined
+  forEachChangeScope(change, (element) => {
+    blocks ??= new Set()
+    blocks.add(element)
+  })
+  return blocks ? { full: false, blocks } : EMPTY_SCOPE
+}
+
+/** The cell, list item or top-level block under `root` that holds `node`; undefined only for `root` itself
+ *  (or a node outside `root`). Walks the ancestors only: no query.
+ * @knipignore — knip cannot see the use in its test, which reads it through a cast; the first
+ *   consumer (tasks 012-12 to 012-16) imports it by name, and the tag is removed then. */
+export function provisionalScopeOf(
+  root: HTMLElement,
+  node: Node,
+): HTMLElement | undefined {
+  let item: HTMLElement | undefined
+  let el: HTMLElement | null =
+    node.nodeType === Node.ELEMENT_NODE
+      ? (node as HTMLElement)
+      : node.parentElement
+  for (; el && el !== root; el = el.parentElement) {
+    const name = el.localName
+    if (name === 'td' || name === 'th') return el
+    if (name === 'li') item ??= el
+    if (el.parentElement === root) return item ?? el
+  }
+  return undefined
 }
 
 /**
@@ -741,7 +800,11 @@ export function observeScopedMutations(
     full: (editorEl: HTMLElement) => void
     within: (block: Element) => void
   },
+  // Task 733 / 012-19: 'unit' applies the change scopes (`scopeOfChange`); 'top' (default) keeps the
+  // top-level blocks of `scopeUnits` for the consumers not migrated yet.
+  options?: { scope?: 'unit' | 'top' },
 ): () => void {
+  const scopeOf = options?.scope === 'unit' ? scopeOfChange : scopeUnits
   const run = coalescePerFrameWithRecords((records) => {
     const scope = scopeMutations(records)
     if (scope.full) apply.full(editorEl)
@@ -755,7 +818,7 @@ export function observeScopedMutations(
   obs.observe(editorEl, { childList: true, subtree: true, characterData: true })
   run([])
   const offLive = onLiveChange(editorEl, (change) => {
-    const scope = scopeUnits(change)
+    const scope = scopeOf(change)
     if (scope.full) apply.full(editorEl)
     else for (const block of scope.blocks) apply.within(block)
   })

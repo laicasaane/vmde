@@ -18,6 +18,8 @@ export interface EditCounters {
   rootQueryAll: number
   maxPostBytes: number
   fallbackPublications: number
+  /** Task 733 / 012-19: Selection writes made while the selection is in a mode root, or that put it there. */
+  selectionWrites: number
   reset(markdownLength: number): void
 }
 
@@ -56,6 +58,20 @@ const NUMBER_FIELDS = [
   'rootQueryAll',
   'maxPostBytes',
   'fallbackPublications',
+  'selectionWrites',
+] as const
+
+// Task 733 / 012-19 (D-13 design section 1.3): the Selection methods that write it. A
+// `removeAllRanges` plus `addRange` pair counts 2.
+const SELECTION_WRITES = [
+  'addRange',
+  'removeAllRanges',
+  'setBaseAndExtent',
+  'collapse',
+  'collapseToStart',
+  'collapseToEnd',
+  'extend',
+  'selectAllChildren',
 ] as const
 
 const HTML_METHODS = ['VditorIRDOM2Md', 'SpinVditorIRDOM'] as const
@@ -109,6 +125,35 @@ function rootHtmlLengthOf(
 }
 
 const winOf = (win: Window) => win as unknown as typeof window
+
+/** True when the selection's anchor is a mode root or sits inside one. */
+function selectionInModeRoot(selection: Selection): boolean {
+  const anchor = selection.anchorNode
+  if (!anchor) return false
+  return (
+    (anchor instanceof Element && isModeRoot(anchor)) ||
+    isInsideModeRoot(anchor)
+  )
+}
+
+/** Count the Selection writes of a mode root: in one before the call, or put there by it. */
+function installSelectionWrappers(win: Window): void {
+  const proto = winOf(win).Selection?.prototype as unknown as
+    | Record<string, unknown>
+    | undefined
+  if (!proto) return
+  for (const name of SELECTION_WRITES) {
+    const original = proto[name] as AnyFn | undefined
+    if (typeof original !== 'function') continue
+    proto[name] = function (this: Selection, ...args: any[]) {
+      const before = selectionInModeRoot(this)
+      const result = original.apply(this, args)
+      if (before || selectionInModeRoot(this))
+        win.__vmdeEditCounters!.selectionWrites++
+      return result
+    }
+  }
+}
 
 /**
  * Prototype wrappers: deep clones of a mode root, deep clones of a table inside a mode root,
@@ -210,6 +255,7 @@ function install(win: Window, vditor: VditorLike): void {
   if (!windowsInstalled.has(win)) {
     windowsInstalled.add(win)
     installPrototypeWrappers(win)
+    installSelectionWrappers(win)
     installVscodeWrapper(win)
   }
   if (!instancesInstalled.has(vditor)) {

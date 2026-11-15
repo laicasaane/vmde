@@ -12,6 +12,15 @@
 // `invalidateCaret` here at load. A write made before that has run cannot meet a live intent (none
 // can exist yet), so the default no-op retirer is correct.
 
+/**
+ * Task 733 / 012-19 (D-13 design section 12.2): the guard of the V-3a build patch (the IR code block
+ * Enter clones the caret range instead of mutating the Selection's live Range). `false` restores
+ * Vditor's own code; read by the build patch of task 012-16 in `media-src/esbuild-shared.mjs`.
+ * @knipignore — knip cannot see the use in its test, which reads it through a cast; the first
+ *   consumer (tasks 012-12 to 012-16) imports it by name, and the tag is removed then.
+ */
+export const VDITOR_SINGLE_SELECTION_WRITE = true
+
 /** A selection given as its two endpoints, so a backward selection (anchor after focus) keeps its
  * direction. A `Range` cannot express that. */
 export interface SelectionEnds {

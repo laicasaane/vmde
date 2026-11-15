@@ -212,6 +212,7 @@ export const WEBVIEW_MODULES = {
       'preview-chunk', // Task 643 — pure full-Preview chunk and footnote plan.
       'debounce',
       'selection-write', // Task 664 — marked selection writes; caret.ts registers its intent retirer here.
+      'background-budget', // Task 733 / 012-19 — one budgeted scheduler (frame and idle lanes) for background jobs.
       'deep-merge',
       'disposables',
       'observe-coalesce',

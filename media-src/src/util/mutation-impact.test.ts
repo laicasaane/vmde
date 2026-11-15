@@ -7,6 +7,8 @@ import {
   type UnitFeed,
   type UnitsChange,
 } from './unit-changes'
+import { countBudget, scaledFixture } from '../testing/budget-harness'
+import * as mutationImpact from './mutation-impact'
 import { observeScopedMutations, scopeUnits } from './mutation-impact'
 // Task 733: a fake unit feed over the IR root (`ir`); the observers under test watch the wider
 // `app` that holds it, as `boot/finish-init.ts` binds them. `emit` plays one per-frame unit change.
@@ -211,6 +213,223 @@ describe('observeScopedMutations on unit feed changes (Task 733)', () => {
     await flushRecords()
     fireFrame()
     expect(within).toHaveBeenCalledWith(tables[1])
+    dispose()
+  })
+})
+
+// ---- Task 733 / 012-19, B-02 (D-13 design sections 1.2 and 5.2): change scopes ----
+//
+// The helpers and the `scopes` field are added by 012-19-I. They are read through this interface so
+// the file typechecks before they exist; until then each case fails for the missing helper.
+
+type ScopedChange = UnitsChange & { readonly scopes?: readonly HTMLElement[] }
+interface ScopeHelpers {
+  forEachChangeScope(
+    change: ScopedChange,
+    visit: (element: HTMLElement) => void,
+  ): void
+  scopeOfChange(change: ScopedChange): { full: boolean; blocks: Set<Element> }
+  provisionalScopeOf(root: HTMLElement, node: Node): HTMLElement | undefined
+  observeScopedMutations(
+    editorEl: HTMLElement,
+    apply: {
+      full: (editorEl: HTMLElement) => void
+      within: (block: Element) => void
+    },
+    options?: { scope?: 'unit' | 'top' },
+  ): () => void
+}
+const helpers = mutationImpact as unknown as ScopeHelpers
+
+/** The B-02 document: a 500-item list and 2 tables of 2,080 rows, without Lute. */
+function b02Fixture() {
+  const root = scaledFixture({
+    tables: 2,
+    rows: 2080,
+    listItems: 500,
+    paragraphs: 2,
+  })
+  const list = root.querySelector(':scope > ul') as HTMLElement
+  const items = Array.from(list.children) as HTMLElement[]
+  const tables = Array.from(
+    root.querySelectorAll<HTMLElement>(':scope > table'),
+  )
+  const cell = tables[1].querySelector(
+    'tbody tr:nth-child(700) td:nth-child(3)',
+  ) as HTMLElement
+  const paragraph = root.querySelector(':scope > p') as HTMLElement
+  return { root, list, items, tables, cell, paragraph }
+}
+
+const itemUnit = (item: HTMLElement): LiveUnit => ({
+  el: item,
+  members: [item],
+  kind: 'list-item',
+  top: item.parentElement as HTMLElement,
+})
+
+function scopedChange(partial: Partial<ScopedChange>): ScopedChange {
+  return change(partial) as ScopedChange
+}
+
+describe('B-02 forEachChangeScope and scopeOfChange (012-19)', () => {
+  it('visits the scopes of a list item Enter only, never the list, with no root query', () => {
+    const { root, list, items } = b02Fixture()
+    const pair = [items[200], items[201]]
+    const enter = scopedChange({
+      changed: [itemUnit(items[200])],
+      structural: [list],
+      scopes: pair,
+    })
+    const visited: HTMLElement[] = []
+    const { counts } = countBudget(root, () =>
+      helpers.forEachChangeScope(enter, (element) => visited.push(element)),
+    )
+    expect(visited).toEqual(pair)
+    expect(counts.rootQueries).toBe(0)
+    expect(counts.queriedNodes).toBe(0)
+    expect(counts.nodesWalked).toBe(0)
+  })
+
+  it('falls back to forEachScopeElement when the change carries no scopes', () => {
+    const { tables, cell, paragraph } = b02Fixture()
+    const legacy = scopedChange({
+      changed: [
+        cellUnit(cell),
+        {
+          el: paragraph,
+          members: [paragraph],
+          kind: 'paragraph',
+          top: paragraph,
+        },
+      ],
+      structural: [tables[0]],
+    })
+    const visited: HTMLElement[] = []
+    helpers.forEachChangeScope(legacy, (element) => visited.push(element))
+    const expected: HTMLElement[] = []
+    mutationImpact.forEachScopeElement(legacy, (element) =>
+      expected.push(element),
+    )
+    expect(visited).toEqual(expected)
+  })
+
+  it('gives the scope elements as blocks, not their tables or lists', () => {
+    const { root, items, cell } = b02Fixture()
+    const edit = scopedChange({
+      changed: [cellUnit(cell), itemUnit(items[3])],
+      scopes: [items[3], cell],
+    })
+    const { result: scope, counts } = countBudget(root, () =>
+      helpers.scopeOfChange(edit),
+    )
+    expect(scope.full).toBe(false)
+    expect([...scope.blocks]).toEqual([items[3], cell])
+    expect(counts.rootQueries).toBe(0)
+  })
+
+  it('never yields a full walk for a non-whole change, however many scopes it holds', () => {
+    const { items } = b02Fixture()
+    const many = scopedChange({
+      changed: items.slice(0, 100).map(itemUnit),
+      scopes: items.slice(0, 100),
+    })
+    const scope = helpers.scopeOfChange(many)
+    expect(scope.full).toBe(false)
+    expect(scope.blocks.size).toBe(100)
+  })
+
+  it('asks for a full walk for a whole change', () => {
+    expect(
+      helpers.scopeOfChange(
+        scopedChange({ whole: true, cause: 'rebind', scopes: [] }),
+      ).full,
+    ).toBe(true)
+  })
+})
+
+describe('B-02 provisionalScopeOf (012-19)', () => {
+  it('returns the cell, the list item or the top-level block that holds a node', () => {
+    const { root, items, cell, paragraph, tables } = b02Fixture()
+    const { result, counts } = countBudget(root, () => ({
+      inCell: helpers.provisionalScopeOf(root, cell.firstChild as Node),
+      cell: helpers.provisionalScopeOf(root, cell),
+      inItem: helpers.provisionalScopeOf(root, items[450].firstChild as Node),
+      inParagraph: helpers.provisionalScopeOf(
+        root,
+        paragraph.firstChild as Node,
+      ),
+      table: helpers.provisionalScopeOf(root, tables[0]),
+      root: helpers.provisionalScopeOf(root, root),
+    }))
+    expect(result.inCell).toBe(cell)
+    expect(result.cell).toBe(cell)
+    expect(result.inItem).toBe(items[450])
+    expect(result.inParagraph).toBe(paragraph)
+    expect(result.table).toBe(tables[0])
+    expect(result.root).toBeUndefined()
+    expect(counts.rootQueries).toBe(0)
+    expect(counts.queriedNodes).toBe(0)
+  })
+
+  it('scopes a node in a new, not yet mapped list item to that item', () => {
+    const { root, list, items } = b02Fixture()
+    const fresh = document.createElement('li')
+    fresh.innerHTML = '<strong>new</strong>'
+    items[10].after(fresh)
+    const node = (fresh.firstChild as Element).firstChild as Node
+    expect(helpers.provisionalScopeOf(root, node)).toBe(fresh)
+    expect(fresh.parentElement).toBe(list)
+  })
+})
+
+describe('B-02 observeScopedMutations with { scope } (012-19)', () => {
+  function setupList(scope?: 'unit' | 'top') {
+    stubFrames()
+    const fixture = b02Fixture()
+    const app = fixture.root.parentElement as HTMLElement
+    const feed = fakeFeed(fixture.root)
+    const full = vi.fn()
+    const within = vi.fn()
+    const dispose = helpers.observeScopedMutations(
+      app,
+      { full, within },
+      scope ? { scope } : undefined,
+    )
+    fireFrame()
+    full.mockClear()
+    within.mockClear()
+    return { ...fixture, feed, full, within, dispose }
+  }
+
+  it("applies the change scopes with { scope: 'unit' }", () => {
+    const { items, list, feed, full, within, dispose } = setupList('unit')
+    feed.emit({
+      cause: 'mutation',
+      whole: false,
+      changed: [itemUnit(items[5])],
+      structural: [list],
+      scopes: [items[5], items[6]],
+    } as ScopedChange)
+    expect(within.mock.calls.map(([block]) => block)).toEqual([
+      items[5],
+      items[6],
+    ])
+    expect(full).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it('keeps the top-level blocks by default', () => {
+    const { items, list, feed, full, within, dispose } = setupList()
+    feed.emit({
+      cause: 'mutation',
+      whole: false,
+      changed: [itemUnit(items[5])],
+      structural: [list],
+      scopes: [items[5], items[6]],
+    } as ScopedChange)
+    expect(within.mock.calls.map(([block]) => block)).toEqual([list])
+    expect(full).not.toHaveBeenCalled()
     dispose()
   })
 })
