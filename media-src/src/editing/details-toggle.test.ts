@@ -1,6 +1,25 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createSourceBlockIndex } from '../nav/source-block-index'
+import { provideUnitFeed } from '../util/unit-changes'
 import { transformDetailsSelection } from './details'
 import { resolveDetailsBlockRange } from './details-source'
+
+// Task 733 / 012-2: the callout capture is the marker path of `captureTarget` (the exact fallback);
+// counting it shows whether a passive Details read ran that fallback.
+const calloutCapture = vi.hoisted(() => ({ calls: 0 }))
+vi.mock('./callouts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./callouts')>()
+  return {
+    ...actual,
+    captureCalloutActionTarget: () => {
+      calloutCapture.calls++
+      return null
+    },
+  }
+})
+
+import { installDetailsToggleControls } from './details-toggle'
 
 const transform = (
   markdown: string,
@@ -205,5 +224,125 @@ it('unwraps existing Details after YAML containing a code marker without changin
   expect(transform(source, start, start + 4)).toMatchObject({
     status: 'unwrap',
     markdown: `${prefix}Body\n`,
+  })
+})
+
+// Task 733 / 012-2 (action 2, amended Q-98): the Details settled read is passive display state.
+// While the model's units are unconfirmed it may take the index's snapshot path (the cost case, a
+// refused table cell Undo, is fixed by the history key), but it settles the button from that entry
+// with no exact capture (`captureTarget`). With no cacheable key it captures nothing and shows the
+// enabled state; the Details action captures exact source when it is invoked.
+describe('Details passive settled read with unconfirmed units', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 16),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+    calloutCapture.calls = 0
+  })
+  const disposers: Array<() => void> = []
+  afterEach(() => {
+    for (const dispose of disposers.splice(0)) dispose()
+    provideUnitFeed(window, undefined)
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+    delete (window as any).vditor
+  })
+
+  const MARKDOWN = 'Alpha paragraph one\n\nBeta paragraph two\n'
+
+  function mountUnconfirmed(options: { noKey?: boolean } = {}) {
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    const button = document.createElement('button')
+    button.dataset.type = 'details'
+    toolbar.append(button)
+    const root = document.createElement('div')
+    root.className = 'vditor-reset'
+    root.innerHTML =
+      '<p data-block="0">Alpha paragraph one</p><p data-block="0">Beta paragraph two</p>'
+    document.body.append(toolbar, root)
+    ;(window as any).vditor = {
+      vditor: { currentMode: 'ir', ir: { element: root }, toolbar: {} },
+      getValue: vi.fn(() => MARKDOWN),
+    }
+    // A live IR model whose units are not confirmed (typing not yet published).
+    provideUnitFeed(window, {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: () => () => undefined,
+      confirmNow: () => false,
+      confirmedLines: () => undefined,
+    })
+    const snapshotPair = vi.fn(() => ({ exact: MARKDOWN, rendered: MARKDOWN }))
+    const revision = {}
+    const projection = { owner: {}, mode: 'ir' as const }
+    const index = createSourceBlockIndex({
+      getActiveRoot: () => root,
+      projection: () => projection,
+      snapshotPair,
+      snapshotRevision: () => (options.noKey ? undefined : revision),
+      // A rejected exact key: the passive state reads advisory units on the rendered bytes.
+      resolveUnits: () => null,
+    })
+    const dispose = installDetailsToggleControls(index)
+    disposers.push(() => {
+      dispose()
+      index.dispose()
+    })
+    vi.advanceTimersByTime(16)
+    const text = root.querySelector('p')?.firstChild as Text
+    // One OS-style key step to an expanded selection, then the settle frame.
+    const selectExpanded = () => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'ShiftLeft' }),
+      )
+      const range = document.createRange()
+      range.setStart(text, 0)
+      range.setEnd(text, 5)
+      const selection = document.getSelection() as Selection
+      selection.removeAllRanges()
+      selection.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+      vi.advanceTimersByTime(16)
+      document.dispatchEvent(new KeyboardEvent('keyup', { code: 'ShiftLeft' }))
+      vi.advanceTimersByTime(60)
+    }
+    return { index, snapshotPair, selectExpanded, button }
+  }
+
+  it('settles an expanded selection from one snapshot entry with no exact capture', () => {
+    const view = mountUnconfirmed()
+    view.selectExpanded()
+
+    expect(view.snapshotPair).toHaveBeenCalledTimes(1)
+    expect(calloutCapture.calls).toBe(0)
+    expect(view.button.disabled).toBe(false)
+  })
+
+  it('with no cacheable index key it enables the button and runs no exact capture', () => {
+    const view = mountUnconfirmed({ noKey: true })
+    view.selectExpanded()
+
+    expect(calloutCapture.calls).toBe(0)
+    expect(view.snapshotPair).not.toHaveBeenCalled()
+    expect(view.button.disabled).toBe(false)
+  })
+
+  it('a settled read held by the selection bubble builds once at release with no exact capture', () => {
+    const view = mountUnconfirmed()
+    const release = view.index.holdBuilds()
+    view.selectExpanded()
+    expect(view.snapshotPair).not.toHaveBeenCalled()
+    release()
+    vi.advanceTimersByTime(60)
+
+    expect(view.snapshotPair).toHaveBeenCalledTimes(1)
+    expect(calloutCapture.calls).toBe(0)
+    expect(view.button.disabled).toBe(false)
   })
 })

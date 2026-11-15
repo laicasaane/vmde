@@ -203,6 +203,10 @@ export function createSourceBlockIndex(
   const waiters = new Set<(entry: SourceBlockIndex | null) => void>()
   // Task 700: the waiters that asked for an acquire (the default); a flush acquires if any did.
   const acquiringWaiters = new WeakSet<object>()
+  // Task 733 / 012-2: held waiters that asked for a deferred read (`deferUnconfirmed`). The shared
+  // build defers only when every waiter did, so a deferring read never takes the snapshot path
+  // after the hold is released and a default waiter still gets the snapshot entry it asked for.
+  const deferringWaiters = new WeakSet<object>()
   // Task 700: the cached entry whose null-exact rejection skipped the acquire for a passive read.
   let acquireSkippedEntry: SourceBlockIndex | null = null
   // Task 610 source-neutral scope state; the outermost scope owns the observer's queue.
@@ -546,6 +550,7 @@ export function createSourceBlockIndex(
     waiters.clear()
     const built = read({
       acquire: pending.some((w) => acquiringWaiters.has(w)),
+      deferUnconfirmed: pending.every((w) => deferringWaiters.has(w)),
     })
     for (const callback of pending) callback(built)
   }
@@ -572,6 +577,7 @@ export function createSourceBlockIndex(
     // A wrapper keeps each request cancelable even when a caller reuses one callback.
     const waiter = (entry: SourceBlockIndex | null) => callback(entry)
     if (opts?.acquire !== false) acquiringWaiters.add(waiter)
+    if (opts?.deferUnconfirmed === true) deferringWaiters.add(waiter)
     waiters.add(waiter)
     return () => {
       waiters.delete(waiter)

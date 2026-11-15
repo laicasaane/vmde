@@ -1,7 +1,7 @@
 import { historySourceProjection } from '../editing/undo-block-restore'
 import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import type { HistoryCapture, HistoryModelPort } from '../util/unit-changes'
-import { stripWrapHints } from '../util/wrap-hint-mark'
+import { isHintSpan, stripWrapHints } from '../util/wrap-hint-mark'
 import { reportError } from '../util/webview-log'
 import type { TextModel, Unit } from './text-model'
 import { isViewOnlyChild } from './unit-dom'
@@ -133,10 +133,24 @@ const keyOf = (nodes: ArrayLike<Node>): string => {
   let key = ''
   for (let i = 0; i < nodes.length; i += 1) {
     const node = nodes[i]
-    // An empty Text node serializes to nothing, and HTML parsed back has none (Vditor's `fixTable`
-    // leaves one after its `range.insertNode(br)` on Enter in a cell).
-    if (node.nodeType === Node.TEXT_NODE && (node as Text).data === '') continue
-    key += `${historySourceProjection(node)}\u0007`
+    // Text joins its neighbours with no separator and a wrap-hint span or a caret marker adds
+    // nothing, so a Text node split by a hint written after the capture keys the same as the
+    // unsplit node its HTML parses back to (Task 733 / 012-2); an empty Text node (Vditor's
+    // `fixTable` leaves one after its `range.insertNode(br)` on Enter in a cell) adds nothing
+    // either. Every other element keeps its place, even when its projection is empty: a block whose
+    // source projects to nothing still counts, or a wrap around it would read as no change.
+    if (node.nodeType === Node.TEXT_NODE) {
+      key += (node as Text).data
+      continue
+    }
+    // A caret marker: Vditor's `<wbr>` or the unit engine's `span.vditor-wbr`.
+    if (
+      isHintSpan(node) ||
+      (node as Element).localName === 'wbr' ||
+      (node as Element).classList?.contains('vditor-wbr')
+    )
+      continue
+    key += `\u0007${historySourceProjection(node)}\u0007`
   }
   return key
 }

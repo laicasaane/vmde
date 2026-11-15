@@ -695,13 +695,18 @@ it('does not apply a retained result after the exact bytes changed invisibly', a
   expect(view.postExact).toHaveBeenCalledOnce()
 })
 
-it('uses the exact capture once settled when the index has no key', () => {
+// Task 733 / 012-2: with no cacheable key the passive settled read shows the enabled state and
+// captures nothing; the Details action captures exact source when it is invoked.
+it('captures exact source only on the Details action when the index has no key', () => {
   const view = mount({ noRevision: true })
   view.reset()
   const alpha = view.paragraph('Alpha')
   view.keyStep(alpha, 0, alpha, 4)
-  expect(view.work().calloutCapture).toBe(1)
+  expect(view.work().calloutCapture).toBe(0)
   expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
+
+  view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  expect(view.work().calloutCapture).toBe(1)
 })
 
 // Task 577: a settled build waits while the selection bubble holds index builds.

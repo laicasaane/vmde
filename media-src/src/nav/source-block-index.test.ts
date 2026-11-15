@@ -1023,6 +1023,27 @@ it('a deferred hover read returns an entry with no units and takes no snapshot w
   ctx.index.dispose()
 })
 
+// Task 733 / 012-2 (action 2): the Details settled read is passive and waits while the selection
+// bubble holds builds. Released, it must keep its deferral: a held read rebuilt as a default read
+// took the whole-document snapshot after each table cell Undo while the cell unit was unconfirmed.
+it('a held passive deferred read takes no snapshot when the hold is released', () => {
+  const ctx = feedSetup(publishUnits)
+  const release = ctx.index.holdBuilds()
+  let seen: unknown = 'unset'
+  ctx.index.readWhenReady((entry) => (seen = entry), {
+    acquire: false,
+    deferUnconfirmed: true,
+  })
+  expect(seen).toBe('unset')
+
+  release()
+
+  expect(ctx.snapshotPair).not.toHaveBeenCalled()
+  expect((seen as { units: unknown } | null)?.units ?? null).toBeNull()
+  expect(ctx.confirmNow).not.toHaveBeenCalled()
+  ctx.index.dispose()
+})
+
 it('a deferred hover read keeps the last entry of the root while units are unconfirmed', () => {
   const ctx = feedSetup(publishUnits)
   publishUnits(ctx)

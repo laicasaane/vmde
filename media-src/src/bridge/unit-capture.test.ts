@@ -4,6 +4,7 @@ import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { createRealLute } from '../testing/real-lute'
 import type { HistoryCapture } from '../util/unit-changes'
+import { insertWrapHint } from '../util/wrap-hint-mark'
 import { createModelSession, type ModelSession } from './model-session'
 const renderSpy = vi.hoisted(() => vi.fn())
 vi.mock('vditor/src/ts/util/processCode', () => ({
@@ -344,6 +345,49 @@ describe('a cell with an empty text node after Enter', () => {
   })
 })
 
+// Task 733 / 012-2 (P1 cause 1): the wrap-hint engine puts a `span.vmde-wrap-hint` into an edited
+// cell after its capture, which splits one Text node into two. The window's sides are taken without
+// hints and parse back to one Text node, so the restore check must project split text the same as
+// the unsplit text (the rule of `historySourceProjection`). A refusal here clears the whole history.
+describe('a cell split by a wrap hint after its capture', () => {
+  const WIDE = 'alpha\n\n| a | b |\n| - | - |\n| c | longword |\n'
+  const cellWith = (r: Rig, text: string) =>
+    Array.from(r.root.querySelectorAll('td')).find(
+      (td) => td.textContent === text,
+    ) as HTMLElement
+
+  it("restore('before') accepts the hinted live cell and restores its text", () => {
+    const r = open(WIDE)
+    const cell = cellWith(r, 'longword')
+    typeInto(cell, 'longwordXYZ')
+    const edit = r.port.capture() as HistoryCapture
+    expect(edit).toBeDefined()
+    r.sync()
+    insertWrapHint(cell.firstChild as Text, 4)
+    expect(cell.childNodes.length).toBe(3)
+
+    expect(r.port.restore(edit, 'before')).toBe(true)
+    expect(cellWith(r, 'longword')).toBeDefined()
+    expect(r.sync()).toBe(WIDE)
+  })
+
+  it("restore('after') accepts a hinted cell restored to its before side", () => {
+    const r = open(WIDE)
+    const cell = cellWith(r, 'longword')
+    typeInto(cell, 'longwordXYZ')
+    const edit = r.port.capture() as HistoryCapture
+    r.sync()
+    expect(r.port.restore(edit, 'before')).toBe(true)
+    r.sync()
+    const restored = cellWith(r, 'longword')
+    insertWrapHint(restored.firstChild as Text, 4)
+
+    expect(r.port.restore(edit, 'after')).toBe(true)
+    expect(cellWith(r, 'longwordXYZ')).toBeDefined()
+    expect(r.sync()).toBe(WIDE.replace('longword', 'longwordXYZ'))
+  })
+})
+
 // DR (Details toolbar): a source enclosure (`<details>` HTML blocks around blocks) is one unit whose
 // members include the items of a list inside it. Its window must hold root children (the list, not
 // its items) on both sides, or the restore refuses and the history is lost.
@@ -367,6 +411,22 @@ describe('a multi-member enclosure unit', () => {
     expect(r.root.querySelector(':scope > li')).toBeNull()
     expect(r.port.restore(unwrap, 'after')).toBe(true)
     expect(r.sync()).toBe(CONTENT)
+  })
+
+  // Task 733 / 012-2 (R2): the history key skips only wrap hints and caret markers. A wrap adds
+  // HTML blocks around the body; if the key also dropped elements whose source projection is empty,
+  // the wrap read as no change and its Redo did nothing.
+  it('a rebuild of the root that adds the pair is a change that Undo and Redo restore', () => {
+    const r = open(CONTENT)
+    r.session.deltaPort().rebind(CONTENT)
+    r.root.innerHTML = lute.Md2VditorIRDOM(DETAILS)
+    const wrap = r.port.capture() as HistoryCapture
+    expect(wrap).toBeDefined()
+    expect(r.sync()).toBe(DETAILS)
+    expect(r.port.restore(wrap, 'before')).toBe(true)
+    expect(r.sync()).toBe(CONTENT)
+    expect(r.port.restore(wrap, 'after')).toBe(true)
+    expect(r.sync()).toBe(DETAILS)
   })
 
   it('its window holds root children, and a later view-state change is no change', () => {

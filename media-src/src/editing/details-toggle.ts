@@ -391,11 +391,11 @@ function settledDetailsState(
     return state === 'unknown' ? view.exactFallbackState(entry) : state
   }
   if (entry) return statusOf(view.retainedFor(entry))
-  // Without a cacheable key (e.g. a non-editable root or no revision authority), settle on
-  // today's exact path.
-  return expanded
-    ? view.exactFallbackState(null)
-    : statusOf(view.retainedForCurrentSource())
+  // Without a cacheable key (e.g. a non-editable root or no revision authority) an expanded
+  // selection shows the enabled `wrap` state and captures nothing: the Details action captures and
+  // validates exact source when it is invoked (Task 733 / 012-2, the Task 700 rule). A kept state
+  // would leave the button disabled, which also moves the toolbar's keyboard focus order.
+  return expanded ? 'wrap' : statusOf(view.retainedForCurrentSource())
 }
 
 /** Exact action target: one capture from the live Range, else the still-current retained result. */
