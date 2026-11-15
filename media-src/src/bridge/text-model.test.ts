@@ -8,6 +8,7 @@ import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { domKind, domUnits } from '../nav/unit-pairing'
 import { createRealLute } from '../testing/real-lute'
+import { createBackgroundScheduler } from '../util/background-budget'
 import { syncLeaves } from './model-sync'
 import {
   createTextModel,
@@ -557,16 +558,26 @@ describe('012-10 sliced proof of an oversize table (real Lute, fake clock)', {
     const { model, root } = realModel(text)
     expect(model.state, String(model.offReason)).toBe('live')
     const frames: Array<() => void> = []
+    const requestFrame = (callback: () => void): number => frames.push(callback)
     const schedule = createUnitSchedule({
       model,
       root,
+      // The schedule runs as jobs of the background scheduler (012-20): one on these fake frames.
+      scheduler: createBackgroundScheduler({
+        now: () => clock.t,
+        requestAnimationFrame: requestFrame,
+        cancelAnimationFrame: () => undefined,
+        requestIdle: () => 0,
+        cancelIdle: () => undefined,
+        inputPending: () => false,
+      }),
       serialize: () => '',
       htmlLength: (unit) =>
         unit.members.reduce((sum, member) => sum + member.outerHTML.length, 0),
       inViewport: () => true,
       isActive: () => true,
       drain: () => undefined,
-      requestAnimationFrame: (callback) => frames.push(callback),
+      requestAnimationFrame: requestFrame,
       cancelAnimationFrame: () => undefined,
       now: () => clock.t,
       setTimeout: () => 0,

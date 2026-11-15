@@ -90,6 +90,35 @@ export function proseParentsWithin(block: Element): Element[] {
   return [...parents]
 }
 
+const ROW_GROUP = /^(THEAD|TBODY|TFOOT)$/
+
+/** The first row at or after `start` among a table's children, entering row groups. */
+function rowFrom(start: Element | null): Element | null {
+  for (let child = start; child; child = child.nextElementSibling) {
+    if (child.tagName === 'TR') return child
+    if (!ROW_GROUP.test(child.tagName)) continue
+    for (let row = child.firstElementChild; row; row = row.nextElementSibling)
+      if (row.tagName === 'TR') return row
+  }
+  return null
+}
+
+/**
+ * The first row of `table`, found through its children (Task 733 / 012-20): the engine's row
+ * cursor walks a long table without one query over the whole table.
+ */
+export function firstTableRow(table: Element): Element | null {
+  return rowFrom(table.firstElementChild)
+}
+
+/** The row of `table` after `row`, in document order across its row groups; null after the last. */
+export function nextTableRow(table: Element, row: Element): Element | null {
+  for (let next = row.nextElementSibling; next; next = next.nextElementSibling)
+    if (next.tagName === 'TR') return next
+  const group = row.parentElement
+  return group && group !== table ? rowFrom(group.nextElementSibling) : null
+}
+
 export interface TextRun {
   parent: Element
   nodes: Text[]

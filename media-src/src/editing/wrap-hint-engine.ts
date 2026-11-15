@@ -14,8 +14,10 @@
  *  - only top-level blocks near the viewport are looked at (an IntersectionObserver per surface,
  *    about one viewport of margin, as Task 639 does for tables);
  *  - reads start two frames after the trigger (the first geometry read after a scroll pays the
- *    layout of what just became relevant), run under a ~4 ms budget per slice and resume next
- *    frame; inline code of every pending block is planned before any other word (Owner decision 2);
+ *    layout of what just became relevant) and run as the frame job `wrap-hints` of the shared
+ *    background budget (Task 733 / 012-20, shared rules 3.10), resuming in the next slice; a table
+ *    collects its runs row by row under that budget (a row cursor), so no slice reads a whole long
+ *    table; inline code of every pending block is planned before any other word (Owner decision 2);
  *  - a length pre-filter (1.5 em per character, or the measured advance of a monospace font)
  *    rejects nearly every word before any layout read;
  *  - plans are cached by (word, font, line width, minLastPiece); the write phase is one pass with
@@ -26,6 +28,12 @@
 import { resyncResponsiveTables } from '../chrome/responsive-tables'
 import { resolveWrapHintsMinLastPiece } from '../../../src/shared/theme-registry'
 import { findScroller } from '../chrome/toolbar-scroll-guard'
+import {
+  type BackgroundJob,
+  type BackgroundScheduler,
+  backgroundSchedulerOf,
+  type SliceBudget,
+} from '../util/background-budget'
 import { isCompositionActive } from '../util/caret-gesture'
 import {
   clearWrapHints,
@@ -35,9 +43,11 @@ import {
   WRAP_HINT_REPLAN_EVENT,
 } from '../util/wrap-hint-mark'
 import {
+  firstTableRow,
   hintCloneWithPriorityOne,
   inlineCodesWithin,
   LINE_CONTAINER,
+  nextTableRow,
   proseParentsWithin,
   rewriteRun,
   runsOf,
@@ -50,8 +60,6 @@ import {
   planWrapBreaks,
 } from './wrap-hints'
 
-/** Time one slice of reads and planning may take before it yields to the next frame. */
-const FRAME_BUDGET_MS = 4
 /** Time the write phase of one slice may take; the runs left over are written next frame. */
 const WRITE_BUDGET_MS = 2
 /** Quiet time after the last edit before the edited block gets hints again. */
@@ -177,6 +185,8 @@ function lineBoxOf(
 export interface WrapHintOptions {
   /** The `minLastPiece` rule (graphemes); default 3. */
   minLastPiece?: number
+  /** The shared background scheduler; default: the one of the window (Task 733 / 012-20). */
+  scheduler?: BackgroundScheduler
 }
 
 interface WrapHintStats {
@@ -338,6 +348,11 @@ interface PartialPlan {
   runs: TextRun[]
   next: number
   deferred: boolean
+  /**
+   * A top-level table only (012-20): the next row whose runs are collected, `null` when every row
+   * was collected. `runs` then holds the collected runs not yet planned.
+   */
+  row?: Element | null
 }
 
 /**
@@ -409,7 +424,11 @@ class WrapHintEngine {
   private readonly context: PlanContext
   private generation = 0
   private lastInputAt = Number.NEGATIVE_INFINITY
-  private frame = 0
+  /** The job is posted and not finished; the first step after a post only waits a frame. */
+  private queued = false
+  private warmup = false
+  private readonly scheduler: BackgroundScheduler
+  private readonly job: BackgroundJob
   private retry: ReturnType<typeof setTimeout> | undefined
   private disposed = false
   private readonly unregisterCloneHinter: () => void
@@ -418,7 +437,14 @@ class WrapHintEngine {
     private readonly getSurfaces: () => Array<HTMLElement | null | undefined>,
     private readonly stats: WrapHintStats | null,
     minLastPiece: number,
+    scheduler: BackgroundScheduler,
   ) {
+    this.scheduler = scheduler
+    this.job = {
+      name: 'wrap-hints',
+      lane: 'frame',
+      step: (budget) => this.step(budget),
+    }
     this.context = {
       range: document.createRange(),
       plans: new Map(),
@@ -455,7 +481,8 @@ class WrapHintEngine {
   dispose(): void {
     this.disposed = true
     this.unregisterCloneHinter()
-    if (this.frame !== 0) cancelAnimationFrame(this.frame)
+    this.scheduler.cancel(this.job)
+    this.queued = false
     if (this.retry !== undefined) clearTimeout(this.retry)
     document.fonts?.removeEventListener('loadingdone', this.bumpGeneration)
     for (const state of [...this.surfaces.values()]) this.removeSurface(state)
@@ -494,15 +521,24 @@ class WrapHintEngine {
   }
 
   private schedule(): void {
-    if (this.disposed || this.frame !== 0) return
+    if (this.disposed || this.queued) return
     // Two frames: the first geometry read after a trigger lays out whatever just became relevant
     // (S1 probe 4); by the second frame that cost is paid and the reads are cheap.
-    this.frame = requestAnimationFrame(() => {
-      this.frame = requestAnimationFrame(() => {
-        this.frame = 0
-        this.run()
-      })
-    })
+    this.queued = true
+    this.warmup = true
+    this.scheduler.post(this.job)
+  }
+
+  /** One slice of the `wrap-hints` job; true when work is left for the next slice. */
+  private step(budget: SliceBudget): boolean {
+    let more = false
+    try {
+      more = this.run(budget)
+    } finally {
+      // A step that throws is dropped by the scheduler: the next trigger posts the job again.
+      this.queued = more
+    }
+    return more
   }
 
   private onIntersections(entries: IntersectionObserverEntry[]): void {
@@ -704,7 +740,7 @@ class WrapHintEngine {
   }
 
   /**
-   * Plan the runs of one unit in one stage under the frame budget (cause C3: a long table must not
+   * Plan the runs of one unit in one stage under the slice budget (cause C3: a long table must not
    * take every run in one slice). Returns 'partial' when the budget ran out with runs left, which
    * are resumed next slice; 'deferred' when some run waits for the typing pause.
    */
@@ -713,29 +749,88 @@ class WrapHintEngine {
     block: Element,
     containers: Map<Element, number>,
     result: SliceResult,
-    started: number,
+    budget: SliceBudget,
   ): PlanOutcome {
     const partial = stage.partial.get(block)
+    if (block.tagName === 'TABLE')
+      return this.planTable(stage, block, containers, result, budget, partial)
     const runs = partial?.runs ?? stage.runsIn(block)
     let deferred = partial?.deferred ?? false
     for (let index = partial?.next ?? 0; index < runs.length; index += 1) {
-      const run = runs[index]
-      // A run cached by a partial plan can have left the document with an edit outside its unit.
-      if (
-        run.parent.isConnected &&
-        this.planRun(stage, block, run, containers, result)
-      )
+      if (this.planCached(stage, block, runs[index], containers, result))
         deferred = true
-      if (
-        index + 1 < runs.length &&
-        performance.now() - started > FRAME_BUDGET_MS
-      ) {
+      if (index + 1 < runs.length && budget.spent()) {
         keepPartial(stage, block, partial, runs, index + 1, deferred)
         return 'partial'
       }
     }
     if (partial) stage.partial.delete(block)
     return deferred ? 'deferred' : 'done'
+  }
+
+  /**
+   * A top-level table (012-20, N9): its runs are collected row by row and planned as they are
+   * collected, the budget checked before each row and each run, so a slice reads only the rows
+   * that fit in it. The plan (allocated once per table pass) keeps the row cursor.
+   */
+  private planTable(
+    stage: Stage,
+    table: Element,
+    containers: Map<Element, number>,
+    result: SliceResult,
+    budget: SliceBudget,
+    partial: PartialPlan | undefined,
+  ): PlanOutcome {
+    let plan = partial
+    if (!plan) {
+      plan = { runs: [], next: 0, deferred: false, row: undefined }
+      stage.partial.set(table, plan)
+    }
+    for (;;) {
+      if (plan.next < plan.runs.length) {
+        const run = plan.runs[plan.next]
+        plan.next += 1
+        if (this.planCached(stage, table, run, containers, result))
+          plan.deferred = true
+      } else if (plan.row === null) break
+      else this.collectRow(stage, table, plan)
+      const left = plan.next < plan.runs.length || plan.row !== null
+      if (left && budget.spent()) return 'partial'
+    }
+    stage.partial.delete(table)
+    return plan.deferred ? 'deferred' : 'done'
+  }
+
+  /** Collects the runs of the plan's next row and moves the row cursor on. */
+  private collectRow(stage: Stage, table: Element, plan: PartialPlan): void {
+    plan.runs.length = 0
+    plan.next = 0
+    let row = plan.row === undefined ? firstTableRow(table) : plan.row
+    // A row removed since the last slice leaves the cursor outside the table: collect from the
+    // first row again (planned runs are cached, so the repeat costs no layout work).
+    if (row && !(row.isConnected && row.closest('table') === table))
+      row = firstTableRow(table)
+    if (!row) {
+      plan.row = null
+      return
+    }
+    plan.row = nextTableRow(table, row)
+    for (const run of stage.runsIn(row)) plan.runs.push(run)
+  }
+
+  /** Plan one run that may have left the document since it was collected; true when it waits. */
+  private planCached(
+    stage: Stage,
+    block: Element,
+    run: TextRun,
+    containers: Map<Element, number>,
+    result: SliceResult,
+  ): boolean {
+    // A run cached by a partial plan can have left the document with an edit outside its unit.
+    return (
+      run.parent.isConnected &&
+      this.planRun(stage, block, run, containers, result)
+    )
   }
 
   /** Plan one run; true when it waits for the typing pause. */
@@ -762,8 +857,8 @@ class WrapHintEngine {
     return true
   }
 
-  /** Read phase: plan near, changed blocks until the frame budget is spent, code stage first. */
-  private readSlice(started: number): SliceResult {
+  /** Read phase: plan near, changed blocks until the slice budget is spent, code stage first. */
+  private readSlice(budget: SliceBudget): SliceResult {
     const containers = new Map<Element, number>()
     const result: SliceResult = { writes: [], blocks: 0, waitFor: 0 }
     for (const stage of this.stages) {
@@ -773,23 +868,13 @@ class WrapHintEngine {
           stage.partial.delete(block)
           continue
         }
-        const outcome = this.planBlock(
-          stage,
-          block,
-          containers,
-          result,
-          started,
-        )
+        const outcome = this.planBlock(stage, block, containers, result, budget)
         result.blocks += 1
         if (outcome === 'done') {
           stage.pending.delete(block)
           stage.planned.set(block, this.generation)
         }
-        if (
-          outcome === 'partial' ||
-          performance.now() - started > FRAME_BUDGET_MS
-        )
-          return result
+        if (outcome === 'partial' || budget.spent()) return result
       }
     }
     return result
@@ -799,23 +884,30 @@ class WrapHintEngine {
     return this.stages.some((stage) => stage.pending.size > 0)
   }
 
-  private run(): void {
-    if (this.disposed) return
+  /** One slice: true when blocks are left for the next slice. */
+  private run(budget: SliceBudget): boolean {
+    if (this.disposed) return false
+    if (this.warmup) {
+      this.warmup = false
+      return true
+    }
     if (isCompositionActive()) {
       this.retry = setTimeout(() => this.schedule(), 100)
-      return
+      return false
     }
     this.syncSurfaces()
     const started = performance.now()
-    const result = this.readSlice(started)
+    const result = this.readSlice(budget)
     const readEnd = performance.now()
     // One write phase: nothing below reads layout. It stops at its own budget; the blocks of the
     // runs it did not reach are planned again next frame (their plans are cached).
     const hints = this.writeSlice(result.writes)
     this.record(started, readEnd, result, hints)
-    if (result.waitFor > 0)
+    if (result.waitFor > 0) {
       this.retry = setTimeout(() => this.schedule(), result.waitFor + 20)
-    else if (this.hasPending()) this.schedule()
+      return false
+    }
+    return this.hasPending()
   }
 
   private writeSlice(writes: SliceResult['writes']): number {
@@ -910,6 +1002,7 @@ export function installWrapHints(
     getSurfaces,
     e2eStats(),
     options.minLastPiece ?? DEFAULT_MIN_LAST_PIECE,
+    options.scheduler ?? backgroundSchedulerOf(window),
   )
   activeEngine = engine
   return () => {

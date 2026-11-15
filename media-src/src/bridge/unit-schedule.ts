@@ -1,17 +1,23 @@
+import {
+  type BackgroundJob,
+  type BackgroundScheduler,
+  backgroundSchedulerOf,
+  type SliceBudget,
+} from '../util/background-budget'
 import type { TextModel, Unit, UnitKind } from './text-model'
 import { isViewOnlyChild } from './unit-dom'
 
 // Task 733: when the units get proven (idle slices and before a touch) and the rotating audit of
 // proven units. The model and every browser service are injected, so a test drives a fake clock and
 // fake animation frames. Proof is the only Lute work this module starts; it runs in a slice or in a
-// pre-touch, never per mutation record (shared rules 3.3, PD-7).
+// pre-touch, never per mutation record (shared rules 3.3, PD-7). Since 012-20 the queue rebuild,
+// the proofs and the audit run as the frame jobs `proof-queue`, `unit-proof` and `unit-audit` of the
+// shared background budget (shared rules 3.10), so their slices share one budget per frame.
 
 type U = Unit<HTMLElement>
 
 /** Paint frames to wait after the first start, so the proofs never delay the first paint. */
 const PAINT_FRAMES = 4
-/** Time a frame may spend on proofs (and then audits) before it yields; one proof may overrun it. */
-const SLICE_MS = 4
 /** Most unproven units a pre-touch proof handles synchronously (shared rules 3.3). */
 const PRE_TOUCH_LIMIT = 32
 /** A unit with HTML longer than this is proven only in idle time (shared rules 3.3). */
@@ -36,9 +42,14 @@ export interface UnitScheduleDeps {
   isActive(): boolean
   /** Processes the queued mutation records, so a pre-touch never proves a unit that is already dirty. */
   drain(): void
-  requestAnimationFrame(callback: () => void): number
-  cancelAnimationFrame(handle: number): void
-  now(): number
+  /** The shared background scheduler; default: the one of the root's window (012-20). */
+  scheduler?: BackgroundScheduler
+  /** Unused since 012-20 (the scheduler owns the frames); kept so existing callers still type-check. */
+  requestAnimationFrame?(callback: () => void): number
+  /** Unused since 012-20, as `requestAnimationFrame`. */
+  cancelAnimationFrame?(handle: number): void
+  /** Unused since 012-20: slices read the scheduler's budget. */
+  now?(): number
   setTimeout(callback: () => void, ms: number): number
   clearTimeout(handle: number): void
 }
@@ -57,7 +68,7 @@ interface ScheduleStats {
 }
 
 export interface UnitSchedule {
-  /** Start after a build: rebuilds the proof queue now. */
+  /** Start after a build: the proof queue is rebuilt in slices after the paint frames. */
   start(): void
   /**
    * After a publication, a rebind or a structural change: the queue is rebuilt inside the next frame,
@@ -97,30 +108,90 @@ function proveIfDue(
   return result === 'none' || result === 'pending' ? result : 'done'
 }
 
-/** The proof queue in proof order (viewport first, then document order) and the oversize units. */
-function splitProofQueues(deps: UnitScheduleDeps): { queue: U[]; large: U[] } {
-  const visible: U[] = []
-  const rest: U[] = []
-  const large: U[] = []
-  // Walk first without touching the DOM; the viewport and the HTML length are asked only for a
-  // top-level unit that still has something to prove.
-  const pending = (unit: U, out: U[]): void => {
-    if (unit.proof === 'none' && !unit.dirty) out.push(unit)
-    for (const child of unit.children) pending(child, out)
+/** A pass budget that is never spent: the full audit pass and the pre-touch proof outside a slice. */
+const NEVER_SPENT: SliceBudget = { spent: () => false }
+
+/**
+ * A resumable depth-first walk of the unit tree (Task 733 / 012-20, shared rules 3.10 rule 2): `step`
+ * visits units until the budget is spent and keeps its place, so a whole-tree pass (the proof queue
+ * rebuild, the audit collection) runs in slices. Created once per schedule; its stack is reused.
+ */
+interface UnitWalk {
+  /** The next `step` starts a new pass from the first unit. */
+  reset(): void
+  /** Visits units until `budget.spent()`; true when the pass is complete. */
+  step(budget: SliceBudget): boolean
+}
+
+function createUnitWalk(
+  units: () => readonly U[],
+  visit: (unit: U, top: U) => void,
+  topDone: (top: U) => void,
+): UnitWalk {
+  let source: readonly U[] | undefined
+  let topIndex = 0
+  let topStarted = false
+  let depth = 0
+  const stackKids: (readonly U[])[] = []
+  const stackPos: number[] = []
+  const enter = (unit: U, top: U): void => {
+    visit(unit, top)
+    const kids = unit.children
+    if (kids.length === 0) return
+    stackKids[depth] = kids
+    stackPos[depth] = 0
+    depth += 1
   }
-  const found: U[] = []
-  for (const top of deps.model.units) {
-    found.length = 0
-    pending(top, found)
-    if (found.length === 0) continue
-    const inView = deps.inViewport(top)
-    for (const unit of found) {
-      if (isBlockKind(unit.kind) && deps.htmlLength(unit) > OVERSIZE_HTML)
-        large.push(unit)
-      else (inView ? visible : rest).push(unit)
+  /** Visits the next unit of `top`'s subtree, unless the budget is spent or the subtree is done. */
+  const advance = (
+    top: U,
+    budget: SliceBudget,
+  ): 'spent' | 'visited' | 'done' => {
+    if (!topStarted) {
+      if (budget.spent()) return 'spent'
+      enter(top, top)
+      topStarted = true
+      return 'visited'
     }
+    while (depth > 0) {
+      const level = depth - 1
+      const kids = stackKids[level]
+      if (stackPos[level] < kids.length) {
+        if (budget.spent()) return 'spent'
+        enter(kids[stackPos[level]++], top)
+        return 'visited'
+      }
+      depth = level
+    }
+    return 'done'
   }
-  return { queue: visible.concat(rest), large }
+  return {
+    reset() {
+      source = undefined
+    },
+    step(budget) {
+      const current = units()
+      // A new pass, or the model replaced its unit list since the last slice (R-1): start again.
+      if (source !== current) {
+        source = current
+        topIndex = 0
+        topStarted = false
+        depth = 0
+      }
+      while (topIndex < current.length) {
+        const top = current[topIndex]
+        const outcome = advance(top, budget)
+        if (outcome === 'spent') return false
+        if (outcome === 'done') {
+          topDone(top)
+          topIndex += 1
+          topStarted = false
+        }
+      }
+      source = undefined
+      return true
+    },
+  }
 }
 
 /** Why a pre-touch proof must not run for these unproven units, if it must not. */
@@ -173,18 +244,30 @@ function addBlockUnits(
 
 export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
   const { model, root } = deps
+  const scheduler =
+    deps.scheduler ??
+    backgroundSchedulerOf(root.ownerDocument.defaultView ?? window)
   let started = false
   let blocked = false
   let rebuildPending = false
   let paintFrames = PAINT_FRAMES
-  let frame: number | undefined
   let idleTimer: number | undefined
-  let queue: U[] = []
-  let cursor = 0
+  // The proof queue in proof order: the units of top-level blocks in the viewport, then the rest in
+  // document order, then the oversize units. Each list has a build twin that the sliced rebuild
+  // fills; a finished rebuild swaps the pairs, so no list is copied or allocated per pass.
+  let visible: U[] = []
+  let rest: U[] = []
   let large: U[] = []
+  let buildVisible: U[] = []
+  let buildRest: U[] = []
+  let buildLarge: U[] = []
+  const found: U[] = []
+  let cursor = 0
   let largeCursor = 0
   let auditPending = false
-  let auditList: U[] | undefined
+  // The audit pass: its unit list (collected in slices), whether the list is complete, the cursor.
+  const auditList: U[] = []
+  let auditCollected = false
   let auditCursor = 0
   let auditPasses = 0
   let auditMismatch = 0
@@ -203,37 +286,71 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
     for (const unit of model.units) step(unit)
   }
 
-  const buildQueues = (): void => {
-    const built = splitProofQueues(deps)
-    queue = built.queue
-    large = built.large
+  const unitsOf = (): readonly U[] => model.units
+
+  // Rebuild walk: collect without touching the DOM; the viewport and the HTML length are asked only
+  // for a top-level unit that still has something to prove.
+  const rebuildWalk = createUnitWalk(
+    unitsOf,
+    (unit) => {
+      if (unit.proof === 'none' && !unit.dirty) found.push(unit)
+    },
+    (top) => {
+      if (found.length === 0) return
+      const inView = deps.inViewport(top)
+      for (const unit of found) {
+        if (isBlockKind(unit.kind) && deps.htmlLength(unit) > OVERSIZE_HTML)
+          buildLarge.push(unit)
+        else (inView ? buildVisible : buildRest).push(unit)
+      }
+      found.length = 0
+    },
+  )
+
+  const beginRebuild = (): void => {
+    rebuildPending = true
+    rebuildWalk.reset()
+    found.length = 0
+    buildVisible.length = 0
+    buildRest.length = 0
+    buildLarge.length = 0
+  }
+
+  const finishRebuild = (): void => {
+    let swap = visible
+    visible = buildVisible
+    buildVisible = swap
+    swap = rest
+    rest = buildRest
+    buildRest = swap
+    swap = large
+    large = buildLarge
+    buildLarge = swap
     cursor = 0
     largeCursor = 0
+    rebuildPending = false
   }
 
-  const hasWork = (): boolean =>
-    cursor < queue.length || largeCursor < large.length || auditPending
+  const queued = (): number => visible.length + rest.length
+  const queuedAt = (index: number): U =>
+    index < visible.length ? visible[index] : rest[index - visible.length]
 
-  const scheduleFrame = (): void => {
-    if (started && !blocked && frame === undefined)
-      frame = deps.requestAnimationFrame(onFrame)
-  }
+  const proofsDone = (): boolean =>
+    !rebuildPending && cursor >= queued() && largeCursor >= large.length
 
   /** The top-level unit of each audited unit, so a detached cell marks its table. */
   const auditTop = new WeakMap<U, U>()
 
-  const collectAudit = (): U[] => {
-    const list: U[] = []
-    const step = (unit: U, top: U): void => {
+  const auditWalk = createUnitWalk(
+    unitsOf,
+    (unit, top) => {
       if (unit.kind !== 'row' && unit.canon !== undefined) {
-        list.push(unit)
+        auditList.push(unit)
         auditTop.set(unit, top)
       }
-      for (const child of unit.children) step(child, top)
-    }
-    for (const unit of model.units) step(unit, unit)
-    return list
-  }
+    },
+    () => undefined,
+  )
 
   const countMismatch = (kind: UnitKind): void => {
     auditMismatch += 1
@@ -295,10 +412,10 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
    * Top-level blocks in unit order must be the root's children in order, with none left over
    * (O(units), sliced). Returns true when the walk of this pass is complete.
    */
-  const runStructureAudit = (deadline: number): boolean => {
+  const runStructureAudit = (budget: SliceBudget): boolean => {
     const units = model.units
     let missed = false
-    while (!missed && structUnit < units.length && deps.now() < deadline)
+    while (!missed && structUnit < units.length && !budget.spent())
       missed = !matchRootChild(units[structUnit++])
     if (!missed && structUnit < units.length) return false
     if (!missed && units.length > 0) {
@@ -328,82 +445,127 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
     countMismatch(unit.kind)
   }
 
-  /** Audits units until `deadline`; true when the pass is complete. */
-  const runAudit = (deadline: number): boolean => {
-    if (auditList === undefined) {
-      auditList = collectAudit()
-      resetStructureWalk()
+  /** Drops a half-collected audit pass: the next `runAudit` collects the units again. */
+  const resetAuditPass = (): void => {
+    auditList.length = 0
+    auditCollected = false
+    auditCursor = 0
+    auditWalk.reset()
+  }
+
+  /** Audits units until the budget is spent; true when the pass is complete. */
+  const runAudit = (budget: SliceBudget): boolean => {
+    if (!auditCollected) {
+      if (!auditWalk.step(budget)) return false
+      auditCollected = true
     }
-    while (auditCursor < auditList.length && deps.now() < deadline)
+    while (auditCursor < auditList.length && !budget.spent())
       audit(auditList[auditCursor++])
     if (auditCursor < auditList.length) return false
-    if (!runStructureAudit(deadline)) return false
-    auditList = undefined
-    auditCursor = 0
+    if (!runStructureAudit(budget)) return false
+    resetAuditPass()
     auditPending = false
     auditPasses += 1
     return true
   }
 
-  // The deadline of the running slice, read by one check made once per schedule: a table proof
-  // checks it between rows without a closure per call (012-10).
-  let sliceDeadline = 0
-  const sliceSpent = (): boolean => deps.now() >= sliceDeadline
+  // The budget of the running slice, read by one check bound once per schedule: a table proof
+  // checks it between rows without a closure per call (012-10, Q-105).
+  let sliceBudget: SliceBudget = NEVER_SPENT
+  const sliceSpent = (): boolean => sliceBudget.spent()
 
-  /** Proves queued units until the slice is spent; false when a proof could not run (Lute not ready). */
-  const runProofs = (deadline: number): boolean => {
-    sliceDeadline = deadline
-    while (cursor < queue.length && deps.now() < deadline) {
-      const result = proveIfDue(model, queue[cursor], sliceSpent)
+  /** Proves queued units until the slice is spent; true when work is left. */
+  const runProofs = (budget: SliceBudget): boolean => {
+    while (cursor < queued() && !budget.spent()) {
+      const result = proveIfDue(model, queuedAt(cursor), sliceSpent)
       // A table cut off by the deadline is offered first in the next slice.
       if (result === 'pending') return true
       cursor += 1
-      if (result === 'none') return false
+      if (result === 'none') {
+        // Proofs need Lute: stop instead of spinning; start() retries.
+        blocked = true
+        return false
+      }
     }
-    // Oversize units follow all others, at most one per frame.
-    const othersDone = cursor >= queue.length
-    if (othersDone && largeCursor < large.length && deps.now() < deadline) {
-      const result = proveIfDue(model, large[largeCursor], sliceSpent)
-      if (result !== 'pending') largeCursor += 1
-      return result !== 'none'
-    }
-    return true
+    if (cursor < queued()) return true
+    return proveLarge(budget)
   }
 
-  function onFrame(): void {
-    frame = undefined
-    // The mode left IR or the model went off: the loop ends; restart() or start() resumes it.
-    if (!started || blocked || !deps.isActive()) return
-    if (paintFrames > 0) {
-      paintFrames -= 1
-      scheduleFrame()
-      return
+  /** Oversize units follow all others, at most one per slice; true when work is left. */
+  const proveLarge = (budget: SliceBudget): boolean => {
+    if (largeCursor < large.length && !budget.spent()) {
+      const result = proveIfDue(model, large[largeCursor], sliceSpent)
+      if (result === 'none') {
+        blocked = true
+        return false
+      }
+      if (result !== 'pending') largeCursor += 1
     }
-    if (rebuildPending) {
-      rebuildPending = false
-      buildQueues()
-    }
-    const deadline = deps.now() + SLICE_MS
-    if (!runProofs(deadline)) {
-      // Proofs need Lute: stop instead of spinning; start() retries.
-      blocked = true
-      return
-    }
-    if (auditPending && cursor >= queue.length && largeCursor >= large.length)
-      runAudit(deadline)
-    if (hasWork()) scheduleFrame()
+    return largeCursor < large.length
+  }
+
+  // The mode left IR or the model went off: every job ends; restart() or start() resumes them.
+  const runnable = (): boolean => started && !blocked && deps.isActive()
+
+  /** Job `proof-queue`: waits out the paint frames, then rebuilds the proof queue in slices. */
+  const queueJob: BackgroundJob = {
+    name: 'proof-queue',
+    lane: 'frame',
+    step(budget) {
+      if (!runnable()) return false
+      if (paintFrames > 0) {
+        paintFrames -= 1
+        return true
+      }
+      if (!rebuildPending) return false
+      if (!rebuildWalk.step(budget)) return true
+      finishRebuild()
+      return false
+    },
+  }
+
+  /** Job `unit-proof`: proves the queue in slices once the queue is built. */
+  const proofJob: BackgroundJob = {
+    name: 'unit-proof',
+    lane: 'frame',
+    step(budget) {
+      if (!runnable()) return false
+      if (paintFrames > 0 || rebuildPending) return true
+      sliceBudget = budget
+      try {
+        return runProofs(budget)
+      } finally {
+        sliceBudget = NEVER_SPENT
+      }
+    },
+  }
+
+  /** Job `unit-audit`: a queued audit pass, in slices after the proofs are done. */
+  const auditJob: BackgroundJob = {
+    name: 'unit-audit',
+    lane: 'frame',
+    step(budget) {
+      if (!runnable() || !auditPending) return false
+      if (!proofsDone()) return true
+      return !runAudit(budget)
+    },
+  }
+
+  const postJobs = (): void => {
+    scheduler.post(queueJob)
+    scheduler.post(proofJob)
+    if (auditPending) scheduler.post(auditJob)
   }
 
   const requestAudit = (full: boolean): void => {
     resetStructureWalk()
     if (full) {
-      auditList = undefined
-      auditCursor = 0
-      runAudit(Number.POSITIVE_INFINITY)
+      resetAuditPass()
+      runAudit(NEVER_SPENT)
       return
     }
     auditPending = true
-    scheduleFrame()
+    if (started && !blocked) scheduler.post(auditJob)
   }
 
   /** One audit pass per minute without input: input re-arms the timer, a firing re-arms it too. */
@@ -493,25 +655,25 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
     start() {
       started = true
       blocked = false
-      rebuildPending = false
       resetStructureWalk()
-      buildQueues()
-      scheduleFrame()
+      beginRebuild()
+      postJobs()
       if (idleTimer === undefined) armIdleAudit()
     },
     restart() {
       if (!started) return
       blocked = false
-      rebuildPending = true
+      beginRebuild()
       resetStructureWalk()
-      scheduleFrame()
+      postJobs()
     },
     lastFallbackReason: () => lastFallbackReason,
     stop() {
       started = false
       paintFrames = PAINT_FRAMES
-      if (frame !== undefined) deps.cancelAnimationFrame(frame)
-      frame = undefined
+      scheduler.cancel(queueJob)
+      scheduler.cancel(proofJob)
+      scheduler.cancel(auditJob)
       if (idleTimer !== undefined) deps.clearTimeout(idleTimer)
       idleTimer = undefined
     },

@@ -40,6 +40,14 @@ interface Rig {
 const DOC = 'alpha\n\nbeta\n'
 const live: ModelSession[] = []
 
+// Since 012-20 the unit schedule runs as jobs of the window's background scheduler, which asks the
+// window for its frames. Each rig points the window's frame services at its own fake frames, so the
+// proofs and audits run in `runFrames()` as before; the originals come back after each test.
+const windowFrames = {
+  request: window.requestAnimationFrame,
+  cancel: window.cancelAnimationFrame,
+}
+
 function rig(options: { e2e?: boolean } = {}): Rig {
   const root = document.createElement('div')
   root.className = 'vditor-reset vditor-ir'
@@ -54,6 +62,8 @@ function rig(options: { e2e?: boolean } = {}): Rig {
   const cancelledFrames: number[] = []
   const countFallback = vi.fn()
   const viewport = { calls: 0 }
+  window.requestAnimationFrame = (cb) => frames.push(() => cb(0))
+  window.cancelAnimationFrame = () => undefined
   const session = createModelSession({
     win: window,
     getRoot: () => root,
@@ -124,6 +134,8 @@ function type(r: Rig, index: number, text: string): void {
 
 afterEach(() => {
   for (const session of live.splice(0)) session.dispose()
+  window.requestAnimationFrame = windowFrames.request
+  window.cancelAnimationFrame = windowFrames.cancel
   document.body.replaceChildren()
   vi.restoreAllMocks()
 })

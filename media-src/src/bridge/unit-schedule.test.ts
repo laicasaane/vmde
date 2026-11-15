@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  costClock,
+  type Factor,
+  fakeLanes,
+  irFixture,
+  type LaneDeps,
+} from '../testing/budget-harness'
 import type { Unit, UnitKind } from './text-model'
 import {
   createUnitSchedule,
@@ -10,6 +18,48 @@ import {
 
 // Task 733 / 004-B: idle proof slices, the pre-touch proof, its listeners and the rotating audit.
 // The model is a small stub whose `prove` costs one fake millisecond, so the slice budget is exact.
+
+// Task 733 / 012-20 (D-13 design section 1.1): the schedule runs its proofs, audits and queue rebuild
+// as jobs of the background scheduler injected as `deps.scheduler`. The module is loaded by a
+// computed specifier so this file typechecks before the module exists; every rig passes a scheduler
+// built on the rig's own frames once it does, so the tests above drive either implementation.
+type JobName =
+  | 'unit-proof'
+  | 'unit-audit'
+  | 'proof-queue'
+  | 'table-membership'
+  | 'wrap-hints'
+  | 'diagram-report'
+interface TestJob {
+  readonly name: JobName
+  readonly lane: 'frame'
+  step(budget: { spent(): boolean }): boolean
+}
+interface TestScheduler {
+  post(job: TestJob): void
+  cancel(job: TestJob): void
+  stats(name: JobName): {
+    readonly slices: number
+    readonly overruns: number
+    readonly maxSliceMs: number
+  }
+}
+interface BudgetModule {
+  FRAME_SLICE_MS: number
+  MAX_UNIT_MS: number
+  createBackgroundScheduler(deps: LaneDeps): TestScheduler
+}
+const BUDGET_MODULE: string = '../util/background-budget'
+let budgetModule: BudgetModule | undefined
+beforeAll(async () => {
+  budgetModule = (await import(/* @vite-ignore */ BUDGET_MODULE).catch(
+    () => undefined,
+  )) as BudgetModule | undefined
+})
+const requireBudget = (): BudgetModule => {
+  if (!budgetModule) throw new Error('util/background-budget is missing')
+  return budgetModule
+}
 
 type U = Unit<HTMLElement>
 
@@ -140,6 +190,16 @@ function rig(count: number): Rig {
       timers.delete(handle)
     },
   }
+  // The scheduler shares the rig's frames and clock (see the note at the top of the file).
+  ;(deps as unknown as { scheduler?: TestScheduler }).scheduler =
+    budgetModule?.createBackgroundScheduler({
+      now: deps.now,
+      requestAnimationFrame: deps.requestAnimationFrame,
+      cancelAnimationFrame: deps.cancelAnimationFrame,
+      requestIdle: () => 0,
+      cancelIdle: () => undefined,
+      inputPending: () => false,
+    })
   const schedule = createUnitSchedule(deps)
   return {
     root,
@@ -751,4 +811,372 @@ describe('installPreTouchListeners', () => {
     expect(range.commonAncestorContainer).toBe(r.root)
     dispose()
   })
+})
+
+// ---- B-09 (Task 733 / 012-20, D-13 design sections 1.1 and 5.2) ----
+//
+// The units of `irFixture(tableHeavyMarkdown(f))` as a stub tree: one unit per top-level block, one
+// per list item, and the rows and cells of each table. Every cost is charged on the harness cost
+// clock: a proof is one Lute call (0.5 ms plus 0.1 ms per 1,000 characters of its HTML; a row is one
+// call per cell, the 012-10 granularity) and each visit of a unit by a tree walk is one node
+// (0.001 ms; counted on the `children` read, which every walk of the schedule makes once per unit).
+// The proof stub follows `proveTable` of `text-model.ts`: the deadline is checked before each row,
+// and a table cut off answers `'pending'` and resumes at its `proofRow`.
+
+const LUTE_CALL_MS = 0.5
+const LUTE_MS_PER_1000_CHARS = 0.1
+const NODE_MS = 0.001
+/** The shared frame slice of the design (`FRAME_SLICE_MS`). */
+const FRAME_SLICE_MS = 4
+/** The overrun bound of one unit of work (`MAX_UNIT_MS`). */
+const MAX_UNIT_MS = 2
+interface BudgetRig {
+  units: U[]
+  all: U[]
+  clock: ReturnType<typeof costClock>
+  lanes: ReturnType<typeof fakeLanes>
+  schedule: UnitSchedule
+  scheduler: TestScheduler | undefined
+  /** Frames the schedule itself requested (it should request none once it runs as jobs). */
+  ownFrames: { count: number }
+  visits: { count: number }
+  luteCalls: { count: number }
+  /**
+   * The B-09 slice bound (D-13 design 13.13): `FRAME_SLICE_MS + max(MAX_UNIT_MS, largest row proof)`.
+   * A table is proven row by row with the deadline checked between rows, so one row proof is the
+   * indivisible unit that may run past the deadline; its cost is the cost-clock charge of its cells.
+   */
+  sliceBoundMs: number
+}
+
+const fixtureRoots = new Map<Factor, HTMLElement>()
+function budgetFixture(factor: Factor): HTMLElement {
+  let root = fixtureRoots.get(factor)
+  if (!root) {
+    root = irFixture(tableHeavyMarkdown(factor)).root
+    // irFixture keeps its root for the file; the afterEach above empties the body, so the root is
+    // detached here and every rig attaches it again.
+    fixtureRoots.set(factor, root)
+  }
+  if (!root.isConnected) document.body.append(root.parentElement ?? root)
+  return root
+}
+
+/** One Lute call on the cost clock: the call charge plus the per-character charge of its input. */
+const lutePriceMs = (chars: number): number =>
+  LUTE_CALL_MS + (LUTE_MS_PER_1000_CHARS * chars) / 1000
+
+/** The cost-clock charge of the fixture's most expensive row proof: one Lute call per cell. */
+function largestRowProofMs(
+  all: readonly U[],
+  kidsOf: WeakMap<U, U[]>,
+  htmlCost: WeakMap<U, number>,
+): number {
+  let largest = 0
+  for (const unit of all) {
+    if (unit.kind !== 'row') continue
+    let rowMs = 0
+    for (const cell of kidsOf.get(unit) ?? [])
+      rowMs += lutePriceMs(htmlCost.get(cell) ?? 0)
+    largest = Math.max(largest, rowMs)
+  }
+  return largest
+}
+
+function budgetRig(factor: Factor): BudgetRig {
+  const root = budgetFixture(factor)
+  const clock = costClock()
+  const lanes = fakeLanes(clock)
+  const visits = { count: 0 }
+  const luteCalls = { count: 0 }
+  const ownFrames = { count: 0 }
+  const htmlCost = new WeakMap<U, number>()
+  const all: U[] = []
+  const byElement = new Map<Element, U>()
+  // Child lists the proof stub reads without counting: the proof itself walks no tree.
+  const kidsOf = new WeakMap<U, U[]>()
+
+  const stubUnit = (
+    el: HTMLElement | undefined,
+    kind: UnitKind,
+    kids: U[],
+    html: number,
+  ): U => {
+    const unit = makeUnit(el ?? document.createElement('tr'), kind)
+    if (!el) unit.el = undefined
+    Object.defineProperty(unit, 'children', {
+      get() {
+        visits.count += 1
+        clock.advance(NODE_MS)
+        return kids
+      },
+    })
+    htmlCost.set(unit, html)
+    kidsOf.set(unit, kids)
+    all.push(unit)
+    if (el) byElement.set(el, unit)
+    return unit
+  }
+  const leaf = (el: HTMLElement, kind: UnitKind): U =>
+    stubUnit(el, kind, [], el.outerHTML.length)
+
+  const units: U[] = []
+  for (const child of Array.from(root.children) as HTMLElement[]) {
+    if (child.tagName === 'UL' || child.tagName === 'OL') {
+      for (const item of Array.from(child.children) as HTMLElement[])
+        units.push(leaf(item, 'list-item'))
+      continue
+    }
+    if (child.tagName !== 'TABLE') {
+      units.push(leaf(child, child.tagName === 'P' ? 'paragraph' : 'heading'))
+      continue
+    }
+    const rows: U[] = []
+    for (const tr of Array.from(child.querySelectorAll('tr'))) {
+      const cells = (Array.from(tr.children) as HTMLElement[]).map((cell) =>
+        stubUnit(cell, 'cell', [], cell.innerHTML.length),
+      )
+      const row = stubUnit(undefined, 'row', cells, 0)
+      row.members = []
+      rows.push(row)
+    }
+    units.push(stubUnit(child, 'table', rows, 0))
+  }
+
+  const largestRowMs = largestRowProofMs(all, kidsOf, htmlCost)
+  const luteCall = (chars: number): void => {
+    luteCalls.count += 1
+    clock.advance(lutePriceMs(chars))
+  }
+  const proveLeaf = (unit: U): 'proven' => {
+    luteCall(htmlCost.get(unit) ?? 0)
+    unit.proof = 'proven'
+    unit.canon = 'canon'
+    return 'proven'
+  }
+  const proveRow = (row: U): void => {
+    for (const cell of kidsOf.get(row) ?? [])
+      if (cell.proof === 'none') proveLeaf(cell)
+    row.proof = 'proven'
+  }
+  const deps = {
+    model: {
+      units,
+      unitOf: (el: HTMLElement) => byElement.get(el),
+      prove: (unit: U, spent?: () => boolean) => {
+        if (unit.proof !== 'none') return unit.proof
+        if (unit.kind === 'row') {
+          proveRow(unit)
+          return 'proven'
+        }
+        if (unit.kind !== 'table') return proveLeaf(unit)
+        const rows = kidsOf.get(unit) ?? []
+        for (let at = unit.proofRow ?? 0; at < rows.length; at++) {
+          if (spent?.()) {
+            unit.proofRow = at
+            return 'pending'
+          }
+          proveRow(rows[at])
+        }
+        unit.proofRow = undefined
+        unit.proof = 'proven'
+        return 'proven'
+      },
+      markDirty: (unit: U) => {
+        unit.dirty = true
+      },
+      markStructureDirty: () => undefined,
+    },
+    root,
+    serialize: () => 'canon',
+    htmlLength: (unit: U) => htmlCost.get(unit) ?? 0,
+    inViewport: () => false,
+    isActive: () => true,
+    drain: () => undefined,
+    requestAnimationFrame: (callback: () => void) => {
+      ownFrames.count += 1
+      return lanes.requestAnimationFrame(callback)
+    },
+    cancelAnimationFrame: (handle: number) =>
+      lanes.cancelAnimationFrame(handle),
+    now: () => clock.now(),
+    setTimeout: () => 0,
+    clearTimeout: () => undefined,
+  }
+  const scheduler = budgetModule?.createBackgroundScheduler(lanes)
+  const schedule = createUnitSchedule({
+    ...deps,
+    scheduler,
+  } as unknown as UnitScheduleDeps)
+  return {
+    units,
+    all,
+    clock,
+    lanes,
+    schedule,
+    scheduler,
+    ownFrames,
+    visits,
+    luteCalls,
+    sliceBoundMs: FRAME_SLICE_MS + Math.max(MAX_UNIT_MS, largestRowMs),
+  }
+}
+
+interface FrameRecord {
+  ms: number
+  visits: number
+  luteCalls: number
+}
+
+/** Runs frames until no frame is queued (or `until` holds); returns what each frame cost. */
+function runBudgetFrames(r: BudgetRig, until?: () => boolean): FrameRecord[] {
+  const frames: FrameRecord[] = []
+  let idle = 0
+  for (let guard = 0; guard < 50_000; guard++) {
+    if (until?.()) break
+    const start = r.clock.now()
+    const visits = r.visits.count
+    const luteCalls = r.luteCalls.count
+    r.lanes.runFrame()
+    const record = {
+      ms: r.clock.now() - start,
+      visits: r.visits.count - visits,
+      luteCalls: r.luteCalls.count - luteCalls,
+    }
+    frames.push(record)
+    // The fake lanes do not tell whether a frame is queued: ten frames in a row without any cost
+    // (the paint frames are four) mean nothing is left; they are not counted.
+    if (record.ms === 0) idle += 1
+    else idle = 0
+    if (idle === 10 && !until) break
+  }
+  return idle === 10 ? frames.slice(0, -10) : frames
+}
+
+/** Wall-time limit of one f16 budget case (Q-120). */
+const F16_CASE_TIMEOUT_MS = 30_000
+
+const allProven = (r: BudgetRig): boolean =>
+  r.all.every((unit) => unit.proof === 'proven')
+
+/** Frames, by index, whose cost on the cost clock passes the rig's slice bound. */
+const overBudget = (r: BudgetRig, frames: FrameRecord[]): string[] =>
+  frames.flatMap((frame, index) =>
+    frame.ms > r.sliceBoundMs + 1e-9
+      ? [`frame ${index}: ${frame.ms.toFixed(3)} ms, ${frame.visits} visits`]
+      : [],
+  )
+
+describe.each([1, 4, 16] as const)('B-09 proofs at factor %i', (factor) => {
+  // An f16 case proves about 19,000 units over 1,600 frames (twice in the shared-budget case): it
+  // needs more than the default 5 s of wall time, which the cost clock does not measure.
+  const caseTimeout = factor === 16 ? F16_CASE_TIMEOUT_MS : undefined
+
+  it(
+    'proves the whole fixture in slices of at most 4 ms plus its largest row proof',
+    () => {
+      const r = budgetRig(factor)
+      r.schedule.start()
+      const frames = runBudgetFrames(r)
+      expect(allProven(r)).toBe(true)
+      expect(overBudget(r, frames)).toEqual([])
+    },
+    caseTimeout,
+  )
+
+  it(
+    'proof-queue: the rebuild after restart() walks the unit tree under the slice budget',
+    () => {
+      const r = budgetRig(factor)
+      r.schedule.start()
+      runBudgetFrames(r)
+      expect(allProven(r)).toBe(true)
+      // An edit left the last cell of the last table unproven (its sync rebuilt it).
+      const cell = r.all.filter((unit) => unit.kind === 'cell').at(-1) as U
+      cell.proof = 'none'
+      r.visits.count = 0
+      r.schedule.restart()
+      // The publication path pays nothing: the rebuild runs inside the frames.
+      expect(r.visits.count).toBe(0)
+      const frames = runBudgetFrames(r)
+      expect(cell.proof).toBe('proven')
+      expect(overBudget(r, frames)).toEqual([])
+      // The walk covers the tree once in total, spread over frames by its cursor.
+      const walked = frames.reduce((sum, frame) => sum + frame.visits, 0)
+      expect(walked).toBeGreaterThanOrEqual(r.all.length)
+    },
+    caseTimeout,
+  )
+
+  it(
+    'runs as the frame jobs unit-proof, proof-queue and unit-audit of the shared scheduler',
+    () => {
+      requireBudget()
+      const r = budgetRig(factor)
+      r.schedule.start()
+      runBudgetFrames(r)
+      r.all[0].proof = 'none'
+      r.schedule.restart()
+      runBudgetFrames(r)
+      r.schedule.requestAudit(false)
+      runBudgetFrames(r)
+      expect(allProven(r)).toBe(true)
+      // Every frame comes from the scheduler: the schedule requests none of its own.
+      expect(r.ownFrames.count).toBe(0)
+      const scheduler = r.scheduler as TestScheduler
+      for (const name of ['unit-proof', 'proof-queue', 'unit-audit'] as const) {
+        const stats = scheduler.stats(name)
+        expect(stats.slices, `${name} slices`).toBeGreaterThan(0)
+        // A row proof may end more than MAX_UNIT_MS past the deadline (13.13), which the scheduler
+        // counts as an overrun; the queue walk and the audit have no such unit.
+        if (name !== 'unit-proof')
+          expect(stats.overruns, `${name} overruns`).toBe(0)
+        expect(stats.maxSliceMs, `${name} maxSliceMs`).toBeLessThanOrEqual(
+          r.sliceBoundMs,
+        )
+      }
+    },
+    caseTimeout,
+  )
+
+  it(
+    'with the frame jobs of the table first pointer move queued, proves the fixture within twice the frames it takes alone',
+    () => {
+      requireBudget()
+      // The baseline: the same schedule on its own scheduler, with no other job queued.
+      const alone = budgetRig(factor)
+      alone.schedule.start()
+      const aloneFrames = runBudgetFrames(alone, () => allProven(alone))
+      expect(allProven(alone)).toBe(true)
+      const r = budgetRig(factor)
+      const scheduler = r.scheduler as TestScheduler
+      // Three finite jobs of the same frame lane, 100 units of 1 ms each, checking the budget before
+      // each unit (the design's `table-membership`, `wrap-hints` and `diagram-report`).
+      const others = (
+        ['table-membership', 'wrap-hints', 'diagram-report'] as const
+      ).map((name) => {
+        let left = 100
+        const job: TestJob = {
+          name,
+          lane: 'frame',
+          step(budget) {
+            while (left > 0) {
+              if (budget.spent()) return true
+              r.clock.advance(1)
+              left -= 1
+            }
+            return false
+          },
+        }
+        return job
+      })
+      for (const job of others) scheduler.post(job)
+      r.schedule.start()
+      const frames = runBudgetFrames(r, () => allProven(r))
+      expect(allProven(r)).toBe(true)
+      expect(overBudget(r, frames)).toEqual([])
+      expect(frames.length).toBeLessThanOrEqual(2 * aloneFrames.length)
+    },
+    caseTimeout,
+  )
 })
