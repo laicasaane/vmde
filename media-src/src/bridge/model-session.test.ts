@@ -2,6 +2,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 import { createRealLute } from '../testing/real-lute'
 import { writeQuietly } from '../util/mutation-impact'
 import type { UnitsChange } from '../util/unit-changes'
@@ -1690,4 +1691,92 @@ describe('reopenTyping (DR2)', () => {
     // The next publication is whole-text: it carries the DOM, the typing included.
     expect(r.session.deltaPort().prepareDelta(2).kind).toBe('fallback')
   })
+})
+
+// Task 733 / 012-12-T (D-13 design section 5.2, B-03): the change a list item Enter emits names the two
+// items of the spin pair as its scopes. Without `scopes` (the C1 gap), feed consumers fall back
+// to `scopeUnits` and rescan the whole list (`U/mutation-impact.ts` `scopeUnits`). The documents are the
+// table-heavy fixture (a list of 10 x factor items) and a 500-item list, rendered fresh per test with the
+// production Lute patches because the case writes the DOM and needs a live model.
+describe('list item Enter scopes (Task 733 / 012-12, B-03)', () => {
+  // A live model over the factor-16 fixture takes seconds to build (several times that under a full parallel run).
+  const BUILD_TIMEOUT_MS = 60_000
+  type ScopedChange = UnitsChange & { readonly scopes?: readonly HTMLElement[] }
+  const LONG_LIST = `${Array.from({ length: 500 }, (_, i) => `- entry ${i + 1}`).join('\n')}\n`
+
+  /**
+   * Enter in the middle of item `index`, as the browser and the spin hook write it: a new `li` after the
+   * item (one child-list record on the list), then the spin pair rewrites the text of both items.
+   */
+  function enterInItem(r: Rig, index: number) {
+    const list = r.root.querySelector(':scope > ul') as HTMLElement
+    const item = list.children[index] as HTMLElement
+    item.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    const text = item.firstChild as Text
+    const cut = Math.floor(text.data.length / 2)
+    const fresh = document.createElement('li')
+    for (const attribute of Array.from(item.attributes))
+      fresh.setAttribute(attribute.name, attribute.value)
+    fresh.textContent = text.data.slice(cut)
+    item.after(fresh)
+    text.data = text.data.slice(0, cut)
+    return { list, item, fresh }
+  }
+
+  function openScoped(markdown: string) {
+    const r = open(markdown)
+    r.runFrames()
+    const changes: ScopedChange[] = []
+    r.session.onUnitsChanged((change) => {
+      changes.push(change)
+    })
+    return { r, changes }
+  }
+
+  const cases: Array<[string, () => string, number]> = [
+    ['the table-heavy fixture at factor 1', () => tableHeavyMarkdown(1), 4],
+    ['the table-heavy fixture at factor 4', () => tableHeavyMarkdown(4), 4],
+    ['the table-heavy fixture at factor 16', () => tableHeavyMarkdown(16), 4],
+    ['a 500-item list', () => LONG_LIST, 249],
+  ]
+
+  it.each(cases)(
+    'the feed frame change of an Enter in %s scopes the two items',
+    (_name, markdown, index) => {
+      const { r, changes } = openScoped(markdown())
+      const { list, item, fresh } = enterInItem(r, index)
+      r.session.confirmedUnits() // drains the batch
+      r.runFrames()
+      const frame = changes.filter((c) => c.cause === 'mutation')
+      expect(frame).toHaveLength(1)
+      const change = frame[0]
+      expect(change.whole).toBe(false)
+      expect(change.scopes).toEqual([item, fresh])
+      expect(change.changed.length).toBeLessThanOrEqual(2)
+      for (const unit of change.changed)
+        expect([item, fresh]).toContain(unit.el)
+      expect(change.structural).toEqual([list])
+    },
+    BUILD_TIMEOUT_MS,
+  )
+
+  it.each(cases)(
+    'the sync after an Enter in %s is no whole change and scopes only the items',
+    (_name, markdown, index) => {
+      const { r, changes } = openScoped(markdown())
+      const { item, fresh } = enterInItem(r, index)
+      r.session.confirmedUnits()
+      r.runFrames()
+      expect(r.session.deltaPort().prepareDelta(1).kind).toBe('changes')
+      r.runFrames()
+      const sync = changes.filter((c) => c.cause === 'sync')
+      expect(sync.map((c) => c.whole)).not.toContain(true)
+      for (const change of sync) {
+        expect(change.scopes).toBeDefined()
+        for (const scope of change.scopes ?? [])
+          expect([item, fresh]).toContain(scope)
+      }
+    },
+    BUILD_TIMEOUT_MS,
+  )
 })

@@ -1,5 +1,5 @@
 import {
-  forEachScopeElement,
+  forEachChangeScope,
   onLiveChange,
   forEachRecordScope,
   liveFeedOf,
@@ -76,7 +76,7 @@ export function observeLinkLikeSemantics(
   applyLinkLikeSemantics(root)
   const offLive = onLiveChange(root, (change) => {
     if (change.whole) applyLinkLikeSemantics(root)
-    else forEachScopeElement(change, applyLinkLikeSemantics)
+    else forEachChangeScope(change, applyLinkLikeSemantics)
   })
   return () => {
     observer.disconnect()

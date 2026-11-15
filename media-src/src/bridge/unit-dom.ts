@@ -212,9 +212,15 @@ function onlyRenderNodes(record: MutationRecord): boolean {
 
 /** Receives what one observer batch marked (Task 733 / 005-A; shared rules 3.3). */
 export interface UnitDomOptions {
+  /**
+   * Task 733 / 012-12 (D-13 design section 1.2): `inserted` holds the elements the batch's child-list
+   * records added under a list, a table section or row, or the root. It is one set reused by every
+   * batch and valid only inside the call.
+   */
   onBatch?(
     changed: ReadonlySet<Unit<HTMLElement>>,
     structure: ReadonlySet<'root' | Unit<HTMLElement>>,
+    inserted: ReadonlySet<HTMLElement>,
   ): void
   /** Task 733 / 010: the inner Vditor editor, for the post-render steps of `render`; without one they are skipped. */
   vditor?(): unknown
@@ -236,6 +242,19 @@ function parseElements(root: HTMLElement, html: string): HTMLElement[] {
 
 const isList = (element: Element | null | undefined): boolean =>
   element?.tagName === 'UL' || element?.tagName === 'OL'
+
+/** A parent whose inserted children are feed scopes: a list, a table section or a row (the root is checked by identity). */
+const isScopeParent = (element: Element): boolean => {
+  const name = element.tagName
+  return (
+    name === 'UL' ||
+    name === 'OL' ||
+    name === 'TBODY' ||
+    name === 'THEAD' ||
+    name === 'TFOOT' ||
+    name === 'TR'
+  )
+}
 
 /**
  * The list a whole render would put an item in: its tag and its marker (`-`, `*`, `+`; the `.` or `)`
@@ -344,6 +363,22 @@ export function createUnitDom(
   // unit feed reports the spun blocks instead of a whole change. Reused across batches.
   const spunTops = new Set<HTMLElement>()
   let rootUnexplained = false
+  // Task 733 / 012-12: the elements the current batch inserted under a list, a table section or row,
+  // or the root. Reused across batches, so a batch that inserts nothing allocates nothing (R-2).
+  const inserted = new Set<HTMLElement>()
+
+  /** Collects the added elements of a child-list record whose target is a scope parent or the root. */
+  const noteInserted = (record: MutationRecord, element: Element): void => {
+    if (record.type !== 'childList' || !options?.onBatch) return
+    if (element !== root && !isScopeParent(element)) return
+    const { addedNodes } = record
+    for (let i = 0; i < addedNodes.length; i += 1) {
+      const node = addedNodes[i]
+      // Render subtrees are never reported (`onlyRenderNodes`); a mixed record keeps the other nodes.
+      if (node instanceof HTMLElement && !node.hasAttribute('data-render'))
+        inserted.add(node)
+    }
+  }
 
   const noteStructure = (scope: 'root' | Unit<HTMLElement>): void => {
     model?.markStructureDirty(scope)
@@ -494,6 +529,7 @@ export function createUnitDom(
     }
     if (element.closest('[data-render]')) return
     if (record.type === 'childList' && onlyRenderNodes(record)) return
+    noteInserted(record, element)
     if (element === root) {
       if (record.type === 'childList' && isBlockSpin(record)) markSpin(record)
       else markStructure('root')
@@ -548,6 +584,7 @@ export function createUnitDom(
 
   const process = (records: readonly MutationRecord[]): void => {
     spunTops.clear()
+    inserted.clear()
     rootUnexplained = false
     for (const record of records) mark(record)
     const changed = batchChanged
@@ -555,7 +592,7 @@ export function createUnitDom(
     if (!changed && !structure) return
     batchChanged = undefined
     batchStructure = undefined
-    options?.onBatch?.(changed ?? new Set(), structure ?? new Set())
+    options?.onBatch?.(changed ?? new Set(), structure ?? new Set(), inserted)
   }
 
   // Task 733 / 010: the apply's planning and commit run on models built over this adapter.

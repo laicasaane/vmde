@@ -139,3 +139,41 @@ describe('installUnitFeedStats', () => {
     win.remove()
   })
 })
+
+// Task 733 / 012-12-T (D-13 design section 1.2): the feed hands the session's change to its listeners
+// unchanged, so the `scopes` the session builds reach the consumers (the two items of a list item Enter).
+describe('createUnitFeed scopes (Task 733 / 012-12)', () => {
+  it('passes the scopes of a session change to its listeners', () => {
+    const stub = stubSession(() => [])
+    const feed = createUnitFeed(
+      stub.session,
+      { flush: vi.fn() },
+      { isComposing: () => false, root: () => root },
+    )
+    const list = document.createElement('ul')
+    const item = document.createElement('li')
+    const fresh = document.createElement('li')
+    list.append(item, fresh)
+    const unit = (li: HTMLElement) => ({
+      el: li,
+      members: [li],
+      kind: 'list-item' as const,
+      top: list,
+    })
+    const change = {
+      cause: 'mutation',
+      whole: false,
+      changed: [unit(item), unit(fresh)],
+      structural: [list],
+      scopes: [item, fresh],
+    } as UnitsChange
+    const seen: Array<UnitsChange & { scopes?: readonly HTMLElement[] }> = []
+    const off = feed.onUnitsChanged((received) => {
+      seen.push(received)
+    })
+    stub.emit(change)
+    off()
+    expect(seen).toHaveLength(1)
+    expect(seen[0].scopes).toEqual([item, fresh])
+  })
+})

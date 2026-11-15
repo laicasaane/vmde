@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  countBudget,
+  irFixture as budgetFixture,
+} from '../testing/budget-harness'
 import {
   type LiveUnit,
   provideUnitFeed,
@@ -198,5 +203,69 @@ describe('observeLinkLikeSemantics on unit feed changes (Task 733)', () => {
     expect(chip?.getAttribute('role')).toBe('link')
     expect(chip?.getAttribute('aria-label')).toContain('wiki page')
     dispose()
+  })
+})
+
+// Task 733 / 012-12-T (D-13 design section 5.2, B-04 links): counted work of the labelling pass on the
+// table-heavy IR fixture. A list item Enter emits a change whose scopes are the two items; the pass must
+// label only those (`forEachChangeScope`), not the whole list that `forEachScopeElement` visits as a
+// structural top. The module has no selection handler, so only the change is counted.
+const nodesOf = (element: Node): number => {
+  let count = 1
+  for (let child = element.firstChild; child; child = child.nextSibling)
+    count += nodesOf(child)
+  return count
+}
+const enterSums = new Map<number, number>()
+
+describe.each([1, 4, 16] as const)(
+  'observeLinkLikeSemantics budget at factor %i (Task 733 / 012-12, B-04)',
+  (factor) => {
+    // The factor-16 fixture takes seconds to render with Lute: built once here, outside the test timeout.
+    beforeAll(() => {
+      budgetFixture(tableHeavyMarkdown(factor))
+    }, 60_000)
+    it('a list item Enter change labels only the two items, with no root query', () => {
+      const ir = budgetFixture(tableHeavyMarkdown(factor)).root
+      const app = ir.parentElement as HTMLElement
+      app.id = 'app'
+      if (!app.isConnected) document.body.append(app)
+      const feed = fakeFeed(ir)
+      const dispose = observeLinkLikeSemantics(app)
+      const list = ir.querySelector(':scope > ul') as HTMLElement
+      const item = list.children[4] as HTMLElement
+      const fresh = item.cloneNode(true) as HTMLElement
+      item.after(fresh)
+      try {
+        const unit = (li: HTMLElement): LiveUnit => ({
+          el: li,
+          members: [li],
+          kind: 'list-item',
+          top: list,
+        })
+        const change = {
+          cause: 'mutation',
+          whole: false,
+          changed: [unit(item), unit(fresh)],
+          structural: [list],
+          scopes: [item, fresh],
+        } as UnitsChange
+        const { counts } = countBudget(ir, () => feed.emit(change))
+        const sum = counts.nodesWalked + counts.queriedNodes
+        enterSums.set(factor, sum)
+        expect(counts.rootQueries).toBe(0)
+        expect(sum).toBeLessThanOrEqual(nodesOf(item) + nodesOf(fresh) + 8)
+      } finally {
+        fresh.remove()
+        dispose()
+      }
+    })
+  },
+)
+
+describe('observeLinkLikeSemantics budget across factors (Task 733 / 012-12, B-04)', () => {
+  it('labels the same nodes for a list item Enter at every factor', () => {
+    expect(enterSums.size).toBe(3)
+    expect(new Set(enterSums.values()).size).toBe(1)
   })
 })

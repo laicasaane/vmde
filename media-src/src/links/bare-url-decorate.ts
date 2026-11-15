@@ -25,7 +25,7 @@ import {
   onLiveChange,
   recordsOutsideFeed,
   scopeMutations,
-  scopeUnits,
+  scopeOfChange,
   writeQuietly,
 } from '../util/mutation-impact'
 import { isHintSpan } from '../util/wrap-hint-mark'
@@ -325,7 +325,13 @@ export function observeBareUrls(
     if (scope.full) {
       sync(root)
       caretBlock = caretBlockOf(root)
-    } else for (const block of scope.blocks) within(block)
+    } else {
+      // Q-30: a feed scope is a cell or an item, so the caret's whole top-level block is skipped here
+      // (no query: `closest` from the anchor); the selection change decorates it once the caret leaves.
+      const skip = caretBlockOf(root)
+      for (const block of scope.blocks)
+        if (!skip?.contains(block)) within(block)
+    }
   }
   // A record outside a live feed root decorates only its own container, never the whole root. The
   // container can be a whole surface (WYSIWYG beside the IR root), so only its caret block is skipped.
@@ -353,7 +359,7 @@ export function observeBareUrls(
   const reapply = () => sync(root)
   activeReappliers.add(reapply)
   run([])
-  const offLive = onLiveChange(root, (change) => apply(scopeUnits(change)))
+  const offLive = onLiveChange(root, (change) => apply(scopeOfChange(change)))
 
   const doc = root.ownerDocument ?? document
   const onSelectionChange = () => {

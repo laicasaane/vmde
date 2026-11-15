@@ -9,7 +9,7 @@
 // already made the same call for its own caret-in-source decoration. Coalesced per animation frame
 // (same coalescePerFrame callouts.ts uses) since selectionchange fires on every caret move,
 // including every keystroke while typing prose.
-import { forEachScopeElement, onLiveChange } from '../util/mutation-impact'
+import { forEachChangeScope, onLiveChange } from '../util/mutation-impact'
 import { coalescePerFrame } from '../util/observe-coalesce'
 import {
   applyCaretInside,
@@ -49,7 +49,7 @@ export function observeCaretLink(
   // then let the pass put the class back on the element under the caret.
   const offLive = onLiveChange(root, (change) => {
     if (change.whole) return
-    forEachScopeElement(change, (element) => {
+    forEachChangeScope(change, (element) => {
       element.classList.remove(CARET_INSIDE_CLASS)
       for (const stale of element.querySelectorAll(`.${CARET_INSIDE_CLASS}`))
         stale.classList.remove(CARET_INSIDE_CLASS)

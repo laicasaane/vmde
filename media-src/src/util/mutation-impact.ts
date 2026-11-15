@@ -189,9 +189,7 @@ export function forEachScopeElement(
 const WHOLE_SCOPE: MutationScope = { full: true, blocks: new Set() }
 const EMPTY_SCOPE: MutationScope = { full: false, blocks: new Set() }
 
-/** Visits the rescan scope of a non-whole change: `change.scopes` when present, else `forEachScopeElement`.
- * @knipignore — knip cannot see the use in its test, which reads it through a cast; the first
- *   consumer (tasks 012-12 to 012-16) imports it by name, and the tag is removed then. */
+/** Visits the rescan scope of a non-whole change: `change.scopes` when present, else `forEachScopeElement`. */
 export function forEachChangeScope(
   change: UnitsChange,
   visit: (element: HTMLElement) => void,
@@ -205,9 +203,7 @@ export function forEachChangeScope(
   for (const element of scopes) if (element.isConnected) visit(element)
 }
 
-/** The scope of a change as a `MutationScope` whose `blocks` are the scope elements (not their tops).
- * @knipignore — knip cannot see the use in its test, which reads it through a cast; the first
- *   consumer (tasks 012-12 to 012-16) imports it by name, and the tag is removed then. */
+/** The scope of a change as a `MutationScope` whose `blocks` are the scope elements (not their tops). */
 export function scopeOfChange(change: UnitsChange): MutationScope {
   if (change.whole) return WHOLE_SCOPE
   let blocks: Set<Element> | undefined

@@ -361,6 +361,59 @@ interface ResolvedBatch {
   whole: boolean
   changed: LiveUnit[]
   structural: HTMLElement[]
+  scopes: readonly HTMLElement[]
+}
+
+/** The scopes of a change consumers run their full pass for, or of one that names nothing (shared, never written). */
+const NO_SCOPES: readonly HTMLElement[] = Object.freeze([])
+
+const elementOrder = (a: HTMLElement, b: HTMLElement): number =>
+  a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+
+/** Adds the connected elements of `elements` under `root` (never the root itself) to `out`. */
+function addConnected(
+  elements: ReadonlySet<HTMLElement>,
+  root: HTMLElement,
+  out: HTMLElement[],
+): void {
+  for (const el of elements)
+    if (el !== root && el.isConnected && root.contains(el)) out.push(el)
+}
+
+/**
+ * Task 733 / 012-12 (D-13 design section 1.2): the elements consumers rescan. The members of the
+ * changed units, then the elements the batches inserted and the spun top-level blocks; in document
+ * order, without duplicates, and an element inside another scope element is dropped. Never a whole
+ * table or list for a cell, row or item change: those stay in `structural`.
+ */
+function resolveScopes(
+  changed: readonly LiveUnit[],
+  root: HTMLElement | null,
+  sets: BatchSets,
+  kept: BatchSets | undefined,
+): readonly HTMLElement[] {
+  if (!root) return NO_SCOPES
+  const all: HTMLElement[] = []
+  for (const unit of changed) pushConnected(unit.members, all)
+  addConnected(sets.inserted, root, all)
+  addConnected(sets.spun, root, all)
+  if (kept) {
+    addConnected(kept.inserted, root, all)
+    addConnected(kept.spun, root, all)
+  }
+  if (all.length === 0) return NO_SCOPES
+  all.sort(elementOrder)
+  // In document order an ancestor comes before its descendants: comparing with the last kept element
+  // drops duplicates and nested elements in one pass.
+  let last: HTMLElement | undefined
+  let count = 0
+  for (const el of all) {
+    if (last?.contains(el)) continue
+    all[count++] = el
+    last = el
+  }
+  all.length = count
+  return all
 }
 
 /** Adds the leaf units to `changed` (once per element) and table-level marks to `structural`; removed units are dropped. */
@@ -389,6 +442,8 @@ interface BatchSets {
   structure: ReadonlySet<'root' | Unit<HTMLElement>> | undefined
   /** The top-level elements of block spins (Task 733 / 012-1). */
   spun: ReadonlySet<HTMLElement>
+  /** The elements inserted under a list, a table section or row, or the root (Task 733 / 012-12). */
+  inserted: ReadonlySet<HTMLElement>
   /** A root notice that is no block spin: consumers run their full pass. */
   rootUnexplained: boolean
 }
@@ -432,7 +487,43 @@ function resolveBatch(
     if (resolveStructure(kept, root, structural)) whole = true
   }
   changed.sort(documentOrder)
-  return { whole, changed, structural: Array.from(structural) }
+  return {
+    whole,
+    changed,
+    structural: Array.from(structural),
+    scopes: whole ? NO_SCOPES : resolveScopes(changed, root, sets, kept),
+  }
+}
+
+/**
+ * The scopes of an apply (Task 733 / 012-12): the members of what it rendered (the rows or cells of a
+ * row apply, never the table it reports in `changed`), else the members of the neighbour units it
+ * reports when it rendered nothing. A table apply that rendered nothing names no scope.
+ */
+function appliedScopes(
+  rendered: readonly HostUnit<HTMLElement>[],
+  changed: readonly LiveUnit[],
+  table: boolean,
+): readonly HTMLElement[] {
+  if (changed.length === 0) return NO_SCOPES
+  const scopes: HTMLElement[] = []
+  for (const listed of rendered) pushConnected(listed.members, scopes)
+  if (scopes.length === 0 && !table)
+    for (const unit of changed) pushConnected(unit.members, scopes)
+  return scopes.length > 0 ? scopes : NO_SCOPES
+}
+
+/** Adds the connected elements of `members` to `out`. */
+function pushConnected(
+  members: readonly HTMLElement[],
+  out: HTMLElement[],
+): void {
+  for (const member of members) if (member.isConnected) out.push(member)
+}
+
+/** Adds every element of `source` to `target` (the adapter's batch sets are reused, so they are copied). */
+function addAll(target: Set<HTMLElement>, source: Iterable<HTMLElement>): void {
+  for (const el of source) target.add(el)
 }
 
 /** A root notice of these sets came only from block spins. */
@@ -497,11 +588,13 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     changed: Set<Unit<HTMLElement>> | undefined
     structure: Set<'root' | Unit<HTMLElement>> | undefined
     spun: Set<HTMLElement>
+    inserted: Set<HTMLElement>
     rootUnexplained: boolean
   } = {
     changed: undefined,
     structure: undefined,
     spun: new Set(),
+    inserted: new Set(),
     rootUnexplained: false,
   }
   /**
@@ -512,6 +605,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     changed: new Set<Unit<HTMLElement>>(),
     structure: new Set<'root' | Unit<HTMLElement>>(),
     spun: new Set<HTMLElement>(),
+    inserted: new Set<HTMLElement>(),
     rootUnexplained: false,
   }
   let feedFrame: number | undefined
@@ -535,6 +629,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     pending.changed = undefined
     pending.structure = undefined
     pending.spun.clear()
+    pending.inserted.clear()
     pending.rootUnexplained = false
   }
 
@@ -542,6 +637,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     kept.changed.clear()
     kept.structure.clear()
     kept.spun.clear()
+    kept.inserted.clear()
     kept.rootUnexplained = false
   }
 
@@ -559,7 +655,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   const emitWhole = (cause: UnitsChange['cause']): void => {
     cancelFeedFrame()
     dropKept()
-    emit({ cause, whole: true, changed: [], structural: [] })
+    emit({ cause, whole: true, changed: [], structural: [], scopes: NO_SCOPES })
   }
 
   /** The change a whole-text publication's sync reports: a fallback cannot be scoped. */
@@ -575,6 +671,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       whole: result.kind === 'fallback',
       changed: [],
       structural: [],
+      scopes: NO_SCOPES,
     })
   }
 
@@ -614,6 +711,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       whole: changed.length === 0,
       changed,
       structural: [],
+      scopes: appliedScopes(rendered, changed, table !== undefined),
     })
   }
 
@@ -626,7 +724,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     const known =
       change.changed.length > 0 || change.structural.length > 0 || spinOnly
     // A sync with changes that no batch explains cannot be scoped: consumers run their full pass.
-    emit(known || change.whole ? change : { ...change, whole: true })
+    emit(
+      known || change.whole
+        ? change
+        : { ...change, whole: true, scopes: NO_SCOPES },
+    )
   }
 
   /** Keeps what the feed frame reports until the sync that writes it. */
@@ -634,6 +736,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     for (const unit of pending.changed ?? []) kept.changed.add(unit)
     for (const scope of pending.structure ?? []) kept.structure.add(scope)
     for (const top of pending.spun) kept.spun.add(top)
+    addAll(kept.inserted, pending.inserted)
     if (pending.rootUnexplained) kept.rootUnexplained = true
   }
 
@@ -670,10 +773,12 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   const onBatch = (
     changed: ReadonlySet<Unit<HTMLElement>>,
     structure: ReadonlySet<'root' | Unit<HTMLElement>>,
+    inserted?: ReadonlySet<HTMLElement>,
   ): void => {
     // The history capture reads the units before a sync can overwrite their HTML.
     capture.onBatch(changed, structure)
     pending.changed = mergeBatch(pending.changed, changed)
+    if (inserted) addAll(pending.inserted, inserted)
     pending.structure = mergeBatch(pending.structure, structure)
     if (structure.has('root')) {
       // Read inside the batch: the adapter's spun set belongs to the batch it is reporting.

@@ -1,5 +1,24 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  countBudget,
+  irFixture as budgetFixture,
+} from '../testing/budget-harness'
+import {
+  type LiveUnit,
+  provideUnitFeed,
+  type UnitFeed,
+  type UnitsChange,
+} from '../util/unit-changes'
 import { CARET_INSIDE_CLASS } from './caret-link'
 import { observeCaretLink } from './caret-link-decorate'
 
@@ -205,5 +224,113 @@ describe('observeCaretLink without a root scan (Task 733)', () => {
     placeCaretIn(app.querySelector('p')!.lastChild!, 1)
     expect(a.classList.contains(CARET_INSIDE_CLASS)).toBe(false)
     expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+// Task 733 / 012-12-T (D-13 design section 5.2, B-04 links): counted work of the caret-link wiring on the
+// table-heavy IR fixture. A list item Enter emits a change whose scopes are the two items; the stale-class
+// strip must visit only those (`forEachChangeScope`), not the whole list that `forEachScopeElement` visits
+// as a structural top (the C1 gap). A caret that enters and leaves an unmapped code block scans no root.
+const nodesOf = (element: Node): number => {
+  let count = 1
+  for (let child = element.firstChild; child; child = child.nextSibling)
+    count += nodesOf(child)
+  return count
+}
+const enterSums = new Map<number, number>()
+
+describe.each([1, 4, 16] as const)(
+  'observeCaretLink budget at factor %i (Task 733 / 012-12, B-04)',
+  (factor) => {
+    // The factor-16 fixture takes seconds to render with Lute: built once here, outside the test timeout.
+    beforeAll(() => {
+      budgetFixture(tableHeavyMarkdown(factor))
+    }, 60_000)
+    const listeners = new Set<(change: UnitsChange) => void>()
+    afterEach(() => {
+      provideUnitFeed(window, undefined)
+      listeners.clear()
+    })
+
+    /** The shared fixture under an `#app` container with a live feed over it, connected again after a reset. */
+    function setup() {
+      const ir = budgetFixture(tableHeavyMarkdown(factor)).root
+      const app = ir.parentElement as HTMLElement
+      app.id = 'app'
+      if (!app.isConnected) document.body.append(app)
+      const feed: UnitFeed = {
+        root: ir,
+        isLive: () => true,
+        liveUnitOf: () => undefined,
+        liveUnits: () => [],
+        onUnitsChanged: (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        confirmNow: () => true,
+        confirmedLines: () => undefined,
+      }
+      provideUnitFeed(window, feed)
+      dispose = observeCaretLink(app)
+      fireFrame()
+      return { ir }
+    }
+
+    it('a list item Enter change strips only the two items, with no root query', () => {
+      const { ir } = setup()
+      const list = ir.querySelector(':scope > ul') as HTMLElement
+      const item = list.children[4] as HTMLElement
+      const fresh = item.cloneNode(true) as HTMLElement
+      item.after(fresh)
+      try {
+        const unit = (li: HTMLElement): LiveUnit => ({
+          el: li,
+          members: [li],
+          kind: 'list-item',
+          top: list,
+        })
+        const change = {
+          cause: 'mutation',
+          whole: false,
+          changed: [unit(item), unit(fresh)],
+          structural: [list],
+          scopes: [item, fresh],
+        } as UnitsChange
+        const { counts } = countBudget(ir, () => {
+          for (const listener of Array.from(listeners)) listener(change)
+          fireFrame()
+        })
+        const sum = counts.nodesWalked + counts.queriedNodes
+        enterSums.set(factor, sum)
+        expect(counts.rootQueries).toBe(0)
+        expect(sum).toBeLessThanOrEqual(nodesOf(item) + nodesOf(fresh) + 8)
+      } finally {
+        fresh.remove()
+      }
+    })
+
+    it('a caret that enters and leaves an unmapped code block scans no root', () => {
+      const { ir } = setup()
+      const block = ir.querySelector(
+        ':scope > [data-type="code-block"]',
+      ) as HTMLElement
+      const code = block.querySelector('code') as HTMLElement
+      const para = ir.querySelector(':scope > p') as HTMLElement
+      const { counts } = countBudget(ir, () => {
+        placeCaretIn(code.firstChild as Node)
+        placeCaretIn(para.firstChild as Node)
+      })
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.nodesWalked + counts.queriedNodes).toBeLessThanOrEqual(
+        nodesOf(block) + 8,
+      )
+    })
+  },
+)
+
+describe('observeCaretLink budget across factors (Task 733 / 012-12, B-04)', () => {
+  it('strips the same nodes for a list item Enter at every factor', () => {
+    expect(enterSums.size).toBe(3)
+    expect(new Set(enterSums.values()).size).toBe(1)
   })
 })

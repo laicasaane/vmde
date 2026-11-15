@@ -1,5 +1,18 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  countBudget,
+  irFixture as budgetFixture,
+} from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
 import { createWrapHintSpan } from '../util/wrap-hint-mark'
 import {
@@ -898,5 +911,108 @@ describe('observeBareUrls on unit feed changes (Task 733)', () => {
     document.dispatchEvent(new Event('selectionchange'))
     fireFrame()
     expect(spans(cells[1][1])).toHaveLength(1)
+  })
+})
+
+// Task 733 / 012-12-T (D-13 design section 5.2, B-04 links): counted work of the bare URL decorator on the
+// table-heavy IR fixture. A list item Enter emits a change whose scopes are the two items; the decorator
+// must rescan only those (`scopeOfChange`), not the whole list that `scopeUnits` maps an item to (the C1 gap).
+// A caret that leaves a code block the feed does not map yet decorates only that block.
+const nodesOf = (element: Node): number => {
+  let count = 1
+  for (let child = element.firstChild; child; child = child.nextSibling)
+    count += nodesOf(child)
+  return count
+}
+const enterSums = new Map<number, number>()
+
+describe.each([1, 4, 16] as const)(
+  'observeBareUrls budget at factor %i (Task 733 / 012-12, B-04)',
+  (factor) => {
+    // The factor-16 fixture takes seconds to render with Lute: built once here, outside the test timeout.
+    beforeAll(() => {
+      budgetFixture(tableHeavyMarkdown(factor))
+    }, 60_000)
+    let dispose: (() => void) | undefined
+    beforeEach(() => {
+      stubFrames()
+      window.getSelection()?.removeAllRanges()
+    })
+    afterEach(() => {
+      dispose?.()
+      dispose = undefined
+      provideUnitFeed(window, undefined)
+      vi.unstubAllGlobals()
+      window.getSelection()?.removeAllRanges()
+    })
+
+    /** The shared fixture under an `#app` container (as the observers are bound), connected again if a reset detached it. */
+    function setup() {
+      const ir = budgetFixture(tableHeavyMarkdown(factor)).root
+      const app = ir.parentElement as HTMLElement
+      app.id = 'app'
+      if (!app.isConnected) document.body.append(app)
+      const feed = fakeFeed(ir)
+      dispose = observeBareUrls(app)
+      fireFrame()
+      return { ir, feed }
+    }
+
+    it('a list item Enter change rescans only the two items, with no root query', () => {
+      const { ir, feed } = setup()
+      const list = ir.querySelector(':scope > ul') as HTMLElement
+      const item = list.children[4] as HTMLElement
+      const fresh = item.cloneNode(true) as HTMLElement
+      item.after(fresh)
+      try {
+        const unit = (li: HTMLElement): LiveUnit => ({
+          el: li,
+          members: [li],
+          kind: 'list-item',
+          top: list,
+        })
+        const change = {
+          cause: 'mutation',
+          whole: false,
+          changed: [unit(item), unit(fresh)],
+          structural: [list],
+          scopes: [item, fresh],
+        } as UnitsChange
+        const { counts } = countBudget(ir, () => feed.emit(change))
+        const sum = counts.nodesWalked + counts.queriedNodes
+        enterSums.set(factor, sum)
+        expect(counts.rootQueries).toBe(0)
+        expect(sum).toBeLessThanOrEqual(nodesOf(item) + nodesOf(fresh) + 8)
+      } finally {
+        fresh.remove()
+      }
+    })
+
+    it('a caret that leaves an unmapped code block decorates only that block, with no root query', () => {
+      const { ir } = setup()
+      const block = ir.querySelector(
+        ':scope > [data-type="code-block"]',
+      ) as HTMLElement
+      const code = block.querySelector('code') as HTMLElement
+      const para = ir.querySelector(':scope > p') as HTMLElement
+      const { counts } = countBudget(ir, () => {
+        placeCaret(code.firstChild as Node, 1)
+        document.dispatchEvent(new Event('selectionchange'))
+        placeCaret(para.firstChild as Node, 1)
+        document.dispatchEvent(new Event('selectionchange'))
+        fireFrame()
+      })
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.nodesWalked + counts.queriedNodes).toBeLessThanOrEqual(
+        nodesOf(block) + 8,
+      )
+    })
+  },
+)
+
+describe('observeBareUrls budget across factors (Task 733 / 012-12, B-04)', () => {
+  it('rescans the same nodes for a list item Enter at every factor', () => {
+    expect(enterSums.size).toBe(3)
+    expect(new Set(enterSums.values()).size).toBe(1)
   })
 })

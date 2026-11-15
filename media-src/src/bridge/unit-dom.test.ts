@@ -798,3 +798,98 @@ describe('createUnitDom listUnits skips table bodies (012-11)', () => {
     expect(reads).toEqual([])
   })
 })
+
+// Task 733 / 012-12-T (D-13 design section 5.2, B-05): `onBatch` gets a third argument, the elements a
+// batch inserted under a list, a table section or row, or the root. It is one reused set: a batch that
+// inserts nothing passes the same, empty set object (no allocation). The document is the table-heavy
+// fixture, rendered fresh per test with the production Lute patches because the cases write the DOM.
+describe.each([1, 4, 16] as const)(
+  'createUnitDom onBatch inserted at factor %i (Task 733 / 012-12, B-05)',
+  (factor) => {
+    // A live model over the factor-16 fixture takes seconds to build (several times that under a full parallel run).
+    const BUILD_TIMEOUT_MS = 60_000
+    type Inserted = ReadonlySet<HTMLElement> | undefined
+
+    /** Opens the fixture with an `onBatch` that copies each call's inserted set before it is reused. */
+    function openInserted() {
+      const seen: { set: Inserted; members: HTMLElement[] }[] = []
+      const onBatch = vi.fn((...args: unknown[]) => {
+        const set = args[2] as Inserted
+        seen.push({ set, members: set ? [...set] : [] })
+      })
+      const session = open(tableHeavyMarkdown(factor), { onBatch })
+      return { ...session, seen, onBatch }
+    }
+
+    it(
+      'a list item Enter reports the new item only',
+      () => {
+        const { root, dom, seen } = openInserted()
+        const list = root.querySelector(':scope > ul') as HTMLElement
+        const item = list.children[4] as HTMLElement
+        const fresh = document.createElement('li')
+        for (const attribute of Array.from(item.attributes))
+          fresh.setAttribute(attribute.name, attribute.value)
+        fresh.textContent = 'tail'
+        item.after(fresh)
+        ;(item.firstChild as Text).data = 'list it'
+        dom.drain()
+        expect(seen).toHaveLength(1)
+        expect(seen[0].set).toBeDefined()
+        expect(seen[0].members).toEqual([fresh])
+      },
+      BUILD_TIMEOUT_MS,
+    )
+
+    it(
+      'a table row insert reports the new row only',
+      () => {
+        const { root, dom, seen } = openInserted()
+        const tbody = root.querySelector(
+          ':scope > table tbody',
+        ) as HTMLTableSectionElement
+        const row = tbody.rows[2].cloneNode(true) as HTMLTableRowElement
+        tbody.rows[2].after(row)
+        dom.drain()
+        expect(seen).toHaveLength(1)
+        expect(seen[0].set).toBeDefined()
+        expect(seen[0].members).toEqual([row])
+      },
+      BUILD_TIMEOUT_MS,
+    )
+
+    it(
+      'a block spin of a top-level paragraph reports the spun block only',
+      () => {
+        const { root, dom, seen } = openInserted()
+        const old = root.querySelector(':scope > p') as HTMLElement
+        old.outerHTML = lute.Md2VditorIRDOM('para2\n')
+        const spun = root.querySelector(':scope > p') as HTMLElement
+        dom.drain()
+        expect(seen).toHaveLength(1)
+        expect(seen[0].set).toBeDefined()
+        expect(seen[0].members).toEqual([spun])
+      },
+      BUILD_TIMEOUT_MS,
+    )
+
+    it(
+      'a batch that inserts nothing passes the same, empty set',
+      () => {
+        const { root, dom, seen } = openInserted()
+        const tbody = root.querySelector(
+          ':scope > table tbody',
+        ) as HTMLTableSectionElement
+        tbody.rows[2].after(tbody.rows[2].cloneNode(true))
+        dom.drain()
+        text(root, 'td').data = '9'
+        dom.drain()
+        expect(seen).toHaveLength(2)
+        expect(seen[1].set).toBeDefined()
+        expect(seen[1].set).toBe(seen[0].set)
+        expect(seen[1].members).toEqual([])
+      },
+      BUILD_TIMEOUT_MS,
+    )
+  },
+)
