@@ -730,3 +730,71 @@ describe('createUnitDom render deletions in lists (010-R pass 2, N1)', () => {
     expect(root.querySelectorAll('li')).toHaveLength(2)
   })
 })
+
+// ---- Task 733 / 012-11: listUnits reads no table row ----
+//
+// `listUnits` runs on every root-stage sync; reading every row of every table made it cost the size
+// of the tables. The table stays one entry (`tableUnit`); its rows are not read while listing.
+describe('createUnitDom listUnits skips table bodies (012-11)', () => {
+  const bodyRows = Array.from(
+    { length: 2000 },
+    (_, k) => `| r${k + 1} | v${k + 1} |`,
+  )
+  const DOC = `# Title\n\npara\n\n| a | b |\n| - | - |\n${bodyRows.join('\n')}\n\n- one\n- two\n\nafter\n`
+
+  /** The prototype that owns `name` on `element`'s chain (jsdom puts the mixins on Element). */
+  const ownerOf = (element: Element, name: string): object => {
+    let proto: object | null = Object.getPrototypeOf(element)
+    while (proto && !Object.getOwnPropertyDescriptor(proto, name))
+      proto = Object.getPrototypeOf(proto)
+    if (!proto) throw new Error(`no ${name}`)
+    return proto
+  }
+
+  it('lists the table as one entry and reads none of its rows', () => {
+    const root = rootOf(lute.Md2VditorIRDOM(DOC))
+    const table = root.querySelector('table') as HTMLElement
+    expect(table.querySelectorAll('tr')).toHaveLength(2001)
+    const dom = createUnitDom(root, lute)
+    const inTable = (node: unknown): boolean =>
+      node instanceof Node && (node === table || table.contains(node))
+    const reads: string[] = []
+    const queryAll = vi.spyOn(Element.prototype, 'querySelectorAll')
+    const query = vi.spyOn(Element.prototype, 'querySelector')
+    const childrenOwner = ownerOf(table, 'children')
+    const children = Object.getOwnPropertyDescriptor(
+      childrenOwner,
+      'children',
+    ) as PropertyDescriptor
+    Object.defineProperty(childrenOwner, 'children', {
+      ...children,
+      get(this: Element) {
+        if (inTable(this)) reads.push(`children of ${this.localName}`)
+        return children.get?.call(this)
+      },
+    })
+    let units: ReturnType<typeof dom.listUnits>
+    try {
+      units = dom.listUnits()
+      for (const spy of [queryAll, query])
+        for (const receiver of spy.mock.contexts)
+          if (inTable(receiver))
+            reads.push(`query on ${(receiver as Element).localName}`)
+    } finally {
+      Object.defineProperty(childrenOwner, 'children', children)
+      queryAll.mockRestore()
+      query.mockRestore()
+    }
+    expect(units?.map((unit) => unit.kind)).toEqual([
+      'heading',
+      'paragraph',
+      'table',
+      'list-item',
+      'list-item',
+      'paragraph',
+    ])
+    const entry = units?.find((unit) => unit.kind === 'table')
+    expect(entry?.members).toEqual([table])
+    expect(reads).toEqual([])
+  })
+})

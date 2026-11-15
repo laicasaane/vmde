@@ -424,6 +424,59 @@ function elementsFrom(
   return out
 }
 
+/** True when every child node of `list` is an `li` element (no text, no other element). */
+function onlyItems(list: HTMLElement): boolean {
+  if (list.childNodes.length !== list.children.length) return false
+  for (let k = 0; k < list.children.length; k += 1)
+    if (list.children[k].localName !== 'li') return false
+  return true
+}
+
+/**
+ * The one bullet list `html` restores in place of the bullet list `list`, with the same shell and only
+ * items in both; undefined for any other shape. A bullet list only: the model renumbers ordered items
+ * it sees by identity, while a restore must give back the numbers the document had (`1.` on every
+ * item), which the whole-list path keeps.
+ */
+function restoredList(
+  list: HTMLElement,
+  html: string,
+): HTMLElement | undefined {
+  if (list.localName !== 'ul' || !onlyItems(list)) return undefined
+  const nodes = parseRestored(html)
+  const next = nodes.length === 1 ? nodes[0] : undefined
+  return next instanceof HTMLElement &&
+    next.localName === 'ul' &&
+    openTag(next) === openTag(list) &&
+    onlyItems(next)
+    ? next
+    : undefined
+}
+
+/** The items equal (same normalized HTML) at both ends of two item runs: the run between differs. */
+function sameEnds(
+  live: HTMLCollection,
+  restored: HTMLCollection,
+): { start: number; liveEnd: number; restoredEnd: number } {
+  const sameAt = (a: number, b: number): boolean =>
+    normalized(live[a] as HTMLElement, 'outer') ===
+    normalized(restored[b] as HTMLElement, 'outer')
+  let start = 0
+  while (start < live.length && start < restored.length && sameAt(start, start))
+    start += 1
+  let liveEnd = live.length
+  let restoredEnd = restored.length
+  while (
+    liveEnd > start &&
+    restoredEnd > start &&
+    sameAt(liveEnd - 1, restoredEnd - 1)
+  ) {
+    liveEnd -= 1
+    restoredEnd -= 1
+  }
+  return { start, liveEnd, restoredEnd }
+}
+
 export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   let generation = 0
   /** The HTML each element had at the previous capture (the "then" of the next change). */
@@ -440,6 +493,8 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   const afterForms = new WeakMap<Window, Forms>()
   /** Lists whose items changed in place: the list element stays, so element identity cannot show it. */
   const changedLists = new Set<HTMLElement>()
+  // Task 733 / 012-11: items a list restore left in place (`restoreListInPlace`); their bytes stand.
+  const keptInPlace = new WeakSet<HTMLElement>()
   /** Tables whose rows or columns changed, as they were when the change was first seen. */
   const tableSnaps = new Map<U, TableSnap>()
   /**
@@ -1123,6 +1178,31 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     return inserted
   }
 
+  /**
+   * Task 733 / 012-11: a window that is one bullet list restored as one list of the same shell keeps the list
+   * element and every item whose HTML is the same at both ends of the item run; only the items between
+   * are replaced. The model then sees the changed items by element identity and serializes those items
+   * alone, not the whole list. Returns the list, or undefined when the shape does not fit (the caller
+   * replaces the whole element).
+   */
+  function restoreListInPlace(
+    list: HTMLElement,
+    html: string,
+  ): HTMLElement[] | undefined {
+    const next = restoredList(list, html)
+    if (!next) return undefined
+    const live = list.children
+    const restored = next.children
+    const { start, liveEnd, restoredEnd } = sameEnds(live, restored)
+    for (let k = 0; k < live.length; k += 1)
+      if (k < start || k >= liveEnd) keptInPlace.add(live[k] as HTMLElement)
+    const reference = live[liveEnd] ?? null
+    const added = Array.from(restored).slice(start, restoredEnd)
+    for (let k = liveEnd - 1; k >= start; k -= 1) live[k].remove()
+    for (const item of added) list.insertBefore(item, reference)
+    return [list]
+  }
+
   /** The nodes a window occupies now, or undefined when its anchor is gone. */
   function current(
     root: HTMLElement,
@@ -1139,6 +1219,9 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         nodes,
         // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one replace per window kind
         replace(html) {
+          const inPlace =
+            nodes.length === 1 ? restoreListInPlace(nodes[0], html) : undefined
+          if (inPlace) return inPlace
           const fragment = document.createDocumentFragment()
           for (const node of parseRestored(html)) fragment.appendChild(node)
           const inserted = Array.from(fragment.children) as HTMLElement[]
@@ -1260,7 +1343,9 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       if (Array.isArray(form)) {
         const items = Array.from(el.children) as HTMLElement[]
         form.forEach((item, j) => {
-          if (items[j]) model.rememberElement(items[j], 'list-item', item.bytes)
+          // An item a list restore kept in place (012-11) holds its bytes already: no item serialize.
+          if (items[j] && !keptInPlace.has(items[j]))
+            model.rememberElement(items[j], 'list-item', item.bytes)
         })
       } else {
         const single = form as Form

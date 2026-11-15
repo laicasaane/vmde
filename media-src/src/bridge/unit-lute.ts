@@ -34,9 +34,16 @@ function firstCell(markdown: string): string {
 // the Lute path: an element or entity other than the DOM serializer's own in the body, a body text
 // Lute rewrites (see BODY_REWRITTEN) and a body line that could close the fence.
 
-/** The exact Lute render of a fenced code block; the groups are the open marker, the info string, the raw body HTML and the close marker. */
+/**
+ * The exact Lute render of a fenced code block; the groups are the open marker, the info string, the
+ * raw body HTML and the close marker. Task 733 / 012-11: the body `code` may also carry `hljs`, which
+ * `editing/code-source.ts` adds to every editable source in the webview; Lute reads the language from
+ * the info span, so the class is no source (proven against `VditorIRDOM2Md` in unit-lute.test.ts).
+ * 012-11 R1: the block element and its source `pre` may also carry the native context menu stamp of
+ * `chrome/webview-context.ts` (`data-vscode-context`, the code value only); Lute skips the attribute.
+ */
 const CODE_BLOCK =
-  /^<div data-block="0" data-type="code-block" class="vditor-ir__node(?: vditor-ir__node--expand)?"><span data-type="code-block-open-marker">(`{3,}|~{3,})<\/span><span class="vditor-ir__marker vditor-ir__marker--info" data-type="code-block-info">\u200b?([A-Za-z0-9_.+#-]*)<\/span><pre class="vditor-ir__marker--pre vditor-ir__marker"><code(?: class="language-[A-Za-z0-9_.+#-]+")?>([^<&]*(?:(?:<wbr>|&(?:lt|gt|amp|quot|#39);)[^<&]*)*)<\/code><\/pre>(?:<pre class="vditor-ir__preview"[^>]*>[\s\S]*<\/pre>)?<span data-type="code-block-close-marker">(`{3,}|~{3,})<\/span><\/div>$/u
+  /^<div data-block="0" data-type="code-block" class="vditor-ir__node(?: vditor-ir__node--expand)?"(?: data-vscode-context="\{&quot;webviewSection&quot;:&quot;code&quot;\}")?><span data-type="code-block-open-marker">(`{3,}|~{3,})<\/span><span class="vditor-ir__marker vditor-ir__marker--info" data-type="code-block-info">\u200b?([A-Za-z0-9_.+#-]*)<\/span><pre class="vditor-ir__marker--pre vditor-ir__marker"(?: data-vscode-context="\{&quot;webviewSection&quot;:&quot;code&quot;\}")?><code(?: class="(?:language-[A-Za-z0-9_.+#-]+(?: hljs)?|hljs)")?>([^<&]*(?:(?:<wbr>|&(?:lt|gt|amp|quot|#39);)[^<&]*)*)<\/code><\/pre>(?:<pre class="vditor-ir__preview"[^>]*>[\s\S]*<\/pre>)?<span data-type="code-block-close-marker">(`{3,}|~{3,})<\/span><\/div>$/u
 
 /**
  * Body text Lute does not write back as it is: a character reference once decoded (Lute decodes the

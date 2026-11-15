@@ -8,6 +8,7 @@ export interface EditCounters {
   luteDocument: number
   luteTable: number
   luteList: number
+  luteBlock: number
   rootClone: number
   rootInnerHtmlRead: number
   legacyEditPosts: number
@@ -45,6 +46,7 @@ const NUMBER_FIELDS = [
   'luteDocument',
   'luteTable',
   'luteList',
+  'luteBlock',
   'rootClone',
   'rootInnerHtmlRead',
   'legacyEditPosts',
@@ -191,7 +193,7 @@ function installInstanceWrappers(win: Window, vditor: VditorLike): void {
     const isHtml = (HTML_METHODS as readonly string[]).includes(method)
     lute[method] = function (this: unknown, input: unknown, ...rest: any[]) {
       if (typeof input === 'string')
-        classify(win.__vmdeEditCounters!, input, isHtml)
+        classify(win.__vmdeEditCounters!, input, isHtml, method)
       return original.call(this, input, ...rest)
     }
   }
@@ -226,10 +228,14 @@ function countPost(counters: EditCounters, message: any): void {
   if (bytes > counters.maxPostBytes) counters.maxPostBytes = bytes
 }
 
+// Task 733 / 012-11: a whole top-level fenced code block serialized by Lute (its text path makes none).
+const CODE_BLOCK_START = '<div data-block="0" data-type="code-block"'
+
 function classify(
   counters: EditCounters,
   input: string,
   isHtml: boolean,
+  method: string,
 ): void {
   const reference = isHtml ? rootHtmlLength : markdownLength
   if (input.length > reference / 2) counters.luteDocument++
@@ -240,6 +246,8 @@ function classify(
     (input.match(/<li/g)?.length ?? 0) >= 3
   )
     counters.luteList++
+  if (method === 'VditorIRDOM2Md' && input.startsWith(CODE_BLOCK_START))
+    counters.luteBlock++
 }
 
 export function installEditCounters(win: Window, vditor: VditorLike): void {

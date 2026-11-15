@@ -3,6 +3,9 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { splitRow } from '../../../src/shared/table-row-splice'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import { installWebviewContext } from '../chrome/webview-context'
+import { tagCodeSource } from '../editing/code-source'
 import { wrapHtmlInlineFormattingLute } from '../editing/html-subscript'
 import { wrapLiveLineBreakIdentity } from '../editing/live-line-breaks'
 import type { UnitSpinResult } from '../editing/unit-spin'
@@ -862,4 +865,161 @@ describe('serializeBlockHtml text path scope (012-5 R1)', () => {
       }
     },
   )
+})
+
+// ---- Task 733 / 012-11: the code block of the edit-latency probe ----
+//
+// The probe (`test/vscode-e2e/edit-latency-probe.spec.ts`) opens `tableHeavyMarkdown(factor)`, expands
+// the code block node and puts the caret at the end of the first body line. In the webview the code
+// source observer (`editing/code-source.ts`) has tagged the editable `code` with `hljs` by then, so
+// the element reads `<code class="language-ts hljs">`. Finding (012-11-T): the `CODE_BLOCK` pattern of
+// `codeBlockCanon` rejects that class attribute (it allows only `class="language-X"`); the info span,
+// the body (`BODY_REWRITTEN`) and `closesFence` accept the probe's block, as the untagged case shows.
+
+/** The probe's code block: rendered in the whole fixture, expanded, its source tagged as the webview tags it. */
+function probeCodeBlock(tagged: boolean): HTMLElement {
+  const div = document.createElement('div')
+  div.innerHTML = production.Md2VditorIRDOM(tableHeavyMarkdown(1))
+  const block = div.querySelector(
+    ':scope > [data-type="code-block"]',
+  ) as HTMLElement
+  block.classList.add('vditor-ir__node--expand')
+  if (tagged) tagCodeSource(block)
+  return block
+}
+
+/** Puts the caret marker where the probe puts the caret: the end of the first body line. */
+function caretAtFirstLineEnd(block: HTMLElement): void {
+  const text = bodyOf(block).firstChild as Text
+  const rest = text.splitText(text.data.indexOf('\n'))
+  rest.before(document.createElement('wbr'))
+}
+
+describe('serializeBlockHtml on the probe code block (012-11)', () => {
+  it('the untagged block takes the text path: only the source class rejects the probe block', () => {
+    const block = probeCodeBlock(false)
+    caretAtFirstLineEnd(block)
+    const expected = todayBytes(block)
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBe(0)
+  })
+
+  it('the block as the webview tags it: the canon equals Lute without a Lute call', () => {
+    const block = probeCodeBlock(true)
+    expect(bodyOf(block).getAttribute('class')).toBe('language-ts hljs')
+    for (const withCaret of [false, true]) {
+      if (withCaret) caretAtFirstLineEnd(block)
+      const expected = todayBytes(block)
+      expect(expected.startsWith('```ts\nconst value1 = 1 * 2\n')).toBe(true)
+      const { result, calls } = countLute(production, () =>
+        serializeBlockHtml(production, [block.outerHTML]),
+      )
+      expect(result, `caret ${withCaret}`).toBe(expected)
+      expect(calls, `caret ${withCaret}`).toBe(0)
+    }
+  })
+
+  it('a letter typed at the probe caret: the bytes of Lute without a Lute call', () => {
+    const block = probeCodeBlock(true)
+    const text = bodyOf(block).firstChild as Text
+    text.insertData(text.data.indexOf('\n'), 'a')
+    const expected = todayBytes(block)
+    expect(expected.split('\n')[1]).toBe('const value1 = 1 * 2a')
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBe(0)
+  })
+
+  // Property: every text-path fixture, with its source tagged as the webview tags it, keeps the bytes
+  // of `VditorIRDOM2Md` and makes no Lute call (with and without an info string).
+  it.each(TEXT_PATH_FIXTURES)(
+    '%s, source tagged hljs: the bytes of Lute without a Lute call',
+    (_name, markdown) => {
+      const block = codeBlock(markdown)
+      tagCodeSource(block)
+      expect(bodyOf(block).classList.contains('hljs')).toBe(true)
+      const expected = todayBytes(block)
+      const { result, calls } = countLute(production, () =>
+        serializeBlockHtml(production, [block.outerHTML]),
+      )
+      expect(result).toBe(expected)
+      expect(calls).toBe(0)
+    },
+  )
+})
+
+// ---- Task 733 / 012-11 R1: the code block as the live webview holds it ----
+//
+// Real-VS-Code round 012-G1 counted one whole-block Lute serialize per publication on the probe's
+// code block. Besides the `hljs` tag, the webview stamps `data-vscode-context` (the native context
+// menu, `chrome/webview-context.ts`) on the code-block element and on both of its `pre` elements, and
+// the `CODE_BLOCK` pattern did not allow that attribute.
+
+/** A code block of `markdown` stamped and tagged as the webview does it (both observers' first pass). */
+function liveCodeBlock(markdown: string): HTMLElement {
+  const div = document.createElement('div')
+  div.innerHTML = production.Md2VditorIRDOM(markdown)
+  tagCodeSource(div)
+  installWebviewContext(div)()
+  const block = div.querySelector(
+    ':scope > [data-type="code-block"]',
+  ) as HTMLElement
+  return block
+}
+
+describe('serializeBlockHtml on the live webview code block (012-11 R1)', () => {
+  it('the probe block, stamped and tagged, expanded, with the caret and a typed letter: the bytes of Lute without a Lute call', () => {
+    const block = liveCodeBlock(tableHeavyMarkdown(1))
+    block.classList.add('vditor-ir__node--expand')
+    expect(block.getAttribute('data-vscode-context')).toBe(
+      '{"webviewSection":"code"}',
+    )
+    expect(
+      block
+        .querySelector('pre.vditor-ir__marker--pre')
+        ?.getAttribute('data-vscode-context'),
+    ).toBe('{"webviewSection":"code"}')
+    const text = bodyOf(block).firstChild as Text
+    text.insertData(text.data.indexOf('\n'), 'a')
+    caretAtFirstLineEnd(block)
+    const expected = todayBytes(block)
+    expect(expected.split('\n')[1]).toBe('const value1 = 1 * 2a')
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBe(0)
+  })
+
+  // Property: every text-path fixture in its live shape keeps the bytes of `VditorIRDOM2Md` and
+  // makes no Lute call.
+  it.each(TEXT_PATH_FIXTURES)(
+    '%s, live shape: the bytes of Lute without a Lute call',
+    (_name, markdown) => {
+      const block = liveCodeBlock(markdown)
+      expect(block.hasAttribute('data-vscode-context')).toBe(true)
+      const expected = todayBytes(block)
+      const { result, calls } = countLute(production, () =>
+        serializeBlockHtml(production, [block.outerHTML]),
+      )
+      expect(result).toBe(expected)
+      expect(calls).toBe(0)
+    },
+  )
+
+  it('another context value on the block keeps the Lute path and its bytes', () => {
+    const block = liveCodeBlock('```js\nseed\n```')
+    block.setAttribute('data-vscode-context', '{"webviewSection":"diagram"}')
+    const expected = todayBytes(block)
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBeGreaterThan(0)
+  })
 })

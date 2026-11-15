@@ -132,6 +132,32 @@ describe('installEditCounters', () => {
     expect(counters().luteDocument).toBe(0)
   })
 
+  // Task 733 / 012-11: a whole fenced code block serialized by Lute (the text path makes none).
+  it('counts luteBlock for a VditorIRDOM2Md input that is a top-level code block only', () => {
+    // Read by name: the field is added to EditCounters by the implementation segment.
+    const luteBlock = () =>
+      (counters() as unknown as Record<string, number>).luteBlock
+    const { vditor, lute } = makeFixture()
+    installEditCounters(window, vditor as any)
+    counters().reset(10_000)
+    expect(luteBlock()).toBe(0)
+    const block =
+      '<div data-block="0" data-type="code-block" class="vditor-ir__node"><span data-type="code-block-open-marker">```</span></div>'
+    expect(lute.VditorIRDOM2Md(block)).toBe('md')
+    expect(luteBlock()).toBe(1)
+    // The spin and the render of the same block, and other blocks, are no whole-block serialize.
+    lute.SpinVditorIRDOM(block)
+    lute.Md2VditorIRDOM(block)
+    lute.VditorIRDOM2Md('<p data-block="0">a</p>')
+    lute.VditorIRDOM2Md(`<p data-block="0">a</p>${block}`)
+    lute.VditorIRDOM2Md(
+      '<div data-block="0" data-type="math-block" class="vditor-ir__node"></div>',
+    )
+    expect(luteBlock()).toBe(1)
+    counters().reset(10_000)
+    expect(luteBlock()).toBe(0)
+  })
+
   it('installs no second wrapper on a second call', () => {
     const { vditor, lute } = makeFixture()
     installEditCounters(window, vditor as any)

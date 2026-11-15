@@ -21,6 +21,7 @@ interface Counters {
   luteDocument: number
   luteTable: number
   luteList: number
+  luteBlock: number
   rootClone: number
   rootInnerHtmlRead: number
   tableClone: number
@@ -146,6 +147,7 @@ const readCountersRaw = (frame: Frame): Promise<Counters> =>
       luteDocument: c.luteDocument,
       luteTable: c.luteTable,
       luteList: c.luteList,
+      luteBlock: c.luteBlock,
       rootClone: c.rootClone,
       rootInnerHtmlRead: c.rootInnerHtmlRead,
       tableClone: c.tableClone,
@@ -303,6 +305,9 @@ test.describe('edit counter gates', () => {
       expect
         .soft(counters.maxPostBytes, `${place.name} maxPostBytes`)
         .toBeLessThan(1024)
+      // Task 733 / 012-11: the code block takes the text path, no whole-block Lute serialize.
+      if (place.name === 'code block')
+        expect.soft(counters.luteBlock, `${place.name} luteBlock`).toBe(0)
     }
   })
 

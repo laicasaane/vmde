@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   type MovableKind,
   scanMovableBlocks,
 } from '../../../src/shared/block-move'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { tagCodeSource } from '../editing/code-source'
 import { applyChanges, type TextChange } from './change-set'
 import { setStructureSync, syncLeaves } from './model-sync'
 import { domKind, domUnits } from '../nav/unit-pairing'
@@ -436,5 +437,41 @@ describe('leaf bytes outside the changed span are kept (task 733, 007 repair)', 
     edit(session, 'a', 'ab')
     syncChanges(session.model)
     expect(session.model.text.trim()).toMatch(/^[*_]ab[*_]$/u)
+  })
+})
+
+// Task 733 / 012-11: `canonOf` of a fenced code block whose editable source the webview tagged with
+// `hljs` (`editing/code-source.ts`), as in the edit-latency probe, reaches the text path of
+// `serializeBlockHtml`: a letter typed in the body makes no Lute call.
+describe('a leaf edit of a code block tagged by the webview (012-11)', () => {
+  it('writes the letter and makes no Lute call', () => {
+    const body = Array.from(
+      { length: 40 },
+      (_, k) => `const value${k + 1} = ${k + 1} * 2`,
+    ).join('\n')
+    const markdown = `Before.\n\n\`\`\`ts\n${body}\n\`\`\`\n\nAfter.\n`
+    const root = document.createElement('div')
+    root.innerHTML = lute.Md2VditorIRDOM(markdown)
+    tagCodeSource(root)
+    const model = createTextModel(domHost(root), scanMovableBlocks)
+    model.build(markdown)
+    expect(model.state, String(model.offReason)).toBe('live')
+    const session = { model, root }
+    proveAll(model)
+    const before = model.text
+    const toMarkdown = vi.spyOn(lute, 'VditorIRDOM2Md')
+    const toDom = vi.spyOn(lute, 'Md2VditorIRDOM')
+    try {
+      edit(session, 'const value1 = 1 * 2', 'const value1 = 1 * 2a')
+      const changes = syncChanges(model)
+      expect(model.text).toBe(
+        markdown.replace('const value1 = 1 * 2\n', 'const value1 = 1 * 2a\n'),
+      )
+      expect(applyChanges(before, changes)).toBe(model.text)
+      expect(toMarkdown.mock.calls.length + toDom.mock.calls.length).toBe(0)
+    } finally {
+      toMarkdown.mockRestore()
+      toDom.mockRestore()
+    }
   })
 })

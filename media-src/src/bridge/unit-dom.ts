@@ -80,20 +80,43 @@ function alignOf(cell: Element | undefined): ColumnAlign {
     : 'default'
 }
 
-function tableUnit(block: HTMLElement): HostUnit<HTMLElement> {
+/** The cells of every row of a table block, in thead, tbody order. */
+function tableRows(block: HTMLElement): HTMLElement[][] {
   const table =
     block.tagName === 'TABLE'
       ? block
       : (block.querySelector(':scope > table') as HTMLElement)
-  const rows = Array.from(
+  return Array.from(
     table.querySelectorAll(':scope > thead > tr, :scope > tbody > tr'),
   ).map((tr) => Array.from(tr.children) as HTMLElement[])
-  return {
-    kind: 'table',
-    members: [block],
-    rows,
-    align: (rows[0] ?? []).map(alignOf),
-  }
+}
+
+/**
+ * The table entry of a listing. Task 733 / 012-11: `listUnits` runs on every root-stage sync, so the
+ * rows and the alignment are read on first access (once per listing) and not while listing: only a
+ * table the sync works on (its window, a build) pays for its rows.
+ */
+function tableUnit(block: HTMLElement): HostUnit<HTMLElement> {
+  let rows: HTMLElement[][] | undefined
+  let align: ColumnAlign[] | undefined
+  const unit: HostUnit<HTMLElement> = { kind: 'table', members: [block] }
+  Object.defineProperties(unit, {
+    rows: {
+      enumerable: true,
+      get: () => {
+        rows ??= tableRows(block)
+        return rows
+      },
+    },
+    align: {
+      enumerable: true,
+      get: () => {
+        align ??= (unit.rows?.[0] ?? []).map(alignOf)
+        return align
+      },
+    },
+  })
+  return unit
 }
 
 /** List items as host units, or undefined when the list holds anything but `li`. */

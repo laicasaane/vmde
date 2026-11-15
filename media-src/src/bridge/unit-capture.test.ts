@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { createRealLute } from '../testing/real-lute'
@@ -1169,4 +1177,129 @@ describe('the answer to a requested host write keeps the matching capture', () =
     r.runFrames()
     expect(r.port.restore(capture, 'before')).toBe(false)
   })
+})
+
+// ---- Task 733 / 012-11: a list item Undo serializes the changed item, not the whole list ----
+//
+// The probe's list: `- list item N`, typing at the end of item 3, then Undo. The whole-list form is
+// the one the `luteList` counter counts (`testing/edit-counters.ts`): a Lute input that starts with
+// the list's opening tag and holds 3 or more items.
+describe('a list item Undo makes no whole-list Lute call (012-11)', () => {
+  const items = Array.from({ length: 40 }, (_, k) => `- list item ${k + 1}`)
+  const LIST = `Intro paragraph.\n\n${items.join('\n')}\n\nAfter paragraph.\n`
+  // An earlier test can leave the selection in a removed table cell; these edits start without one.
+  beforeEach(() => window.getSelection()?.removeAllRanges())
+
+  /**
+   * Spies on `VditorIRDOM2Md` before `open` (the model binds its Lute at build); the returned function runs
+   * `run` and counts the whole-list inputs among the calls it made (3 or more items in a list shell).
+   */
+  function spyWholeList(): (run: () => void) => number {
+    const spy = vi.spyOn(lute, 'VditorIRDOM2Md')
+    return (run) => {
+      spy.mockClear()
+      run()
+      return spy.mock.calls.filter(([html]) => {
+        const input = String(html)
+        return (
+          (input.startsWith('<ul') || input.startsWith('<ol')) &&
+          (input.match(/<li/gu)?.length ?? 0) >= 3
+        )
+      }).length
+    }
+  }
+
+  /** Types at the end of item `index` as the item's unit spin leaves it: a new `li` in its place. */
+  function typeIntoItemSpun(r: Rig, index: number, letters: string): void {
+    const item = r.root.querySelectorAll('li')[index] as HTMLElement
+    item.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    const spun = item.cloneNode(true) as HTMLElement
+    const text = document
+      .createTreeWalker(spun, NodeFilter.SHOW_TEXT)
+      .nextNode() as Text
+    text.data = `${text.data}${letters}`
+    item.replaceWith(spun)
+  }
+
+  /** Types at the end of item `index` as Vditor's block spin leaves it: the whole list re-rendered. */
+  function typeIntoListSpun(r: Rig, index: number, letters: string): void {
+    const list = r.root.querySelector(':scope > ul') as HTMLElement
+    // The idle proof has proven every item by the time the probe types (a pre-touch per item here).
+    for (const li of Array.from(list.children))
+      li.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    const source = items
+      .map((line, k) => (k === index ? `${line}${letters}` : line))
+      .join('\n')
+    const holder = document.createElement('div')
+    holder.innerHTML = lute.Md2VditorIRDOM(source)
+    list.replaceWith(holder.firstElementChild as HTMLElement)
+  }
+
+  /** Enter in item `index` at `at` as the browser and the 011 spin leave it: the item split in two. */
+  function enterInItem(r: Rig, index: number, at: number): void {
+    const item = r.root.querySelectorAll('li')[index] as HTMLElement
+    item.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    const text = document
+      .createTreeWalker(item, NodeFilter.SHOW_TEXT)
+      .nextNode() as Text
+    const added = item.cloneNode(false) as HTMLElement
+    added.textContent = text.data.slice(at)
+    text.data = text.data.slice(0, at)
+    item.after(added)
+  }
+
+  const typed = LIST.replace('- list item 3\n', '- list item 3ab\n')
+  it.each<[string, (r: Rig) => void, string]>([
+    [
+      'typed in place',
+      (r) =>
+        typeInto(
+          r.root.querySelectorAll('li')[2] as HTMLElement,
+          'list item 3ab',
+        ),
+      typed,
+    ],
+    ['typed through an item spin', (r) => typeIntoItemSpun(r, 2, 'ab'), typed],
+    [
+      'typed through a block spin of the list',
+      (r) => typeIntoListSpun(r, 2, 'ab'),
+      typed,
+    ],
+    [
+      'Enter at the end of the item',
+      (r) => enterInItem(r, 2, 'list item 3'.length),
+      LIST.replace('- list item 3\n', '- list item 3\n-\n'),
+    ],
+    [
+      'Enter inside the item (a split)',
+      (r) => enterInItem(r, 2, 'list item'.length),
+      LIST.replace('- list item 3\n', '- list item\n-  3\n'),
+    ],
+  ])(
+    '%s: Undo and Redo restore without a whole-list call',
+    (_name, edit, after) => {
+      const countWholeList = spyWholeList()
+      const r = open(LIST)
+      const first = r.state()
+      expect(first.text).toBe(LIST)
+      edit(r)
+      r.sync()
+      const second = r.state()
+      expect(second.text).toBe(after)
+      const capture = r.port.capture() as HistoryCapture
+      expect(capture).toBeDefined()
+      const undo = countWholeList(() => {
+        expect(r.port.restore(capture, 'before')).toBe(true)
+        r.sync()
+      })
+      expect(r.state()).toEqual(first)
+      expect(undo, 'Undo').toBe(0)
+      const redo = countWholeList(() => {
+        expect(r.port.restore(capture, 'after')).toBe(true)
+        r.sync()
+      })
+      expect(r.state()).toEqual(second)
+      expect(redo, 'Redo').toBe(0)
+    },
+  )
 })

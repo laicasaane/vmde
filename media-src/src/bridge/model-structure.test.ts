@@ -6,6 +6,7 @@ import {
 } from '../../../src/shared/block-move'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { tagCodeSource } from '../editing/code-source'
 import { domKind, domUnits } from '../nav/unit-pairing'
 import { createRealLute } from '../testing/real-lute'
 import { applyChanges, type TextChange } from './change-set'
@@ -1363,5 +1364,146 @@ describe('012-5 code-block text path', () => {
       lines.slice(0, 4),
     )
     expect(calls).toBe(0)
+  })
+})
+
+// ---- Task 733 / 012-11: the probe's code block and list restore without whole-block Lute calls ----
+
+describe('012-11 code block tagged by the webview', () => {
+  // The edit-latency probe's block: `editing/code-source.ts` tags the editable source `hljs`, so
+  // the element reads `<code class="language-ts hljs">` in the webview.
+  const body = Array.from(
+    { length: 40 },
+    (_, k) => `const value${k + 1} = ${k + 1} * 2`,
+  )
+  const fence = (lines: readonly string[]): string =>
+    `\`\`\`ts\n${lines.join('\n')}\n\`\`\``
+  const BEFORE = 'Intro paragraph.\n\n'
+  const AFTER = '\n\nAfter paragraph.\n'
+  const typed = body.map((line, k) => (k === 0 ? `${line}a` : line))
+
+  function openTagged(markdown: string): Session {
+    const root = document.createElement('div')
+    root.innerHTML = lute.Md2VditorIRDOM(markdown)
+    tagCodeSource(root)
+    const model = createTextModel(domHost(root), scanMovableBlocks)
+    model.build(markdown)
+    expect(model.state, String(model.offReason)).toBe('live')
+    return { model, root }
+  }
+
+  /** Vditor's block spin of the code block, tagged again as the code source observer does. */
+  function spinTagged(session: Session, index: number, source: string): void {
+    const [spun] = render(source)
+    tagCodeSource(spun)
+    blockEl(session, index).replaceWith(spun)
+    session.model.markStructureDirty('root')
+  }
+
+  it('a letter typed through the block spin makes no Lute call (root stage and new unit)', () => {
+    const session = openTagged(BEFORE + fence(body) + AFTER)
+    proveAll(session.model)
+    spinTagged(session, 1, fence(typed))
+    const { result: changes, calls } = countLute(() =>
+      syncChecked(session.model),
+    )
+    expect(session.model.text).toBe(BEFORE + fence(typed) + AFTER)
+    expect(changes).toHaveLength(1)
+    expectConsistent(session.model)
+    expect(calls).toBe(0)
+  })
+
+  it('a letter typed after a history restore (the remembered check of the root stage) makes no Lute call', () => {
+    const session = openTagged(BEFORE + fence(body) + AFTER)
+    proveAll(session.model)
+    session.model.rememberBytes('Restored paragraph.', 'Restored paragraph.')
+    spinTagged(session, 1, fence(typed))
+    const { calls } = countLute(() => syncChecked(session.model))
+    expect(session.model.text).toBe(BEFORE + fence(typed) + AFTER)
+    expect(calls).toBe(0)
+  })
+
+  it('a letter written into the tagged code element in place makes no Lute call', () => {
+    const session = openTagged(BEFORE + fence(body) + AFTER)
+    proveAll(session.model)
+    const code = blockEl(session, 1).querySelector(
+      'pre.vditor-ir__marker--pre > code',
+    ) as HTMLElement
+    expect(code.getAttribute('class')).toBe('language-ts hljs')
+    const text = code.firstChild as Text
+    text.insertData(text.data.indexOf('\n'), 'a')
+    session.model.markDirty(session.model.units[1])
+    const { calls } = countLute(() => syncChecked(session.model))
+    expect(session.model.text).toBe(BEFORE + fence(typed) + AFTER)
+    expect(calls).toBe(0)
+  })
+})
+
+describe('012-11 list restore and split serialize the changed items only', () => {
+  const items = Array.from({ length: 40 }, (_, k) => `- list item ${k + 1}`)
+  const LIST = `Intro paragraph.\n\n${items.join('\n')}\n\nAfter paragraph.\n`
+  const listOf = (session: Session): HTMLElement => blockEl(session, 1)
+
+  it('a history restore that puts the whole list back (new elements) makes no whole-list call', () => {
+    const session = open(LIST)
+    proveAll(session.model)
+    // The Undo of a list window writes a new list element whose items are new elements.
+    const restored = render(
+      items.map((line, k) => (k === 2 ? `${line}ab` : line)).join('\n'),
+    )[0]
+    listOf(session).replaceWith(restored)
+    session.model.markStructureDirty('root')
+    calls.serialize = 0
+    calls.serializeList = 0
+    const changes = syncChecked(session.model)
+    expect(session.model.text).toBe(
+      LIST.replace('- list item 3\n', '- list item 3ab\n'),
+    )
+    expect(changes).toHaveLength(1)
+    expect(calls.serializeList).toBe(0)
+    expect(calls.serialize).toBeLessThanOrEqual(2)
+    expectConsistent(session.model)
+  })
+
+  it('a history restore of one item as a new element makes no whole-list call', () => {
+    const session = open(LIST)
+    proveAll(session.model)
+    const list = listOf(session)
+    const [fresh] = Array.from(
+      render('- list item 3ab')[0].children,
+    ) as HTMLElement[]
+    list.children[2].replaceWith(fresh)
+    // The structure notice of the list names one of its items that stays (as the unit DOM does).
+    session.model.markStructureDirty(session.model.units[1])
+    calls.serialize = 0
+    calls.serializeList = 0
+    syncChecked(session.model)
+    expect(session.model.text).toBe(
+      LIST.replace('- list item 3\n', '- list item 3ab\n'),
+    )
+    expect(calls.serializeList).toBe(0)
+    expect(calls.serialize).toBeLessThanOrEqual(2)
+    expectConsistent(session.model)
+  })
+
+  it('a split of one item into two new elements writes the two items without a whole-list call', () => {
+    const session = open(LIST)
+    proveAll(session.model)
+    const list = listOf(session)
+    const split = Array.from(
+      render('- list\n- item 3')[0].children,
+    ) as HTMLElement[]
+    list.children[2].replaceWith(...split)
+    // The structure notice of the list names one of its items that stays (as the unit DOM does).
+    session.model.markStructureDirty(session.model.units[1])
+    calls.serialize = 0
+    calls.serializeList = 0
+    syncChecked(session.model)
+    expect(session.model.text).toBe(
+      LIST.replace('- list item 3\n', '- list\n- item 3\n'),
+    )
+    expect(calls.serializeList).toBe(0)
+    expect(calls.serialize).toBeLessThanOrEqual(3)
+    expectConsistent(session.model)
   })
 })

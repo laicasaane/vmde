@@ -454,13 +454,68 @@ function tightRun<E>(
 }
 
 /**
+ * Task 733 / 012-11: pairs the new item elements no old unit holds by identity with old items of equal
+ * stored HTML, from both ends of each gap between identity anchors (in place in `olds`). Returns the
+ * paired old units, or false when the anchors are out of the old order.
+ */
+function pairByHtml<E>(
+  i: Ctx<E>,
+  itemEntries: readonly Entry<E>[],
+  olds: Array<Unit<E> | undefined>,
+  oldItems: readonly Unit<E>[],
+): Set<Unit<E>> | false {
+  const paired = new Set<Unit<E>>()
+  let p = 0
+  let j0 = 0
+  for (let j = 0; j <= itemEntries.length; j++) {
+    const anchor = j < itemEntries.length ? olds[j] : undefined
+    if (j < itemEntries.length && anchor === undefined) continue
+    const q =
+      anchor === undefined ? oldItems.length : oldItems.indexOf(anchor, p)
+    if (q === -1) return false
+    pairGap(i, itemEntries, olds, oldItems, { j0, j, p, q }, paired)
+    p = q + 1
+    j0 = j + 1
+  }
+  return paired
+}
+
+/** One gap of `pairByHtml`: new entries [j0, j) against old items [p, q), matched from both ends. */
+function pairGap<E>(
+  i: Ctx<E>,
+  itemEntries: readonly Entry<E>[],
+  olds: Array<Unit<E> | undefined>,
+  oldItems: readonly Unit<E>[],
+  gap: { j0: number; j: number; p: number; q: number },
+  paired: Set<Unit<E>>,
+): void {
+  const same = (k: number, old: Unit<E>): boolean =>
+    old.html !== undefined &&
+    old.html === i.host.html('list-item', itemEntries[k].el as never)
+  const pair = (k: number, old: Unit<E>): void => {
+    olds[k] = old
+    paired.add(old)
+  }
+  let a = gap.j0
+  let b = gap.p
+  while (a < gap.j && b < gap.q && same(a, oldItems[b]))
+    pair(a++, oldItems[b++])
+  let c = gap.j - 1
+  let d = gap.q - 1
+  while (c >= a && d >= b && same(c, oldItems[d])) pair(c--, oldItems[d--])
+}
+
+/**
  * Shared rules 3.8: Enter or Delete that adds or removes items of one tight list, decided by element
  * identity without a whole-list serialization. Unchanged items keep their bytes; a new item takes its
  * canon (one `serializeListItemHtml`); an ordered list numbers each item from the one before it in
  * JavaScript (the canon of an item alone starts with `1.`). A bullet item edited in place keeps its
- * old bytes here and stays dirty for the leaf stage. Ordered removals, loose lists, items that changed
- * elements (a list rebuilt, split or of another kind) and mixed inserts and removals return false: the
- * whole-list path decides them.
+ * old bytes here and stays dirty for the leaf stage. Task 733 / 012-11: in a bullet list, the new
+ * elements between items kept by identity are paired with old items of equal HTML from both ends of
+ * each gap (a history restore writes new elements, a split replaces one item by two); the paired items
+ * keep their bytes, the rest take their canon and the old items left over are removed. Ordered
+ * removals and replacements, loose lists, a list that keeps no item, a new item with another marker
+ * (another list) and items out of order return false: the whole-list path decides them.
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one pass over the items with the numbering of 3.8
 function itemLevelEntries<E>(
@@ -479,12 +534,21 @@ function itemLevelEntries<E>(
     olds.push(old)
     if (old) kept++
   }
-  const added = itemEntries.length - kept
-  const removed = oldItems.length - kept
-  if (kept === 0 || added > 0 === removed > 0) return false
-  if (!tightRun(i, itemEntries, olds, oldItems)) return false
   const firstOld = i.text.slice(oldItems[0].start, oldItems[0].end)
   const ordered = orderedNumber(firstOld) !== undefined
+  const byHtml = ordered
+    ? undefined
+    : pairByHtml(i, itemEntries, olds, oldItems)
+  if (byHtml === false) return false
+  kept += byHtml?.size ?? 0
+  const added = itemEntries.length - kept
+  const removed = oldItems.length - kept
+  if (kept === 0) return false
+  // Identity alone that changes nothing, and an ordered list with both inserts and removals, take the
+  // whole-list path; a bullet list with both is decided item by item (012-11).
+  if (added === 0 && removed === 0 && (byHtml?.size ?? 0) === 0) return false
+  if (ordered && added > 0 === removed > 0) return false
+  if (!tightRun(i, itemEntries, olds, oldItems)) return false
   // F-1: the whole marker comes from the list; the canon of an item alone writes `1.` for `1)`.
   const delimiter = ordered ? markerOf(firstOld).slice(-1) : ''
   const numbered = (source: string, number: number): string =>
@@ -521,6 +585,9 @@ function itemLevelEntries<E>(
       old === undefined && i.remembered.length > 0
         ? i.remembered.find((r) => r.canon === canon)?.bytes
         : undefined
+    // A new bullet item with another marker belongs to another list: the list path decides it (012-11).
+    if (!ordered && removed > 0 && markerOf(canon) !== markerOf(firstOld))
+      return false
     const bytes = remembered ?? (ordered ? numbered(canon, number) : canon)
     // A new bullet item is proven here (its bytes are its canon), so typing into it before the next
     // idle proof takes the leaf path instead of a fallback.
@@ -547,6 +614,11 @@ function itemLevelEntries<E>(
     old.el = entry.el
     entry.unit = old
     entry.oldIndex = winIndex.get(old) as number
+    if (byHtml?.has(old) && old.dirty) {
+      // Its new element holds the HTML its bytes stand for: nothing is left for the leaf stage.
+      old.dirty = false
+      setDelete(i.dirty, old)
+    }
     if (ordered && old.dirty) {
       // Its bytes are written here from its canon: the leaf stage has nothing left to do.
       old.proof = 'none'
