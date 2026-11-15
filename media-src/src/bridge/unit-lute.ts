@@ -1,5 +1,6 @@
 import type { MovableKind } from '../../../src/shared/block-move'
 import type { UnitSpinResult } from '../editing/unit-spin'
+import type { UnitMode } from '../util/unit-changes'
 
 // Per-unit Lute calls on HTML or Markdown strings (Task 733). Pure string functions: the Lute
 // object is a parameter, so the webview passes the live wrapped `vditor.lute` and tests pass the
@@ -8,6 +9,35 @@ import type { UnitSpinResult } from '../editing/unit-spin'
 export interface UnitLute {
   VditorIRDOM2Md(html: string): string
   Md2VditorIRDOM(markdown: string): string
+  /** Task 733 / 013: absent means 'ir'. 'wysiwyg' selects the WYSIWYG code-block text path in serializeBlockHtml. */
+  readonly mode?: UnitMode
+}
+
+/** Task 733 / 013 (shared rules 3.12): the live Lute with the serializer pairs of both visual modes. */
+export interface ModeLute {
+  VditorIRDOM2Md(html: string): string
+  Md2VditorIRDOM(markdown: string): string
+  SpinVditorIRDOM(html: string): string
+  VditorDOM2Md(html: string): string
+  Md2VditorDOM(markdown: string): string
+  SpinVditorDOM(html: string): string
+}
+
+/**
+ * The model's serializer pair for `mode`, methods bound once (called once per build): the WYSIWYG pair
+ * (`VditorDOM2Md`, `Md2VditorDOM`) is mapped onto the `UnitLute` names, so every unit helper serves both modes.
+ */
+export function unitLuteOf(lute: ModeLute, mode: UnitMode): UnitLute {
+  if (mode === 'ir')
+    return {
+      VditorIRDOM2Md: lute.VditorIRDOM2Md.bind(lute),
+      Md2VditorIRDOM: lute.Md2VditorIRDOM.bind(lute),
+    }
+  return {
+    VditorIRDOM2Md: lute.VditorDOM2Md.bind(lute),
+    Md2VditorIRDOM: lute.Md2VditorDOM.bind(lute),
+    mode: 'wysiwyg',
+  }
 }
 
 const trimNewlines = (text: string): string => text.replace(/\n+$/u, '')
@@ -114,14 +144,46 @@ function codeBlockCanon(html: string): string | undefined {
     : `${open}${info}\n${text}\n${close}`
 }
 
+/**
+ * Task 733 / 013: the exact Lute render of a fenced code block in the WYSIWYG DOM; the groups are the
+ * fence marker (`data-marker`, written as both the open and the close fence), the info string (the
+ * `language-` class) and the raw body HTML. The source `pre` carries Vditor's `style` toggle while the
+ * block is entered; the webview's context stamp and `hljs` may be present, as in IR.
+ */
+const WYSIWYG_CODE_BLOCK =
+  /^<div class="vditor-wysiwyg__block" data-type="code-block" data-block="0" data-marker="(`{3,}|~{3,})"(?: data-vscode-context="\{&quot;webviewSection&quot;:&quot;code&quot;\}")?><pre class="vditor-wysiwyg__pre"(?: style="[^"]*")?(?: data-vscode-context="\{&quot;webviewSection&quot;:&quot;code&quot;\}")?><code(?: class="(?:language-([A-Za-z0-9_.+#-]+)(?: hljs)?|hljs)")?>([^<&]*(?:(?:<wbr>|&(?:lt|gt|amp|quot|#39);)[^<&]*)*)<\/code><\/pre>(?:<pre class="vditor-wysiwyg__preview"[^>]*>[\s\S]*<\/pre>)?<\/div>$/u
+
+/** Lute's canon of one WYSIWYG fenced code block from its outerHTML, or undefined when only Lute can say. */
+function wysiwygCodeBlockCanon(html: string): string | undefined {
+  const match = WYSIWYG_CODE_BLOCK.exec(html)
+  if (!match) return undefined
+  const [, fence, info = '', raw] = match
+  if (BODY_REWRITTEN.test(raw) || closesFence(raw, fence)) return undefined
+  const text =
+    raw.indexOf('<') === -1 && raw.indexOf('&') === -1
+      ? raw
+      : raw
+          .replaceAll('<wbr>', '')
+          .replace(ENTITY, (_, name: string) => ENTITY_TEXT[name])
+  // An empty body: Lute writes a blank line for it; only Lute says which.
+  if (text === '' || text === '\n') return undefined
+  return text.endsWith('\n')
+    ? `${fence}${info}\n${text}${fence}`
+    : `${fence}${info}\n${text}\n${fence}`
+}
+
 /** Canon of a block, or of the member elements of one source block, from their outerHTML strings. */
 export function serializeBlockHtml(
   lute: UnitLute,
   outerHtml: readonly string[],
 ): string {
-  // Task 733 / 012-5: a lone fenced code block takes the text path (no Lute call), see codeBlockCanon.
+  // Task 733 / 012-5: a lone fenced code block takes the text path (no Lute call), see codeBlockCanon;
+  // 013: the WYSIWYG DOM has its own shape (wysiwygCodeBlockCanon).
   if (outerHtml.length === 1) {
-    const canon = codeBlockCanon(outerHtml[0])
+    const canon =
+      lute.mode === 'wysiwyg'
+        ? wysiwygCodeBlockCanon(outerHtml[0])
+        : codeBlockCanon(outerHtml[0])
     if (canon !== undefined) return canon
   }
   return trimNewlines(lute.VditorIRDOM2Md(outerHtml.join('')))
@@ -195,6 +257,19 @@ export function delimiterLine(align: readonly ColumnAlign[]): string {
 export interface SpinLute {
   SpinVditorIRDOM(html: string): string
 }
+
+/** Task 733 / 013: the spin entry of `mode` on the live wrapped Lute; the caller reads the live Lute at call time. */
+export function spinLuteOf(lute: ModeLute, mode: UnitMode): SpinLute {
+  if (mode === 'ir') return lute
+  // One entry per Lute object: the keystroke path reads it on every spin and allocates nothing.
+  let spin = wysiwygSpins.get(lute)
+  if (!spin) {
+    spin = { SpinVditorIRDOM: (html) => lute.SpinVditorDOM(html) }
+    wysiwygSpins.set(lute, spin)
+  }
+  return spin
+}
+const wysiwygSpins = new WeakMap<ModeLute, SpinLute>()
 
 const SHAPE: UnitSpinResult = { kind: 'refused', reason: 'shape' }
 const NESTED: UnitSpinResult = { kind: 'refused', reason: 'nested' }

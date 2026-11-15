@@ -195,6 +195,44 @@ export function irFixture(
   return { root }
 }
 
+let wysiwygLute: RealLute | undefined
+/** WYSIWYG fixtures per markdown: the rendered HTML and the root built for each `prepare`. */
+const wysiwygBuilt = new Map<
+  string,
+  {
+    html: string
+    roots: Map<((root: HTMLElement) => void) | undefined, HTMLElement>
+  }
+>()
+
+/** Task 733 / 013: WYSIWYG DOM of `markdown` built with createRealLute('wysiwyg').render, mounted under a
+ *  jsdom root `div.vditor-wysiwyg > pre.vditor-reset`, then `prepare(root)`; built once per file, markdown
+ *  and prepare. */
+export function wysiwygFixture(
+  markdown: string,
+  prepare?: (root: HTMLElement) => void,
+): { root: HTMLElement } {
+  let entry = wysiwygBuilt.get(markdown)
+  if (!entry) {
+    wysiwygLute ??= createRealLute('wysiwyg')
+    entry = { html: wysiwygLute.render(markdown), roots: new Map() }
+    wysiwygBuilt.set(markdown, entry)
+  }
+  const known = entry.roots.get(prepare)
+  if (known) return { root: known }
+  const holder = document.createElement('div')
+  holder.className = 'vditor-wysiwyg'
+  const root = document.createElement('pre')
+  root.className = 'vditor-reset'
+  root.setAttribute('contenteditable', 'true')
+  root.innerHTML = entry.html
+  holder.append(root)
+  document.body.append(holder)
+  prepare?.(root)
+  entry.roots.set(prepare, root)
+  return { root }
+}
+
 /** A DOM of the same shape without Lute, for pure DOM consumers: tables x rows x 5 cells, list items, paragraphs. */
 export function scaledFixture(shape: {
   tables: number

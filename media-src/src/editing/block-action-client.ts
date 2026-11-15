@@ -28,6 +28,7 @@ import {
   type BlockActionBasis,
 } from '../nav/block-handle'
 import type { BlockHandleUnit } from '../nav/source-block-index'
+import { unitModeOf } from '../util/unit-changes'
 
 interface BlockActionDeps {
   settleInput(): void
@@ -282,7 +283,9 @@ function planAndRequest(
 ): Promise<boolean> {
   const { outer, inner, editor, mode } = context
   // Q-79 OQ-1: while the model owns the text its confirmed units are the units of `before`.
-  const model = mode === 'ir' ? deps?.modelUnits?.() : undefined
+  // Task 733 / 013 (Q-116): the model serves IR and, with WYSIWYG units, WYSIWYG.
+  const model =
+    unitModeOf(mode) !== undefined ? deps?.modelUnits?.() : undefined
   const modelRoute = model?.exact === before
   const renderedBefore = modelRoute ? before : outer.getValue()
   const units = modelRoute

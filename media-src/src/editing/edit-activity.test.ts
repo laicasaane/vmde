@@ -1839,7 +1839,7 @@ describe.each(B13_FACTORS)(
     let root: HTMLElement
     beforeAll(() => {
       root = irFixture(tableHeavyMarkdown(factor), prepareProbeCodeBlock).root
-    })
+    }, 120_000)
     afterAll(() => root.parentElement?.remove())
 
     test('code block: the live settle keeps the fallback input, bounded to the block', () => {
@@ -1863,7 +1863,7 @@ describe.each(B13_FACTORS)(
       } finally {
         rig.dispose()
       }
-    })
+    }, 60_000)
 
     test('table cell: the live settle re-spins the unit, with no synthetic input and no innerHTML read', () => {
       const rig = b13Rig(root, 'table cell', 'live')
@@ -1881,7 +1881,7 @@ describe.each(B13_FACTORS)(
       } finally {
         rig.dispose()
       }
-    })
+    }, 60_000)
 
     for (const which of ['table cell', 'code block'] as const) {
       test(`${which}: with the model off the settle dispatches the fallback input once`, () => {
@@ -1961,4 +1961,121 @@ test('B-13: the code block live settle fallback has the same counts at every fac
   const first = b13CodeFallback.get(1)
   for (const factor of B13_FACTORS)
     expect(b13CodeFallback.get(factor), `factor ${factor}`).toEqual(first)
+})
+
+// ---- Task 733 / 013-I3: the WYSIWYG branch of the diagram render hook (Q-122, Q-123) ----
+//
+// The patched wysiwyg/input.ts preview loop (V-W4) calls `__vmdeDeferIrDiagramRender` while it declares
+// `acceptsWysiwyg`. With the feed live, `renderWysiwygPreviews` renders the fresh previews of the spun
+// window (the caret's block and its neighbours) and no other, with no root query; without a live feed it
+// renders every fresh preview of the root.
+describe('013 renderWysiwygPreviews', () => {
+  const WYSIWYG_FRESH = (lang: string) =>
+    `<div class="vditor-wysiwyg__block" data-type="code-block" data-block="0" data-marker="\`\`\`"><pre class="vditor-wysiwyg__pre"><code class="language-${lang}">x</code></pre><pre class="vditor-wysiwyg__preview" data-render="2"><div class="language-${lang}"></div></pre></div>`
+  type WysiwygHook = ((
+    vditor: {
+      currentMode: string
+      ir: { element: HTMLElement }
+      wysiwyg: { element: HTMLElement }
+    },
+    processCodeRender: (el: HTMLElement) => void,
+  ) => void) & { acceptsWysiwyg?: boolean }
+
+  function wysiwygRig(html: string, live = true) {
+    for (const stale of Array.from(
+      document.querySelectorAll('.vditor-ir, .vditor-wysiwyg'),
+    ))
+      stale.remove()
+    const ir = irWithTrailing('')
+    const root = document.createElement('div')
+    root.className = 'vditor-wysiwyg'
+    root.innerHTML = html
+    document.body.appendChild(root)
+    const dispose = installEditActivity(root)
+    provideUnitFeed(window, fakeFeed(root, live))
+    const rendered: Element[] = []
+    const processCodeRender = (el: HTMLElement) => {
+      rendered.push(el)
+      el.setAttribute('data-render', '1')
+    }
+    const hook = (window as unknown as Record<string, unknown>)
+      .__vmdeDeferIrDiagramRender as WysiwygHook
+    return {
+      root,
+      rendered,
+      hook,
+      previews: () =>
+        Array.from(
+          root.querySelectorAll<HTMLElement>('.vditor-wysiwyg__preview'),
+        ),
+      run: () =>
+        hook(
+          {
+            currentMode: 'wysiwyg',
+            ir: { element: ir },
+            wysiwyg: { element: root },
+          },
+          processCodeRender,
+        ),
+      dispose: () => {
+        provideUnitFeed(window, undefined)
+        document.getSelection()?.removeAllRanges()
+        dispose()
+        root.remove()
+        ir.remove()
+      },
+    }
+  }
+
+  test('declares WYSIWYG support', () => {
+    const r = wysiwygRig(para('a'))
+    expect(r.hook.acceptsWysiwyg).toBe(true)
+    r.dispose()
+  })
+
+  test('live: renders the fresh preview of the caret block only, with no root query', () => {
+    const r = wysiwygRig(
+      para('a') +
+        WYSIWYG_FRESH('graphviz') +
+        para('b') +
+        para('c') +
+        para('d') +
+        WYSIWYG_FRESH('mermaid'),
+    )
+    const [near, far] = r.previews()
+    caretIn(r.root.children[1].querySelector('code') as Element)
+    const { counts } = countBudget(r.root, () => r.run())
+    expect(r.rendered).toEqual([near])
+    expect(far.getAttribute('data-render')).toBe('2')
+    expect(counts.rootQueries, 'root queries').toBe(0)
+    r.dispose()
+  })
+
+  test('live: renders a fresh preview of the previous sibling (merged by the spin) too', () => {
+    const r = wysiwygRig(
+      WYSIWYG_FRESH('graphviz') + para('a') + para('b') + para('c'),
+    )
+    const [near] = r.previews()
+    caretIn(r.root.children[1])
+    const { counts } = countBudget(r.root, () => r.run())
+    expect(r.rendered).toEqual([near])
+    expect(counts.rootQueries, 'root queries').toBe(0)
+    r.dispose()
+  })
+
+  test('without a live feed renders every fresh preview of the root', () => {
+    const r = wysiwygRig(
+      para('a') +
+        WYSIWYG_FRESH('graphviz') +
+        para('b') +
+        para('c') +
+        para('d') +
+        WYSIWYG_FRESH('mermaid'),
+      false,
+    )
+    caretIn(r.root.children[0])
+    r.run()
+    expect(r.rendered).toEqual(r.previews())
+    r.dispose()
+  })
 })

@@ -28,6 +28,7 @@ import {
 import { patchLuteSerialize, setKnownPagesRef } from '../links/wiki-serialize'
 import { Disposables } from '../util/disposables'
 import { innerVditor } from '../util/inner-vditor'
+import { unitModeOf } from '../util/unit-changes'
 import { createEditSync } from '../bridge/edit-sync'
 import { createModelSession, type ModelSession } from '../bridge/model-session'
 import { countFallbackPublication } from '../testing/edit-counters'
@@ -319,13 +320,12 @@ export function initVditor(
   sessionState.modelSession?.dispose()
   const modelSession = createModelSession({
     win: window,
-    getRoot: () => innerVditor()?.ir?.element ?? null,
+    getRoot: servedRoot,
     getLute: () => (window.vditor as any)?.vditor?.lute ?? null,
     getMode: () => window.vditor?.getCurrentMode?.() ?? null,
     isPreviewShowing: () => previewShowing(),
     isStreaming: () => sessionState.streaming,
-    isComposing: () =>
-      innerVditor()?.ir?.composingLock === true || isCompositionActive(),
+    isComposing: () => modeComposingLock() || isCompositionActive(),
     e2e: Boolean((window as any).__vmdeE2EReadiness),
     countFallbackPublication,
     requestAnimationFrame: (cb) => window.requestAnimationFrame(cb),
@@ -341,7 +341,7 @@ export function initVditor(
   sessionState.modelSession = modelSession
   observeHostWriteRequests()
   const isComposing = (): boolean =>
-    innerVditor()?.ir?.composingLock === true || isCompositionActive()
+    modeComposingLock() || isCompositionActive()
   sessionState.editSync = createEditSync({
     modelSession,
     isComposing,
@@ -819,4 +819,21 @@ export function initVditor(
   // editor the user can reload, instead of an indefinite hang. Idempotent no-op
   // on the normal path.
   setTimeout(removePrerenderOverlay, 8000)
+}
+
+/** Task 733 / 013: the root of the mode the model serves (IR, or WYSIWYG with WYSIWYG units), else null. */
+function servedRoot(): HTMLElement | null {
+  const inner = innerVditor()
+  const mode = unitModeOf(inner?.currentMode)
+  return (mode && inner?.[mode]?.element) || null
+}
+
+/** Task 733 / 013: Vditor's composition lock of the current mode (WYSIWYG keeps its own). */
+function modeComposingLock(): boolean {
+  const inner = innerVditor()
+  const state =
+    inner?.currentMode === 'wysiwyg'
+      ? (inner.wysiwyg as { composingLock?: boolean } | undefined)
+      : inner?.ir
+  return state?.composingLock === true
 }

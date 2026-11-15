@@ -134,7 +134,7 @@ import { installSelectionBubble } from '../editing/selection-bubble'
 import { installLinkPopover } from '../editing/link-popover'
 import { reportError } from '../util/webview-log'
 import { loadScript } from '../util/load-script'
-import { provideUnitFeed, unitFeedOf } from '../util/unit-changes'
+import { provideUnitFeed, unitFeedOf, unitModeOf } from '../util/unit-changes'
 import {
   currentBlockProjection,
   installBlockHandleLayer,
@@ -144,10 +144,12 @@ import { createSourceBlockIndex } from '../nav/source-block-index'
 import { modelBlockUnits } from '../bridge/model-block-units'
 import { createUnitFeed, installUnitFeedStats } from '../bridge/unit-feed'
 import {
+  type ModeLute,
   spinCellHtml,
   spinListItemHtml,
   spinListItemsHtml,
   type SpinLute,
+  spinLuteOf,
 } from '../bridge/unit-lute'
 import {
   cancelPendingBlockActions,
@@ -264,8 +266,14 @@ type UnitSpinStats = { spun: number } & Partial<Record<string, number>>
 
 // The live wrapped Lute, read at call time (the wrappers are installed on it at init). The InnerVditor
 // type lists no spin method, so it is narrowed here.
-const liveSpinLute = (): SpinLute | undefined =>
-  innerVditor()?.lute as unknown as SpinLute | undefined
+// Task 733 / 013: the spin entry of the served mode (SpinVditorDOM in WYSIWYG); allocation-free per call.
+const liveSpinLute = (): SpinLute | undefined => {
+  const inner = innerVditor()
+  const mode = unitModeOf(inner?.currentMode)
+  return inner?.lute && mode
+    ? spinLuteOf(inner.lute as unknown as ModeLute, mode)
+    : undefined
+}
 const NO_LUTE: UnitSpinResult = { kind: 'refused', reason: 'shape' }
 
 /**
@@ -277,7 +285,7 @@ const NO_LUTE: UnitSpinResult = { kind: 'refused', reason: 'shape' }
 function publishBoundaryNow(): boolean {
   const inner = innerVditor()
   if (!inner) return false
-  if (inner.ir?.composingLock === true || isCompositionActive()) return false
+  if (modeComposingLock() || isCompositionActive()) return false
   if (hasRewrapDocumentHistoryTransition(inner)) return false
   const editSync = sessionState.editSync
   if (!editSync || sessionState.modelSession?.canPublishDelta() !== true)
@@ -294,12 +302,13 @@ function publishBoundaryNow(): boolean {
 function installUnitFeed(): () => void {
   const session = sessionState.modelSession
   const editSync = sessionState.editSync
-  const root = innerVditor()?.ir?.element ?? null
+  // Task 733 / 013: the feed follows the served root (IR, or WYSIWYG with WYSIWYG units); it is created
+  // whatever mode is shown, and `isLive()` is false while the model serves no mode.
+  const root = servedRoot() ?? innerVditor()?.ir?.element ?? null
   if (!session || !editSync || !root) return () => undefined
   const feed = createUnitFeed(session, editSync, {
-    isComposing: () =>
-      innerVditor()?.ir?.composingLock === true || isCompositionActive(),
-    root: () => innerVditor()?.ir?.element ?? null,
+    isComposing: () => modeComposingLock() || isCompositionActive(),
+    root: servedRoot,
   })
   provideUnitFeed(window, feed)
   const stopStats = window.__vmdeE2EReadiness
@@ -325,7 +334,7 @@ function installUnitHistoryHook(): () => void {
     return session &&
       session === sessionAtInit &&
       sessionState.deltaSync &&
-      innerVditor()?.currentMode === 'ir'
+      unitModeOf(innerVditor()?.currentMode) !== undefined
       ? session
       : undefined
   }
@@ -348,7 +357,7 @@ function installUnitSpinHook(): () => void {
     const session = sessionState.modelSession
     return session &&
       session === sessionAtInit &&
-      innerVditor()?.currentMode === 'ir'
+      unitModeOf(innerVditor()?.currentMode) !== undefined
       ? session
       : undefined
   }
@@ -501,7 +510,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       const session = sessionState.modelSession
       return session &&
         session === modelSessionAtInit &&
-        innerVditor()?.currentMode === 'ir'
+        unitModeOf(innerVditor()?.currentMode) !== undefined
         ? modelBlockUnits(session)
         : undefined
     },
@@ -553,7 +562,7 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
         const session = sessionState.modelSession
         return session &&
           session === modelSessionAtInit &&
-          innerVditor()?.currentMode === 'ir' &&
+          unitModeOf(innerVditor()?.currentMode) !== undefined &&
           session.ownsText()
           ? modelBlockUnits(session)
           : undefined
@@ -1049,4 +1058,21 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   if (mode === 'ir' || mode === 'wysiwyg' || mode === 'sv') {
     markEditorReady(mode)
   }
+}
+
+/** Task 733 / 013: the root of the mode the model serves (IR, or WYSIWYG with WYSIWYG units), else null. */
+function servedRoot(): HTMLElement | null {
+  const inner = innerVditor()
+  const mode = unitModeOf(inner?.currentMode)
+  return (mode && inner?.[mode]?.element) || null
+}
+
+/** Task 733 / 013: Vditor's composition lock of the current mode (WYSIWYG keeps its own). */
+function modeComposingLock(): boolean {
+  const inner = innerVditor()
+  const state =
+    inner?.currentMode === 'wysiwyg'
+      ? (inner.wysiwyg as { composingLock?: boolean } | undefined)
+      : inner?.ir
+  return state?.composingLock === true
 }

@@ -1,4 +1,4 @@
-import { unitFeedOf } from '../util/unit-changes'
+import { unitFeedOf, unitModeOf } from '../util/unit-changes'
 import { withoutOwnHintRecords } from '../util/wrap-hint-mark'
 import type { MovableKind } from '../../../src/shared/block-move'
 
@@ -448,10 +448,10 @@ export function createSourceBlockIndex(
     }
     return built
   }
-  // IR only, and only when the first unit's element is live in the bound root (the session never
+  // IR or WYSIWYG (Task 733 / 013), and only when the first unit's element is live in the bound root (the session never
   // checks the mode, and a removed element leaves its unit behind).
   const readModel = (key: SourceBlockIndexKey) => {
-    if (key.mode !== 'ir' || !deps.modelUnits) return undefined
+    if (unitModeOf(key.mode) === undefined || !deps.modelUnits) return undefined
     try {
       const model = deps.modelUnits()
       const first = model?.units[0]?.element
@@ -490,7 +490,7 @@ export function createSourceBlockIndex(
   // Q-61: the live IR model describes this root but its units are not confirmed yet (typing is
   // unpublished). No serialization; it runs only on a hover miss.
   const awaitingUnits = (key: SourceBlockIndexKey): boolean => {
-    if (key.mode !== 'ir' || scopeDepth > 0) return false
+    if (unitModeOf(key.mode) === undefined || scopeDepth > 0) return false
     const feed = unitFeedOf(window)
     if (!feed || feed.root !== key.root || !feed.isLive()) return false
     // Only unconfirmed units wait (R2): units that are confirmed but unusable to the index (an

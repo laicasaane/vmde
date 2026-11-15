@@ -11,9 +11,16 @@ import {
   countBudget,
   fakeLanes,
   irFixture,
+  wysiwygFixture,
 } from '../testing/budget-harness'
 import type { UnitsChange } from '../util/unit-changes'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import { observeAbc } from './abc-fit'
+import {
+  provideUnitFeed,
+  type LiveUnit,
+  type UnitFeed,
+} from '../util/unit-changes'
 
 const ABC_FENCE =
   '\n```abc\nX:1\nK:C\nCDEF|\n```\n\n```mermaid\ngraph TD\nA-->B\n```\n'
@@ -176,3 +183,127 @@ describe.each([1, 4, 16] as const)(
     })
   },
 )
+
+// ---- Task 733 / 013-T4: B-10 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// `observeAbc` over a live feed of Lute's WYSIWYG root (a mermaid and an echarts block appended). B-10: after a change outside the diagrams and
+// after a spun paragraph, the frame queries nothing on the root (`rootQueries` 0).
+describe('013 B-10 observeAbc on the WYSIWYG fixture', () => {
+  const feedListeners = new Set<(change: UnitsChange) => void>()
+  let wysiwygFrames: FrameRequestCallback[] = []
+  let stop: (() => void) | undefined
+  beforeEach(() => {
+    wysiwygFrames = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      wysiwygFrames.push(cb)
+      return wysiwygFrames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+  })
+  afterEach(() => {
+    stop?.()
+    stop = undefined
+    provideUnitFeed(window, undefined)
+    feedListeners.clear()
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+  })
+  const runWysiwygFrames = (): void => {
+    for (let round = 0; round < 5 && wysiwygFrames.length > 0; round++)
+      for (const frame of wysiwygFrames.splice(0)) frame(0)
+  }
+  const settleWysiwyg = async (): Promise<void> => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+    runWysiwygFrames()
+  }
+  /** The observer callbacks of the edit run; the frames they queue run inside the count. */
+  const flushRecords = async (): Promise<void> => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+  }
+  const emit = (partial: Partial<UnitsChange>): void => {
+    const change = {
+      cause: 'mutation',
+      whole: false,
+      changed: [],
+      structural: [],
+      ...partial,
+    } as UnitsChange
+    for (const listener of Array.from(feedListeners)) listener(change)
+  }
+  const unitOf = (
+    el: HTMLElement,
+    kind: LiveUnit['kind'],
+    top = el,
+  ): LiveUnit => ({
+    el,
+    members: [el],
+    kind,
+    top,
+  })
+  async function mountWysiwyg(factor: Factor) {
+    const app = document.createElement('div')
+    // The production mount: observers watch `#app`, so its queries count as root queries.
+    app.id = 'app'
+    app.className = 'vditor vditor-wysiwyg'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = wysiwygFixture(MARKDOWN(factor)).root.innerHTML
+    app.append(root)
+    document.body.append(app)
+    vi.stubGlobal('vditor', {
+      getCurrentMode: () => 'wysiwyg',
+      vditor: { currentMode: 'wysiwyg', wysiwyg: { element: root } },
+    })
+    const feed: UnitFeed = {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        feedListeners.add(listener)
+        return () => feedListeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    stop = observeAbc(app)
+    await settleWysiwyg()
+    return { app, root }
+  }
+
+  const MARKDOWN = (factor: Factor): string =>
+    `${tableHeavyMarkdown(factor)}\n\`\`\`mermaid\ngraph TD\n  A --> B\n\`\`\`\n\n\`\`\`echarts\n{}\n\`\`\`\n`
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it('a paragraph change outside the diagrams queries nothing on the root', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const paragraph = root.querySelector(':scope > p') as HTMLElement
+      ;(paragraph.firstChild as Text).data += 'x'
+      await flushRecords()
+      const { counts } = countBudget(root, () => {
+        emit({ changed: [unitOf(paragraph, 'paragraph')] })
+        runWysiwygFrames()
+      })
+      expect(counts.rootQueries, 'root queries').toBe(0)
+    }, 60_000)
+
+    it('a spun paragraph queries nothing on the root', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const paragraph = root.querySelector(':scope > p') as HTMLElement
+      const spun = paragraph.cloneNode(true) as HTMLElement
+      paragraph.replaceWith(spun)
+      await flushRecords()
+      const { counts } = countBudget(root, () => {
+        emit({
+          changed: [unitOf(spun, 'paragraph')],
+          structural: [spun],
+          scopes: [spun],
+        } as Partial<UnitsChange>)
+        runWysiwygFrames()
+      })
+      expect(counts.rootQueries, 'root queries').toBe(0)
+    }, 60_000)
+  })
+})

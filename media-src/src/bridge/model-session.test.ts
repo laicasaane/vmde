@@ -8,6 +8,7 @@ import { writeQuietly } from '../util/mutation-impact'
 import type { UnitsChange } from '../util/unit-changes'
 import { createModelSession, type ModelSession } from './model-session'
 import type { UnitLute } from './unit-lute'
+import { wysiwygFixture } from '../testing/budget-harness'
 
 // Task 733 / 004-C: the model session over a real text model, real Lute and a jsdom IR root. The
 // animation frames and the clock are fake; the host messages are plain objects.
@@ -48,7 +49,7 @@ const windowFrames = {
   cancel: window.cancelAnimationFrame,
 }
 
-function rig(options: { e2e?: boolean } = {}): Rig {
+function rig(options: { e2e?: boolean; wysiwygUnits?: boolean } = {}): Rig {
   const root = document.createElement('div')
   root.className = 'vditor-reset vditor-ir'
   document.body.appendChild(root)
@@ -64,7 +65,10 @@ function rig(options: { e2e?: boolean } = {}): Rig {
   const viewport = { calls: 0 }
   window.requestAnimationFrame = (cb) => frames.push(() => cb(0))
   window.cancelAnimationFrame = () => undefined
+  // Task 733 / 013: these rigs hold an IR root only, so WYSIWYG units stay off here (the 013 block
+  // below builds WYSIWYG rigs); a mode change to WYSIWYG keeps its pre-013 meaning.
   const session = createModelSession({
+    wysiwygUnits: options.wysiwygUnits ?? false,
     win: window,
     getRoot: () => root,
     getLute: () => lute,
@@ -87,7 +91,7 @@ function rig(options: { e2e?: boolean } = {}): Rig {
       viewport.calls += 1
       return false
     },
-  })
+  } as Parameters<typeof createModelSession>[0])
   live.push(session)
   return {
     session,
@@ -1790,5 +1794,170 @@ describe('list item Enter scopes (Task 733 / 012-12, B-03)', () => {
       }
     },
     BUILD_TIMEOUT_MS,
+  )
+})
+
+// ---- Task 733 / 013-T1: the model in WYSIWYG (technical task 013 section 6.2, shared rules 3.12) ----
+//
+// A rig with both mode roots, as Vditor keeps them: `getRoot` answers the root of the served mode. The
+// WYSIWYG root holds Lute's WYSIWYG DOM (`wysiwygFixture` HTML), the IR root Lute's IR DOM.
+describe('013 WYSIWYG model session', () => {
+  let wysiwygLute: UnitLute & Record<string, (value: string) => string>
+  beforeAll(() => {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wysiwygLute = real.lute
+  })
+
+  function modeRig(options: { mode: 'ir' | 'wysiwyg'; wysiwygUnits: boolean }) {
+    const irRoot = document.createElement('div')
+    irRoot.className = 'vditor-reset vditor-ir'
+    const wysiwygRoot = document.createElement('div')
+    wysiwygRoot.className = 'vditor-reset vditor-wysiwyg'
+    document.body.append(irRoot, wysiwygRoot)
+    const mode = { value: options.mode as string }
+    const frames: Array<() => void> = []
+    const session = createModelSession({
+      wysiwygUnits: options.wysiwygUnits,
+      win: window,
+      getRoot: () => (mode.value === 'wysiwyg' ? wysiwygRoot : irRoot),
+      getLute: () => (mode.value === 'wysiwyg' ? wysiwygLute : lute),
+      getMode: () => mode.value,
+      isPreviewShowing: () => false,
+      isStreaming: () => false,
+      isComposing: () => false,
+      e2e: true,
+      countFallbackPublication: () => undefined,
+      requestAnimationFrame: (cb: () => void) => frames.push(cb),
+      cancelAnimationFrame: () => undefined,
+      now: () => 0,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      inViewport: () => false,
+    } as Parameters<typeof createModelSession>[0])
+    live.push(session)
+    return {
+      session,
+      irRoot,
+      wysiwygRoot,
+      mode,
+      stats: () =>
+        (window as unknown as Record<string, any>).__vmdeModelShadowStats,
+      runFrames() {
+        for (const cb of frames.splice(0)) cb()
+      },
+      /** Renders `markdown` into both roots, as the two mode trees of Vditor. */
+      render(markdown: string) {
+        irRoot.innerHTML = lute.Md2VditorIRDOM(markdown)
+        wysiwygRoot.innerHTML = wysiwygFixture(markdown).root.innerHTML
+      },
+    }
+  }
+
+  /** A WYSIWYG model built and live over `markdown`. */
+  function openWysiwyg(markdown: string, wysiwygUnits = true) {
+    const r = modeRig({ mode: 'wysiwyg', wysiwygUnits })
+    r.render(markdown)
+    r.session.onHostText(markdown, 3)
+    r.session.onEditDomComplete()
+    return r
+  }
+
+  const TABLE_DOC =
+    'intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- one\n- two\n\n```ts\nconst a = 1\n```\n'
+
+  it('builds over the WYSIWYG root and publishes typing as a delta', () => {
+    const r = openWysiwyg(TABLE_DOC)
+    expect(r.stats()).toMatchObject({ state: 'live', mode: 'wysiwyg' })
+    expect(r.session.canPublishDelta()).toBe(true)
+    expect(r.session.confirmedSnapshot()).toEqual({ text: TABLE_DOC, epoch: 3 })
+    const paragraph = r.wysiwygRoot.querySelector('p') as HTMLElement
+    paragraph.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    ;(paragraph.firstChild as Text).data = 'intro2'
+    const port = r.session.deltaPort()
+    expect(port.prepareDelta(1).kind).toBe('changes')
+    expect(port.modelText()).toBe(TABLE_DOC.replace('intro', 'intro2'))
+  })
+
+  it('serves cells and items of the WYSIWYG DOM as live units', () => {
+    const r = openWysiwyg(TABLE_DOC)
+    const cell = r.wysiwygRoot.querySelector('td') as HTMLElement
+    expect(r.session.liveUnitOf(cell.firstChild as Text)?.kind).toBe('cell')
+    const item = r.wysiwygRoot.querySelector('li') as HTMLElement
+    expect(r.session.liveUnitOf(item.firstChild as Text)?.kind).toBe(
+      'list-item',
+    )
+  })
+
+  it("stays off with reason mode when WYSIWYG units are off (today's path)", () => {
+    const r = openWysiwyg(TABLE_DOC, false)
+    expect(r.stats()).toMatchObject({ state: 'off', offReason: 'mode' })
+    expect(r.session.canPublishDelta()).toBe(false)
+    expect(r.session.beforeWholeTextPost(1)).toBeUndefined()
+  })
+
+  it('re-enters on IR to WYSIWYG to IR: each first post asks for the host bytes and the rebind rebuilds', () => {
+    const r = modeRig({ mode: 'ir', wysiwygUnits: true })
+    r.render(TABLE_DOC)
+    r.session.onHostText(TABLE_DOC, 3)
+    r.session.onEditDomComplete()
+    expect(r.stats()).toMatchObject({ state: 'live', mode: 'ir' })
+    let sequence = 0
+    for (const next of ['wysiwyg', 'ir'] as const) {
+      r.mode.value = next
+      r.session.onModeChange(next)
+      expect(
+        r.session.canPublishDelta(),
+        `${next}: no delta before the rebind`,
+      ).toBe(false)
+      sequence += 1
+      expect(r.session.beforeWholeTextPost(sequence)).toEqual({ rebind: true })
+      r.session.onRebind({
+        command: 'rebind',
+        epoch: 3,
+        afterSequence: 0,
+        content: TABLE_DOC,
+        editSequence: sequence,
+      })
+      r.runFrames()
+      expect(r.stats(), next).toMatchObject({ state: 'live', mode: next })
+      expect(r.session.canPublishDelta()).toBe(true)
+    }
+  })
+
+  // B-03 on the WYSIWYG fixture (D-13 design section 5.2): a list item Enter is a scoped change.
+  describe.each([1, 4, 16] as const)(
+    'B-03 list item Enter at factor %i',
+    (factor) => {
+      it('reports whole false, the two items as scopes and the list as structural', () => {
+        const markdown = tableHeavyMarkdown(factor)
+        const r = openWysiwyg(markdown)
+        r.runFrames()
+        const changes: UnitsChange[] = []
+        r.session.onUnitsChanged((change) => {
+          changes.push(change)
+        })
+        const list = r.wysiwygRoot.querySelector(':scope > ul') as HTMLElement
+        const item = list.children[2] as HTMLElement
+        item.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+        // Enter inside the item, as the browser and the 011 pair spin leave it: the item split in two.
+        const text = item.firstChild as Text
+        const added = item.cloneNode(false) as HTMLElement
+        added.textContent = text.data.slice('list item'.length)
+        text.data = text.data.slice(0, 'list item'.length)
+        item.after(added)
+        r.session.confirmedUnits()
+        r.runFrames()
+        expect(changes).toHaveLength(1)
+        const change = changes[0] as UnitsChange & {
+          scopes?: readonly HTMLElement[]
+        }
+        expect(change.whole).toBe(false)
+        expect(change.scopes).toEqual([item, added])
+        expect(change.changed.length).toBeLessThanOrEqual(2)
+        expect(change.structural).toEqual([list])
+      }, 60_000)
+    },
   )
 })

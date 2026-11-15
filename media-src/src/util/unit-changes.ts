@@ -121,3 +121,19 @@ export function onUnitFeed(win: Window, listener: FeedListener): () => void {
     slot.listeners.delete(listener)
   }
 }
+
+/** Task 733 / 013 (D-13): the text model, unit spin, unit history and the unit feed serve WYSIWYG. false
+ *  restores today's WYSIWYG path (model off with reason 'mode', hooks refuse, old history engine). */
+export const WYSIWYG_UNITS: boolean = true
+
+export type UnitMode = 'ir' | 'wysiwyg'
+
+/** The mode the model serves for Vditor's current mode: 'ir', 'wysiwyg' when `wysiwygUnits` (default
+ *  WYSIWYG_UNITS), else undefined (Source, unknown, or WYSIWYG units off). O(1), no allocation. */
+export function unitModeOf(
+  mode: string | null | undefined,
+  wysiwygUnits: boolean = WYSIWYG_UNITS,
+): UnitMode | undefined {
+  if (mode === 'ir') return 'ir'
+  return mode === 'wysiwyg' && wysiwygUnits ? 'wysiwyg' : undefined
+}

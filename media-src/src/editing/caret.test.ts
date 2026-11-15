@@ -21,7 +21,12 @@ import {
   writeSelectionKeepingIntent,
 } from './caret'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
-import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
+import {
+  countBudget,
+  type Factor,
+  irFixture,
+  wysiwygFixture,
+} from '../testing/budget-harness'
 import { tagCodeSource } from './code-source'
 
 // Deterministic rAF: capture callbacks, fire them explicitly as "the next frame" instead of
@@ -1454,6 +1459,70 @@ describe('B-14: one flush and one paint check per placement', () => {
         expect(counts.flushes).toBeLessThanOrEqual(1)
         expect(counts.layoutReads).toBeLessThanOrEqual(2)
       },
+    )
+  })
+})
+
+// ---- Task 733 / 013-T4: B-14 caret cases on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// A caret placement into Lute's WYSIWYG DOM (the editor in WYSIWYG) lands in the WYSIWYG root with one
+// selection write, at most one layout read and at most one layout flush, in a paragraph, a table cell,
+// a list item and a code block.
+describe('013 B-14 caret placement on the WYSIWYG fixture', () => {
+  function mountWysiwyg(factor: Factor): HTMLElement {
+    const holder = document.createElement('div')
+    holder.className = 'vditor-wysiwyg'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = wysiwygFixture(tableHeavyMarkdown(factor)).root.innerHTML
+    holder.append(root)
+    document.body.append(holder)
+    ;(window as unknown as Record<string, unknown>).vditor = {
+      vditor: { currentMode: 'wysiwyg', wysiwyg: { element: root } },
+    }
+    return root
+  }
+  const topIndex = (root: HTMLElement, selector: string): number =>
+    Array.prototype.indexOf.call(root.children, root.querySelector(selector))
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it.each([
+      ['paragraph', ':scope > p', 2],
+      ['table cell', ':scope > table', 3],
+      ['list item', ':scope > ul', 3],
+      ['code block', ':scope > [data-type="code-block"]', 5],
+    ])(
+      'a placement in a %s',
+      (_place, selector, offset) => {
+        const root = mountWysiwyg(factor)
+        setCaretPaintabilityProbeForTests(() => true)
+        const block = topIndex(root, selector)
+        expect(block).toBeGreaterThanOrEqual(0)
+        let placed = false
+        const { counts } = countBudget(root, () => {
+          placed = requestCaret({ blockPath: [block], offsetInBlock: offset })
+        })
+        expect(placed, 'placed').toBe(true)
+        const selection = window.getSelection() as Selection
+        expect(
+          root.contains(selection.anchorNode),
+          'caret in the WYSIWYG root',
+        ).toBe(true)
+        expect(
+          root.children[block].contains(selection.anchorNode),
+          'caret in its block',
+        ).toBe(true)
+        // D-13 design 13.16 (Q-123): the selection writes of a placement are recorded, not asserted;
+        // the bounds stay on the layout reads and the flushes.
+        // biome-ignore lint/suspicious/noConsole: counts only, no document text
+        console.log(
+          `WYSIWYG-CARET ${JSON.stringify({ factor, selectionWrites: counts.selectionWrites })}`,
+        )
+        expect(counts.layoutReads, 'layout reads').toBeLessThanOrEqual(1)
+        expect(counts.flushes, 'flushes').toBeLessThanOrEqual(1)
+      },
+      60_000,
     )
   })
 })

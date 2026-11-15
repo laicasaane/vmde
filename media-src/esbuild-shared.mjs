@@ -2843,17 +2843,137 @@ export function patchIrBackspaceRootRead(code) {
 // cell). The same hook handles a paste into a cell (event undefined: cells only) before the block spin.
 const IR_PASTE_SPIN =
   'blockElement.outerHTML = vditor.lute.SpinVditorIRDOM(blockElement.outerHTML);'
+// Task 733 / 013 (V-W2, shared rules 3.12): the WYSIWYG branch of the same paste handler.
+const WYSIWYG_PASTE_SPIN =
+  'blockElement.outerHTML = vditor.lute.SpinVditorDOM(blockElement.outerHTML);'
+const PASTE_SPIN_GUARD =
+  'if (!((window as any).__vmdeSpinUnit && (window as any).__vmdeSpinUnit(vditor, range, blockElement, undefined))) {'
 export function patchPasteUnitSpin(code) {
-  assertOneAnchor(
-    code,
-    IR_PASTE_SPIN,
-    'patchPasteUnitSpin',
-    'util/fixBrowserBehavior.ts',
+  for (const anchor of [IR_PASTE_SPIN, WYSIWYG_PASTE_SPIN])
+    assertOneAnchor(
+      code,
+      anchor,
+      'patchPasteUnitSpin',
+      'util/fixBrowserBehavior.ts',
+    )
+  let out = code
+  for (const anchor of [IR_PASTE_SPIN, WYSIWYG_PASTE_SPIN])
+    out = out.replace(
+      anchor,
+      `${PASTE_SPIN_GUARD}\n                    ${anchor}\n                }`,
+    )
+  return out
+}
+
+// ---- Task 733 / 013: WYSIWYG unit patches V-W1, V-W3, V-W4 (shared rules 3.12) ----
+//
+// V-W1 guards the WYSIWYG block spin with the unit hook, over the same span as `patchIrUnitSpin`: from
+// the root check to the definitions merge (list widening, trailing-block collection, SpinVditorDOM and
+// the DOM write). The caret marker and the [style] sweep stay before it. Outermost transform of the
+// wysiwyg/input.ts chain.
+const WYSIWYG_UNIT_SPIN_START =
+  'const isWYSIWYGElement = blockElement.isEqualNode(vditor.wysiwyg.element);'
+const WYSIWYG_UNIT_SPIN_END = 'let firstLinkRefDefElement: Element;'
+export function patchWysiwygUnitSpin(code) {
+  const where = 'wysiwyg/input.ts'
+  assertOneAnchor(code, WYSIWYG_UNIT_SPIN_START, 'patchWysiwygUnitSpin', where)
+  assertOneAnchor(code, WYSIWYG_UNIT_SPIN_END, 'patchWysiwygUnitSpin', where)
+  return code
+    .replace(
+      WYSIWYG_UNIT_SPIN_START,
+      `if (!((window as any).__vmdeSpinUnit && (window as any).__vmdeSpinUnit(vditor, range, blockElement, event))) {\n        ${WYSIWYG_UNIT_SPIN_START}`,
+    )
+    .replace(WYSIWYG_UNIT_SPIN_END, `}\n\n        ${WYSIWYG_UNIT_SPIN_END}`)
+}
+
+// V-W3: the four root queries for definitions and footnotes go through `__vmdeTrailingBlocks`
+// (editing/edit-activity.ts), which answers from the root's tail while the feed is live, as 009 does
+// for IR. After the spin the hook is skipped when the spun HTML holds such a block (`vmdeSpunTrailing`,
+// function-scoped, unset after a unit spin): a block typed mid-document must still be found.
+const WYSIWYG_TRAILING_BEFORE = [
+  [
+    'link-ref-defs-block',
+    `vditor.wysiwyg.element.querySelectorAll("[data-type='link-ref-defs-block']").forEach((item) => {`,
+  ],
+  [
+    'footnotes-block',
+    `vditor.wysiwyg.element.querySelectorAll("[data-type='footnotes-block']").forEach((item) => {`,
+  ],
+]
+const WYSIWYG_TRAILING_AFTER = [
+  [
+    'link-ref-defs-block',
+    'const allLinkRefDefsElement = ',
+    `vditor.wysiwyg.element.querySelectorAll("[data-type='link-ref-defs-block']");`,
+  ],
+  [
+    'footnotes-block',
+    'const allFootnoteElement = ',
+    `vditor.wysiwyg.element.querySelectorAll("[data-type='footnotes-block']");`,
+  ],
+]
+const WYSIWYG_TRAILING_SPUN =
+  'log("SpinVditorDOM", html, "result", vditor.options.debugger);'
+export function patchWysiwygTrailingBlockLookups(code) {
+  const name = 'patchWysiwygTrailingBlockLookups'
+  const where = 'wysiwyg/input.ts'
+  for (const [, anchor] of WYSIWYG_TRAILING_BEFORE)
+    assertOneAnchor(code, anchor, name, where)
+  for (const [, lead, query] of WYSIWYG_TRAILING_AFTER)
+    assertOneAnchor(code, `${lead}${query}`, name, where)
+  assertOneAnchor(code, WYSIWYG_TRAILING_SPUN, name, where)
+  let out = code
+  for (const [type, anchor] of WYSIWYG_TRAILING_BEFORE) {
+    const query = anchor.slice(0, anchor.indexOf('.forEach('))
+    out = out.replace(
+      anchor,
+      `((window as any).__vmdeTrailingBlocks?.(vditor.wysiwyg.element, "${type}") ?? ${query}).forEach((item) => {`,
+    )
+  }
+  out = out.replace(
+    WYSIWYG_TRAILING_SPUN,
+    `${WYSIWYG_TRAILING_SPUN}\n        var vmdeSpunTrailing = html.indexOf('data-type="link-ref-defs-block"') !== -1 || html.indexOf('data-type="footnotes-block"') !== -1;`,
   )
-  return code.replace(
-    IR_PASTE_SPIN,
-    `if (!((window as any).__vmdeSpinUnit && (window as any).__vmdeSpinUnit(vditor, range, blockElement, undefined))) {\n                    ${IR_PASTE_SPIN}\n                }`,
-  )
+  for (const [type, lead, query] of WYSIWYG_TRAILING_AFTER) {
+    out = out.replace(
+      `${lead}${query}`,
+      `${lead}((vmdeSpunTrailing ? undefined : (window as any).__vmdeTrailingBlocks?.(vditor.wysiwyg.element, "${type}")) ?? ${query.slice(0, -1)});`,
+    )
+  }
+  return out
+}
+
+// V-W4: the caret-marker sweep and the fresh-preview render loop of WYSIWYG input query the root on
+// every key. While the feed is live (the trailing-block hook answers for the root) the sweep visits
+// the block and its previous sibling, where the marker of the last key sits; otherwise the root query
+// runs. The preview loop goes through the diagram render hook only when that hook declares WYSIWYG
+// support (`acceptsWysiwyg`); otherwise the stock loop runs.
+const WYSIWYG_WBR_SWEEP =
+  'vditor.wysiwyg.element.querySelectorAll("wbr").forEach((wbr) => {'
+const WYSIWYG_PREVIEW_LOOP =
+  `vditor.wysiwyg.element.querySelectorAll(".vditor-wysiwyg__preview[data-render='2']")\n` +
+  `            .forEach((item: HTMLElement) => {\n` +
+  `                processCodeRender(item, vditor);\n` +
+  `            });`
+export function patchWysiwygScopedInputQueries(code) {
+  const name = 'patchWysiwygScopedInputQueries'
+  const where = 'wysiwyg/input.ts'
+  assertOneAnchor(code, WYSIWYG_WBR_SWEEP, name, where)
+  assertOneAnchor(code, WYSIWYG_PREVIEW_LOOP, name, where)
+  const scopedMarkers =
+    '((window as any).__vmdeTrailingBlocks?.(vditor.wysiwyg.element, "link-ref-defs-block") !== undefined' +
+    ' ? [blockElement, blockElement.previousElementSibling].flatMap((scope) => scope ? Array.from(scope.querySelectorAll("wbr")) : [])' +
+    ' : vditor.wysiwyg.element.querySelectorAll("wbr")).forEach((wbr) => {'
+  return code
+    .replace(WYSIWYG_WBR_SWEEP, scopedMarkers)
+    .replace(
+      WYSIWYG_PREVIEW_LOOP,
+      `if ((window as any).__vmdeDeferIrDiagramRender?.acceptsWysiwyg) {\n` +
+        `            (window as any).__vmdeDeferIrDiagramRender(vditor, processCodeRender);\n` +
+        `        } else {\n` +
+        `            ${WYSIWYG_PREVIEW_LOOP}\n` +
+        `        }`,
+    )
 }
 const IR_SPIN_CALL = 'html = vditor.lute.SpinVditorIRDOM(html);'
 export function patchIrStripPreviewSpin(code) {
@@ -4435,8 +4555,17 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     // Task 536: WYSIWYG input has the same unconditional document-wide ToC refresh as IR input.
+    // 013 (shared rules 3.12): + trailing-block lookups (V-W3) + scoped caret-marker sweep and preview
+    // loop (V-W4) + the unit spin guard around the block spin (V-W1, outermost).
     file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]input\.ts$/,
-    transform: (code) => patchDeferRenderToc(code, 'wysiwyg/input.ts'),
+    transform: (code) =>
+      patchWysiwygUnitSpin(
+        patchWysiwygScopedInputQueries(
+          patchWysiwygTrailingBlockLookups(
+            patchDeferRenderToc(code, 'wysiwyg/input.ts'),
+          ),
+        ),
+      ),
   },
   {
     // 171 item 4: skip the discarded full-doc serialize in WYSIWYG + SV (same anchor in both files).

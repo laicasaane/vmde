@@ -6,6 +6,7 @@
 // `undoStack`, `redoStack`, `lastText` or `hasUndo`, and they observe recorded entries and
 // transitions through the store instead of wrapping engine methods. A behaviour-preserving seam:
 // task 004 puts the unit engine behind the same interface.
+import { unitModeOf } from '../util/unit-changes'
 import { stripWrapHints } from '../util/wrap-hint-mark'
 
 export type HistoryMode = 'ir' | 'wysiwyg' | 'sv'
@@ -350,9 +351,14 @@ class VditorHistoryStore implements HistoryStore {
     }
   }
 
-  /** The unit engine when it claims this inner Vditor's IR history for `mode`. */
+  /**
+   * The unit engine when it claims this inner Vditor's history for `mode`: IR, or WYSIWYG with WYSIWYG
+   * units (Task 733 / 013), and only for the mode the editor shows (the engine keeps one history).
+   */
   private claimed(mode: HistoryMode): UnitHistoryDelegate | undefined {
-    return mode === 'ir' && unitDelegate?.claims(this.inner)
+    return unitModeOf(mode) !== undefined &&
+      mode === this.inner.currentMode &&
+      unitDelegate?.claims(this.inner)
       ? unitDelegate
       : undefined
   }

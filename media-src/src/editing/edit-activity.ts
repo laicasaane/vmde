@@ -832,7 +832,9 @@ export function scheduleReveal(): void {
 // `data-render="1"` on every render). Live, the hook looks only at the caret's top-level element,
 // its previous and next siblings and any further run of siblings that hold fresh previews, plus the
 // deferred ones; with no live feed of this root, or a caret outside it, the whole-root pass stays.
-const FRESH_PREVIEW = ".vditor-ir__preview[data-render='2']"
+// Task 733 / 013: a mode root holds the previews of its own mode only, so both mode classes match.
+const FRESH_PREVIEW =
+  ".vditor-ir__preview[data-render='2'], .vditor-wysiwyg__preview[data-render='2']"
 const CODE_BLOCK = '.vditor-ir__node[data-type="code-block"]'
 const NO_PREVIEWS: readonly HTMLElement[] = Object.freeze([])
 // Previews skipped while typing; rendered at settle. Pruned when rendered, disconnected or no
@@ -942,10 +944,39 @@ function deferPreview(
   deferredPreviews.add(preview)
 }
 
-function deferIrDiagramRender(
-  vditor: { ir: { element: HTMLElement } },
+/**
+ * Task 733 / 013 (Q-122): the WYSIWYG branch, called from the patched wysiwyg/input.ts preview loop
+ * (V-W4). While the feed is live it renders only the fresh previews of the spun window and the ones
+ * still pending, else every fresh preview of the root, as the stock loop does. It defers nothing:
+ * the cached overlay that hides a skipped render is built for the IR node shape.
+ */
+function renderWysiwygPreviews(
+  vditor: { wysiwyg?: { element?: HTMLElement } },
   processCodeRender: (el: HTMLElement, v: unknown) => void,
 ): void {
+  const root = vditor.wysiwyg?.element
+  if (!root) return
+  const previews =
+    scopedPreviews(root) ??
+    Array.from(root.querySelectorAll<HTMLElement>(FRESH_PREVIEW))
+  for (const preview of previews) {
+    deferredPreviews.delete(preview)
+    processCodeRender(preview, vditor)
+  }
+}
+
+function deferIrDiagramRender(
+  vditor: {
+    currentMode?: string
+    ir: { element: HTMLElement }
+    wysiwyg?: { element?: HTMLElement }
+  },
+  processCodeRender: (el: HTMLElement, v: unknown) => void,
+): void {
+  if (vditor.currentMode === 'wysiwyg') {
+    renderWysiwygPreviews(vditor, processCodeRender)
+    return
+  }
   const root = vditor.ir.element
   const previews =
     scopedPreviews(root) ??
@@ -1087,6 +1118,12 @@ export function installEditActivity(
     }
   ;(window as unknown as Record<string, unknown>).__vmdeDeferIrDiagramRender =
     deferIrDiagramRender
+  // Task 733 / 013 (V-W4): the WYSIWYG preview loop routes through the hook only while it says so.
+  ;(
+    deferIrDiagramRender as typeof deferIrDiagramRender & {
+      acceptsWysiwyg?: boolean
+    }
+  ).acceptsWysiwyg = true
   ;(window as unknown as Record<string, unknown>).__vmdeTrailingBlocks =
     trailingBlocks
   // Task 172: shrink the SpinVditorIRDOM input — empty the rendered preview SVG/canvas before the spin

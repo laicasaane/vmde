@@ -8,6 +8,12 @@ import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { tagCodeSource } from '../editing/code-source'
 import { domKind, domUnits } from '../nav/unit-pairing'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  countBudget,
+  countedLute,
+  wysiwygFixture,
+} from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
 import { applyChanges, type TextChange } from './change-set'
 import { installModelSync } from './model-structure'
@@ -27,6 +33,8 @@ import {
   serializeListItemHtml,
   type UnitLute,
 } from './unit-lute'
+import * as unitLuteModule from './unit-lute'
+import { createUnitDom } from './unit-dom'
 
 // ---- Real Lute with the production patches, and a jsdom adapter over it. ----
 let lute: UnitLute
@@ -1592,5 +1600,117 @@ describe('012-11 list restore and split serialize the changed items only', () =>
     expect(calls.serializeList).toBe(0)
     expect(calls.serialize).toBeLessThanOrEqual(3)
     expectConsistent(session.model)
+  })
+})
+
+// ---- Task 733 / 013-T1: B-16 and B-17 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// The real unit DOM over Lute's WYSIWYG DOM (`unitLuteOf(lute, 'wysiwyg')`, `UnitDomOptions.mode`, 013-I1).
+// A code-block publication takes the WYSIWYG text path (no Lute call); a list item split serializes the two
+// items only (no whole-list Lute call).
+describe('013 WYSIWYG code block and list structure', () => {
+  let wysiwyg: Record<string, (value: string) => string>
+  beforeAll(() => {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wysiwyg = countedLute(real.lute)
+  })
+  const opened: Array<{ detach(): void }> = []
+  afterEach(() => {
+    for (const dom of opened.splice(0)) dom.detach()
+  })
+  function wysiwygPair(): UnitLute {
+    const factory = (unitLuteModule as unknown as Record<string, unknown>)
+      .unitLuteOf
+    if (typeof factory !== 'function')
+      throw new Error('unit-lute exports no unitLuteOf (013-I1)')
+    return (factory as (lute: object, mode: 'wysiwyg') => UnitLute)(
+      wysiwyg,
+      'wysiwyg',
+    )
+  }
+  function openWysiwyg(markdown: string) {
+    const root = document.createElement('div')
+    root.className = 'vditor-reset vditor-wysiwyg'
+    root.innerHTML = wysiwygFixture(markdown).root.innerHTML
+    document.body.appendChild(root)
+    const dom = createUnitDom(root, wysiwygPair(), {
+      mode: 'wysiwyg',
+    } as Parameters<typeof createUnitDom>[2])
+    const model = createTextModel(dom, scanMovableBlocks)
+    model.build(markdown)
+    expect(model.state, String(model.offReason)).toBe('live')
+    dom.attach(model)
+    opened.push(dom)
+    proveAll(model)
+    return { root, dom, model }
+  }
+  const FENCE_FIRST = 'const value1 = 1 * 2'
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    const markdown = tableHeavyMarkdown(factor)
+
+    it('B-16: a letter typed in the code block publishes with no Lute call', () => {
+      const { root, dom, model } = openWysiwyg(markdown)
+      const code = root.querySelector(
+        ':scope > [data-type="code-block"] > pre.vditor-wysiwyg__pre > code',
+      ) as HTMLElement
+      const text = code.firstChild as Text
+      text.insertData(FENCE_FIRST.length, 'a')
+      const { counts } = countBudget(root, () => {
+        dom.drain()
+        syncChecked(model)
+      })
+      expect(model.text).toBe(markdown.replace(FENCE_FIRST, `${FENCE_FIRST}a`))
+      expect(counts.luteCalls, 'Lute calls').toBe(0)
+    }, 60_000)
+
+    it('B-16: the code block replaced by its block spin publishes with no Lute call', () => {
+      const { root, dom, model } = openWysiwyg(markdown)
+      const block = root.querySelector(
+        ':scope > [data-type="code-block"]',
+      ) as HTMLElement
+      const source = markdown
+        .split('\n\n')
+        .find((part) => part.startsWith('```ts')) as string
+      const typed = source.replace(FENCE_FIRST, `${FENCE_FIRST}a`)
+      const holder = document.createElement('div')
+      holder.innerHTML = wysiwyg.Md2VditorDOM(typed)
+      const spun = holder.firstElementChild as HTMLElement
+      const { counts } = countBudget(root, () => {
+        block.replaceWith(spun)
+        dom.drain()
+        syncChecked(model)
+      })
+      expect(model.text).toBe(markdown.replace(source, typed))
+      expect(counts.luteCalls, 'Lute calls').toBe(0)
+    }, 60_000)
+
+    it('B-17: a list item split serializes the two items only', () => {
+      const { root, dom, model } = openWysiwyg(markdown)
+      const list = root.querySelector(':scope > ul') as HTMLElement
+      const item = list.children[2] as HTMLElement
+      const text = item.firstChild as Text
+      const added = item.cloneNode(false) as HTMLElement
+      added.textContent = text.data.slice('list item'.length)
+      text.data = text.data.slice(0, 'list item'.length)
+      const wholeList = vi.spyOn(wysiwyg, 'VditorDOM2Md')
+      item.after(added)
+      dom.drain()
+      syncChecked(model)
+      const listCalls = wholeList.mock.calls.filter(([html]) => {
+        const input = String(html)
+        return (
+          (input.startsWith('<ul') || input.startsWith('<ol')) &&
+          (input.match(/<li/gu)?.length ?? 0) >= 3
+        )
+      })
+      wholeList.mockRestore()
+      expect(model.text).toBe(
+        markdown.replace('- list item 3\n', '- list item\n-  3\n'),
+      )
+      expect(listCalls, 'whole-list Lute calls').toHaveLength(0)
+    }, 60_000)
   })
 })

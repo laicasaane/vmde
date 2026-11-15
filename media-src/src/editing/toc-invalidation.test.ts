@@ -2,15 +2,23 @@
 // Task 733 (D-13 B-11): the TOC invalidation decides from the scopes of a unit feed change while the
 // feed describes its root, and keeps its own observer for every other case. The existing TOC cases
 // live in `edit-activity.test.ts`.
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { installTocInvalidation } from './toc-invalidation'
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest'
+import {
+  installTocInvalidation,
+  tocImpactRequiresRefresh,
+} from './toc-invalidation'
 import {
   type LiveUnit,
   provideUnitFeed,
   type UnitFeed,
   type UnitsChange,
 } from '../util/unit-changes'
-import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
+import {
+  countBudget,
+  type Factor,
+  irFixture,
+  wysiwygFixture,
+} from '../testing/budget-harness'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 type Change = Pick<UnitsChange, 'whole'> &
@@ -161,5 +169,111 @@ describe('TOC invalidation on unit feed changes (Task 733, B-11)', {
     heading.lastChild!.replaceWith(document.createTextNode('Source code'))
     await settle()
     expect(renderToc).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---- Task 733 / 013-T5: B-11 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// `installTocInvalidation` over a live feed of Lute's WYSIWYG root (the table-heavy fixture). B-11: the TOC decides from the scope, and a request
+// with the outline off queries nothing on the root.
+describe('013 B-11 installTocInvalidation on the WYSIWYG fixture', () => {
+  const feedListeners = new Set<(change: UnitsChange) => void>()
+  let wysiwygFrames: FrameRequestCallback[] = []
+  let stop: (() => void) | undefined
+  beforeEach(() => {
+    wysiwygFrames = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      wysiwygFrames.push(cb)
+      return wysiwygFrames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+  })
+  afterEach(() => {
+    stop?.()
+    stop = undefined
+    provideUnitFeed(window, undefined)
+    feedListeners.clear()
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+  })
+  const runWysiwygFrames = (): void => {
+    for (let round = 0; round < 5 && wysiwygFrames.length > 0; round++)
+      for (const frame of wysiwygFrames.splice(0)) frame(0)
+  }
+  const settleWysiwyg = async (): Promise<void> => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+    runWysiwygFrames()
+  }
+  const nodesOf = (elements: readonly Element[]): number =>
+    elements.reduce((sum, el) => sum + 1 + el.querySelectorAll('*').length, 0)
+  async function mountWysiwyg(factor: Factor) {
+    const app = document.createElement('div')
+    // The production mount: observers watch `#app`, so its queries count as root queries.
+    app.id = 'app'
+    app.className = 'vditor vditor-wysiwyg'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = wysiwygFixture(MARKDOWN(factor)).root.innerHTML
+    app.append(root)
+    document.body.append(app)
+    vi.stubGlobal('vditor', {
+      getCurrentMode: () => 'wysiwyg',
+      vditor: { currentMode: 'wysiwyg', wysiwyg: { element: root } },
+    })
+    const feed: UnitFeed = {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        feedListeners.add(listener)
+        return () => feedListeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    // The TOC invalidation is installed per case.
+    await settleWysiwyg()
+    return { app, root }
+  }
+
+  const MARKDOWN = (factor: Factor): string => tableHeavyMarkdown(factor)
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it('a TOC request with the outline off queries nothing on the root', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const toc = installTocInvalidation(root, (_name, run) => run())
+      stop = toc.dispose
+      const vditor = {
+        currentMode: 'wysiwyg',
+        options: { outline: { enable: false } },
+        wysiwyg: { element: root },
+      }
+      const render = vi.fn()
+      const { counts } = countBudget(root, () => toc.request(vditor, render))
+      expect(counts.rootQueries, 'root queries').toBe(0)
+    }, 60_000)
+
+    it('decides from the scope: a paragraph needs no refresh, a heading does', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const paragraph = root.querySelector(':scope > p') as HTMLElement
+      const heading = root.querySelector(':scope > h2') as HTMLElement
+      const impact = (block: HTMLElement) =>
+        ({
+          full: false,
+          modeRebuild: false,
+          topLevelChanged: false,
+          blocks: new Set([block]),
+        }) as unknown as Parameters<typeof tocImpactRequiresRefresh>[0]
+      const { result, counts } = countBudget(root, () =>
+        tocImpactRequiresRefresh(impact(paragraph)),
+      )
+      expect(result).toBe(false)
+      expect(counts.rootQueries, 'root queries').toBe(0)
+      expect(counts.queriedNodes).toBeLessThanOrEqual(nodesOf([paragraph]))
+      expect(tocImpactRequiresRefresh(impact(heading))).toBe(true)
+    }, 60_000)
   })
 })

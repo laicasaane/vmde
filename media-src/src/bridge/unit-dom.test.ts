@@ -15,6 +15,8 @@ import { installModelSync } from './model-structure'
 import { createUnitDom, type UnitDomControl } from './unit-dom'
 import type { UnitHost } from './text-model'
 import type { UnitLute } from './unit-lute'
+import { countBudget, wysiwygFixture } from '../testing/budget-harness'
+import * as unitLuteModule from './unit-lute'
 
 // Task 733 / 004-A: the DOM adapter of the text model and its mutation observer. Real Lute with the
 // two production patches serves the HTML; the model is the real one over the adapter, so the mapping
@@ -893,3 +895,118 @@ describe.each([1, 4, 16] as const)(
     )
   },
 )
+
+// ---- Task 733 / 013-T1: the DOM adapter over the WYSIWYG root (technical task 013 sections 6.2, 6.6) ----
+//
+// `createUnitDom(root, unitLuteOf(lute, 'wysiwyg'), { mode: 'wysiwyg' })` (013-I1) lists, serializes and
+// observes Lute's WYSIWYG DOM; B-05 and the B-17 table listing repeated on `wysiwygFixture`.
+describe('013 WYSIWYG unit DOM', () => {
+  let wysiwyg: object
+  beforeAll(() => {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wysiwyg = real.lute
+  })
+  const exported = unitLuteModule as unknown as Record<string, unknown>
+  /** The WYSIWYG pair of 013-I1; a clear failure while `unitLuteOf` does not exist. */
+  function wysiwygPair(): UnitLute {
+    const factory = exported.unitLuteOf
+    if (typeof factory !== 'function')
+      throw new Error('unit-lute exports no unitLuteOf (013-I1)')
+    return (factory as (lute: object, mode: 'wysiwyg') => UnitLute)(
+      wysiwyg,
+      'wysiwyg',
+    )
+  }
+  /** A fresh WYSIWYG root with the fixture's DOM (the fixture itself stays unmodified). */
+  function wysiwygRootOf(markdown: string): HTMLElement {
+    const root = document.createElement('div')
+    root.className = 'vditor-reset vditor-wysiwyg'
+    root.innerHTML = wysiwygFixture(markdown).root.innerHTML
+    document.body.appendChild(root)
+    return root
+  }
+  type Inserted = ReadonlySet<HTMLElement>
+  function openWysiwyg(
+    markdown: string,
+    inserted: Inserted[] = [],
+    sets: Inserted[] = [],
+  ) {
+    const root = wysiwygRootOf(markdown)
+    const options = {
+      mode: 'wysiwyg' as const,
+      onBatch: (_changed: unknown, _structure: unknown, added?: Inserted) => {
+        if (!added) return
+        sets.push(added)
+        inserted.push(new Set(added))
+      },
+    }
+    const dom = createUnitDom(
+      root,
+      wysiwygPair(),
+      options as Parameters<typeof createUnitDom>[2],
+    )
+    const model = createTextModel(dom, scanMovableBlocks)
+    model.build(markdown)
+    expect(model.state, String(model.offReason)).toBe('live')
+    dom.attach(model)
+    attached.push(dom)
+    return { root, dom, model, inserted }
+  }
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    const markdown = tableHeavyMarkdown(factor)
+
+    it('builds a live model whose units are the WYSIWYG blocks, items and cells', () => {
+      const { root, model } = openWysiwyg(markdown)
+      expect(model.text).toBe(markdown)
+      const list = root.querySelector(':scope > ul') as HTMLElement
+      expect(model.unitOf(list.children[0] as HTMLElement)?.kind).toBe(
+        'list-item',
+      )
+      const cell = root.querySelector('td') as HTMLElement
+      expect(model.unitOf(cell)?.kind).toBe('cell')
+    }, 60_000)
+
+    it('B-17: lists every table as one entry without reading a row', () => {
+      const root = wysiwygRootOf(markdown)
+      const dom = createUnitDom(root, wysiwygPair(), {
+        mode: 'wysiwyg',
+      } as Parameters<typeof createUnitDom>[2])
+      const { result, counts } = countBudget(root, () => dom.listUnits())
+      expect(result?.filter((unit) => unit.kind === 'table')).toHaveLength(2)
+      expect(counts.tableQueries).toBe(0)
+      expect(counts.innerHtmlReads).toBe(0)
+    }, 60_000)
+
+    it('B-05: reports the inserted elements of a list Enter, a row insert and a block spin only', async () => {
+      const inserted: Inserted[] = []
+      const sets: Inserted[] = []
+      const { root, dom } = openWysiwyg(markdown, inserted, sets)
+      const list = root.querySelector(':scope > ul') as HTMLElement
+      const item = list.children[2] as HTMLElement
+      const added = item.cloneNode(true) as HTMLElement
+      item.after(added)
+      dom.drain()
+      const body = root.querySelector('tbody') as HTMLElement
+      const row = body.children[3].cloneNode(true) as HTMLElement
+      body.children[3].after(row)
+      dom.drain()
+      const paragraph = root.querySelector(':scope > p') as HTMLElement
+      const spun = paragraph.cloneNode(true) as HTMLElement
+      paragraph.replaceWith(spun)
+      dom.drain()
+      ;(spun.firstChild as Text).data = 'typed'
+      dom.drain()
+      expect(inserted.map((set) => [...set])).toEqual([
+        [added],
+        [row],
+        [spun],
+        [],
+      ])
+      // One reused set: a batch that inserts nothing allocates none.
+      expect(new Set(sets).size).toBe(1)
+    }, 60_000)
+  })
+})

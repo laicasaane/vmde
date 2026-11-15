@@ -26,6 +26,7 @@ import {
   type Factor,
   fakeLanes,
   irFixture,
+  wysiwygFixture,
 } from '../testing/budget-harness'
 import { createBackgroundScheduler } from '../util/background-budget'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
@@ -1814,4 +1815,140 @@ describe('section fold background jobs (Task 733)', {
       expect(counts.layoutReads).toBeGreaterThanOrEqual(list.children.length)
     },
   )
+})
+
+// ---- Task 733 / 013-T5: B-11 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// `createSectionFoldController` over a live feed of Lute's WYSIWYG root (the table-heavy fixture). B-11: a scoped paragraph change queries nothing on
+// the root; a heading change still refreshes the folds.
+describe('013 B-11 createSectionFoldController on the WYSIWYG fixture', () => {
+  const feedListeners = new Set<(change: UnitsChange) => void>()
+  let wysiwygFrames: FrameRequestCallback[] = []
+  let stop: (() => void) | undefined
+  beforeEach(() => {
+    wysiwygFrames = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      wysiwygFrames.push(cb)
+      return wysiwygFrames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+  })
+  afterEach(() => {
+    stop?.()
+    stop = undefined
+    provideUnitFeed(window, undefined)
+    feedListeners.clear()
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+  })
+  const runWysiwygFrames = (): void => {
+    for (let round = 0; round < 5 && wysiwygFrames.length > 0; round++)
+      for (const frame of wysiwygFrames.splice(0)) frame(0)
+  }
+  const settleWysiwyg = async (): Promise<void> => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+    runWysiwygFrames()
+  }
+  /** The observer callbacks of the edit run; the frames they queue run inside the count. */
+  const flushRecords = async (): Promise<void> => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+  }
+  const nodesOf = (elements: readonly Element[]): number =>
+    elements.reduce((sum, el) => sum + 1 + el.querySelectorAll('*').length, 0)
+  const emit = (partial: Partial<UnitsChange>): void => {
+    const change = {
+      cause: 'mutation',
+      whole: false,
+      changed: [],
+      structural: [],
+      ...partial,
+    } as UnitsChange
+    for (const listener of Array.from(feedListeners)) listener(change)
+  }
+  const unitOf = (
+    el: HTMLElement,
+    kind: LiveUnit['kind'],
+    top = el,
+  ): LiveUnit => ({
+    el,
+    members: [el],
+    kind,
+    top,
+  })
+  async function mountWysiwyg(factor: Factor) {
+    const app = document.createElement('div')
+    // The production mount: observers watch `#app`, so its queries count as root queries.
+    app.id = 'app'
+    app.className = 'vditor vditor-wysiwyg'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = wysiwygFixture(MARKDOWN(factor)).root.innerHTML
+    app.append(root)
+    document.body.append(app)
+    vi.stubGlobal('vditor', {
+      getCurrentMode: () => 'wysiwyg',
+      vditor: { currentMode: 'wysiwyg', wysiwyg: { element: root } },
+    })
+    const feed: UnitFeed = {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        feedListeners.add(listener)
+        return () => feedListeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    {
+      const controller = createSectionFoldController(
+        window.vditor as never,
+        { surface: () => root } as never,
+      )
+      controller.apply()
+      stop = () => controller.dispose()
+    }
+    await settleWysiwyg()
+    return { app, root }
+  }
+
+  const MARKDOWN = (factor: Factor): string => tableHeavyMarkdown(factor)
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it('a paragraph change queries nothing on the root and at most its scope plus the top-level count', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const paragraph = root.querySelector(':scope > p') as HTMLElement
+      ;(paragraph.firstChild as Text).data += 'x'
+      await flushRecords()
+      const { counts } = countBudget(root, () => {
+        emit({
+          changed: [unitOf(paragraph, 'paragraph')],
+          scopes: [paragraph],
+        } as Partial<UnitsChange>)
+        runWysiwygFrames()
+      })
+      expect(counts.rootQueries, 'root queries').toBe(0)
+      expect(counts.queriedNodes, 'queried nodes').toBeLessThanOrEqual(
+        nodesOf([paragraph]) + root.children.length,
+      )
+    }, 60_000)
+    it('a heading change still refreshes the folds', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const heading = root.querySelector(':scope > h2') as HTMLElement
+      ;(heading.firstChild as Text).data += 'x'
+      await flushRecords()
+      emit({
+        changed: [unitOf(heading, 'heading')],
+        scopes: [heading],
+      } as Partial<UnitsChange>)
+      runWysiwygFrames()
+      expect(
+        heading.hasAttribute('data-vmde-foldable'),
+        'heading foldable',
+      ).toBe(true)
+    }, 60_000)
+  })
 })

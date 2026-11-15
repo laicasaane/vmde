@@ -1,10 +1,15 @@
 import { historySourceProjection } from '../editing/undo-block-restore'
 import { processCodeRender } from 'vditor/src/ts/util/processCode'
-import type { HistoryCapture, HistoryModelPort } from '../util/unit-changes'
+import type {
+  HistoryCapture,
+  HistoryModelPort,
+  UnitMode,
+} from '../util/unit-changes'
 import { isHintSpan, stripWrapHints } from '../util/wrap-hint-mark'
 import { reportError } from '../util/webview-log'
 import type { TextModel, Unit } from './text-model'
 import { isViewOnlyChild } from './unit-dom'
+import { type ModeLute, spinLuteOf } from './unit-lute'
 
 // Task 733 (task 004): the history capture of the model session. Between two checkpoints it keeps,
 // per changed unit, the HTML the unit had before its first change (read from the model's pre-touch
@@ -100,6 +105,8 @@ export interface UnitCaptureDeps {
   claimable(): boolean
   /** The inner Vditor editor, for the render steps of a restored block; undefined without one. */
   vditor(): unknown
+  /** Task 733 / 013: the mode the model serves; absent means 'ir'. Selects the spin of a restored ECharts block. */
+  mode?(): UnitMode
 }
 
 export interface UnitCapture {
@@ -189,8 +196,11 @@ const changeKeyOf = (html: string, atEnd: boolean): string => {
 
 const TABLE_ROWS = ':scope > thead > tr, :scope > tbody > tr'
 
-const PREVIEW_PENDING = ".vditor-ir__preview[data-render='1']"
-const PREVIEW_FRESH = ".vditor-ir__preview[data-render='2']"
+// Task 733 / 013: a restored fragment holds the DOM of one mode, so the previews of both modes match.
+const PREVIEW_PENDING =
+  ".vditor-ir__preview[data-render='1'], .vditor-wysiwyg__preview[data-render='1']"
+const PREVIEW_FRESH =
+  ".vditor-ir__preview[data-render='2'], .vditor-wysiwyg__preview[data-render='2']"
 
 /**
  * Puts a pending preview of a restored fragment back to the state the renderers start from (Vditor's
@@ -266,7 +276,7 @@ function respinEcharts(
 ): HTMLElement {
   const blocks = new Set<HTMLElement>()
   for (const preview of Array.from(
-    el.querySelectorAll('.vditor-ir__preview'),
+    el.querySelectorAll('.vditor-ir__preview, .vditor-wysiwyg__preview'),
   )) {
     const block = preview.parentElement
     if (block?.querySelector('.language-echarts')) blocks.add(block)
@@ -283,12 +293,11 @@ function respinEcharts(
 function renderRestored(
   vditor: unknown,
   inserted: readonly HTMLElement[],
+  mode: UnitMode,
 ): void {
-  const inner = vditor as
-    | { lute?: { SpinVditorIRDOM(html: string): string } }
-    | undefined
+  const inner = vditor as { lute?: ModeLute } | undefined
   if (!inner) return
-  const { lute } = inner
+  const lute = inner.lute ? spinLuteOf(inner.lute, mode) : undefined
   try {
     const live = inserted.map((el) => (lute ? respinEcharts(el, lute) : el))
     for (const el of live) {
@@ -1384,7 +1393,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       }
       // The bytes are handed over only when every step has been written.
       for (const [formSet, nodes] of forms) applyForms(formSet, nodes)
-      renderRestored(deps.vditor(), inserted)
+      renderRestored(deps.vditor(), inserted, deps.mode?.() ?? 'ir')
       deps.drain()
       return true
     } finally {
@@ -1402,7 +1411,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     const back: HTMLElement[] = []
     for (const done of written.reverse())
       restoreStep(root, done, opposite, back)
-    renderRestored(deps.vditor(), back)
+    renderRestored(deps.vditor(), back, deps.mode?.() ?? 'ir')
     deps.drain()
   }
 

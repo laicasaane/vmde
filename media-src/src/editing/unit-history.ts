@@ -3,7 +3,11 @@ import {
   enableToolbar,
   hidePanel,
 } from 'vditor/src/ts/toolbar/setToolbar'
-import type { HistoryModelPort } from '../util/unit-changes'
+import {
+  type HistoryModelPort,
+  type UnitMode,
+  unitModeOf,
+} from '../util/unit-changes'
 import { logToHost } from '../util/webview-log'
 import {
   invalidateCaret,
@@ -104,16 +108,24 @@ interface State {
   moved: boolean
   /** The last answer of `claims`, to see an engine hand-over; undefined before the first call. */
   claimed: boolean | undefined
+  /** Task 733 / 013: the mode the kept history describes; a claim in another mode starts a new one. */
+  claimedMode?: UnitMode
+}
+
+/** The per-mode editor state the engine reads (`vditor.ir`, `vditor.wysiwyg`). */
+type ModeState = {
+  element: HTMLElement
+  composingLock?: boolean
+  processTimeoutId?: number
+  /** WYSIWYG's pending after-render timer (IR names it `processTimeoutId`). */
+  afterRenderTimeoutId?: number
+  vmdeAfterRender?: unknown
 }
 
 type Vditor = {
   currentMode: string
-  ir: {
-    element: HTMLElement
-    composingLock?: boolean
-    processTimeoutId?: number
-    vmdeAfterRender?: unknown
-  }
+  ir: ModeState
+  wysiwyg?: ModeState
   undo: Record<string, any>
   toolbar?: { elements: Record<string, HTMLElement>; element?: HTMLElement }
   hint?: unknown
@@ -121,9 +133,17 @@ type Vditor = {
 
 const token = <T>(): T => Object.freeze({}) as unknown as T
 
+/** Task 733 / 013: the mode the engine serves for the editor ('ir' when it serves none). O(1). */
+const modeOf = (vditor: Vditor): UnitMode =>
+  unitModeOf(vditor.currentMode) ?? 'ir'
+
+/** The editor state of the served mode (`vditor.ir`, or `vditor.wysiwyg` with WYSIWYG units). */
+const stateOfMode = (vditor: Vditor): ModeState | undefined =>
+  modeOf(vditor) === 'wysiwyg' ? vditor.wysiwyg : vditor.ir
+
 /** The old engine's IR slot holds an entry above its base, or a Redo entry. */
 const oldHolds = (vditor: Vditor): boolean => {
-  const slot = vditor.undo?.ir as
+  const slot = vditor.undo?.[modeOf(vditor)] as
     | { undoStack?: unknown[]; redoStack?: unknown[] }
     | undefined
   return (
@@ -211,7 +231,7 @@ function pointOf(
  * is armed while the toolbar holds the focus.
  */
 function checkpointCaret(vditor: Vditor): CaretIntent | undefined {
-  const root = vditor.ir?.element
+  const root = stateOfMode(vditor)?.element
   const selection = window.getSelection()
   if (!root || !selection || selection.rangeCount === 0) return undefined
   if (vditor.toolbar?.element?.contains(document.activeElement))
@@ -235,7 +255,7 @@ function checkpointCaret(vditor: Vditor): CaretIntent | undefined {
 /** The live selection as a caret intent, never a `<wbr>` marker in the DOM. */
 function caretNow(vditor: Vditor): CaretIntent | undefined {
   const selection = window.getSelection()
-  const root = vditor.ir?.element
+  const root = stateOfMode(vditor)?.element
   if (!root || !selection || selection.rangeCount === 0) return undefined
   const { anchorNode, anchorOffset, focusNode, focusOffset } = selection
   if (!anchorNode || !focusNode) return undefined
@@ -323,7 +343,7 @@ export function installUnitHistory(
   }
 
   const holds = (vditor: Vditor): boolean =>
-    vditor.currentMode === 'ir' &&
+    unitModeOf(vditor.currentMode) !== undefined &&
     IR_HISTORY_ENGINE === 'unit' &&
     deps.port()?.claimable() === true
 
@@ -333,8 +353,9 @@ export function installUnitHistory(
    */
   const handOver = (vditor: Vditor, state: State, value: boolean): void => {
     drop(state)
-    if (!value && state.claimed && vditor.undo?.ir) {
-      vditor.undo.ir = {
+    const slotName = modeOf(vditor)
+    if (!value && state.claimed && vditor.undo?.[slotName]) {
+      vditor.undo[slotName] = {
         hasUndo: false,
         lastText: '',
         redoStack: [],
@@ -345,7 +366,7 @@ export function installUnitHistory(
     state.claimed = value
     // The old engine had taken its base (Vditor's initial record) before the model was live: the
     // unit engine starts its history here, as that record would have started it.
-    if (took && (vditor.undo?.ir?.undoStack?.length ?? 0) > 0) {
+    if (took && (vditor.undo?.[slotName]?.undoStack?.length ?? 0) > 0) {
       createBase(vditor, state)
       report(
         vditor,
@@ -360,14 +381,19 @@ export function installUnitHistory(
     const vditor = raw as Vditor
     const value = holds(vditor)
     const state = stateOf(vditor)
+    const mode = modeOf(vditor)
     if (state.claimed === undefined) {
       state.claimed = value
+    } else if (value && state.claimed && state.claimedMode !== mode) {
+      // Task 733 / 013: the kept history describes the other mode's tree; this mode starts its own.
+      drop(state)
     } else if (state.claimed !== value) {
       // The old engine keeps a history it recorded while the model could not capture (an IR re-entry,
       // a deferred build): the unit engine takes over once that history holds nothing to undo.
       if (value && oldHolds(vditor)) return false
       handOver(vditor, state, value)
     }
+    if (value) state.claimedMode = mode
     return value
   }
 
@@ -377,7 +403,12 @@ export function installUnitHistory(
     entry: HistoryEntryToken,
     wasEmpty: boolean,
   ): void => {
-    reportUnitEntry(vditor, { mode: 'ir', wasEmpty, entry, slot: state.slot })
+    reportUnitEntry(vditor, {
+      mode: modeOf(vditor),
+      wasEmpty,
+      entry,
+      slot: state.slot,
+    })
   }
 
   /** The history starts here: the base holds the caret and the publication counters, no state. */
@@ -507,11 +538,12 @@ export function installUnitHistory(
 
   /** Undo and Redo do nothing in a read-only root or during a composition. */
   const canMove = (vditor: Vditor): boolean => {
-    const root = vditor.ir?.element
+    const mode = stateOfMode(vditor)
+    const root = mode?.element
     return (
       !!root &&
       root.getAttribute('contenteditable') !== 'false' &&
-      !vditor.ir.composingLock
+      !mode.composingLock
     )
   }
 
@@ -535,15 +567,19 @@ export function installUnitHistory(
 
   /** Stops the pending first-edit record; false while a held IME timer owns the first edit. */
   const releaseFirstEditTimer = (vditor: Vditor): boolean => {
-    const timer = vditor.ir?.processTimeoutId
+    const mode = stateOfMode(vditor)
+    const timer =
+      modeOf(vditor) === 'wysiwyg'
+        ? mode?.afterRenderTimeoutId
+        : mode?.processTimeoutId
     if (timer === undefined) {
-      if (vditor.ir) vditor.ir.vmdeAfterRender = undefined
+      if (mode) mode.vmdeAfterRender = undefined
       return true
     }
     // A held IME timer belongs to the composition that owns the first edit: leave it to run.
     if (timer === vditor.undo?.vmdeHeldTimer) return false
     clearTimeout(timer)
-    vditor.ir.vmdeAfterRender = undefined
+    if (mode) mode.vmdeAfterRender = undefined
     return true
   }
 
@@ -557,7 +593,7 @@ export function installUnitHistory(
    * while its own selection shrank).
    */
   const splitAtCaret = (vditor: Vditor): void => {
-    const root = vditor.ir?.element
+    const root = stateOfMode(vditor)?.element
     const selection = root?.ownerDocument.getSelection()
     if (!root || !selection || selection.rangeCount === 0) return
     const range = selection.getRangeAt(0)
@@ -629,7 +665,7 @@ export function installUnitHistory(
     },
     recordFirstPosition(raw, event) {
       const vditor = raw as Vditor
-      if (vditor.ir?.composingLock) return
+      if (stateOfMode(vditor)?.composingLock) return
       const state = stateOf(vditor)
       if (!state.base) {
         seedBaseline(vditor)
@@ -692,7 +728,7 @@ export function installUnitHistory(
     savepoint(inner) {
       const state = stateOf(inner as Vditor)
       const saved = Object.freeze({
-        mode: 'ir' as const,
+        mode: modeOf(inner as Vditor),
         slot: state.slot,
         undo: [...state.undo],
         redo: [...state.redo],
@@ -706,6 +742,7 @@ export function installUnitHistory(
     restore(inner, savepoint) {
       if (!savepoints.has(savepoint)) return undefined
       const saved = savepoint as unknown as {
+        mode: UnitMode
         slot: HistorySlotToken
         undo: Entry[]
         redo: Entry[]
@@ -715,7 +752,11 @@ export function installUnitHistory(
       }
       const vditor = inner as Vditor
       const state = stateOf(vditor)
-      if (vditor.currentMode !== 'ir' || state.slot !== saved.slot) return false
+      if (
+        unitModeOf(vditor.currentMode) !== saved.mode ||
+        state.slot !== saved.slot
+      )
+        return false
       state.undo = [...saved.undo]
       state.redo = [...saved.redo]
       state.base = saved.base

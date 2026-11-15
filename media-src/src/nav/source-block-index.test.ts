@@ -810,7 +810,7 @@ it('drops a converting entry when the snapshot moves the key', () => {
   expect(index.peek()).toBeNull()
 })
 
-it('uses the existing path when the model has no value, is absent, or the mode is not ir', () => {
+it('uses the existing path when the model has no value or is absent, and the model in WYSIWYG too', () => {
   const none = modelSetup()
   none.model.current = undefined
   none.index.read()
@@ -820,8 +820,9 @@ it('uses the existing path when the model has no value, is absent, or the mode i
   const wys = modelSetup()
   wys.state.projection = { owner: wys.state.projection.owner, mode: 'wysiwyg' }
   wys.index.read()
-  expect(wys.modelUnitsFn).not.toHaveBeenCalled()
-  expect(wys.resolveUnits).toHaveBeenCalledOnce()
+  // Task 733 / 013 (Q-122): with WYSIWYG units the model serves WYSIWYG, so the index reads it there.
+  expect(wys.modelUnitsFn).toHaveBeenCalled()
+  expect(wys.resolveUnits).not.toHaveBeenCalled()
 
   const absent = setup()
   absent.index.read()

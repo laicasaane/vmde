@@ -1,5 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
+import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { createModelSession, type ModelSession } from '../bridge/model-session'
+import {
+  type SpinLute,
+  spinCellHtml,
+  spinListItemHtml,
+  spinListItemsHtml,
+} from '../bridge/unit-lute'
+import * as unitLuteModule from '../bridge/unit-lute'
+import { createRealLute } from '../testing/real-lute'
 import { registerQuietObserver } from '../util/mutation-impact'
 import type { LiveUnit } from '../util/unit-changes'
 import {
@@ -771,5 +782,118 @@ describe('spinUnit unbound item in a loose list (011-R)', () => {
       ),
     ).toBe(false)
     expect(f.deps.itemCalls).toEqual([])
+  })
+})
+
+// ---- Task 733 / 013-T2: the unit spin hook over a live WYSIWYG model (technical task 013 sections 6.3, 6.6) ----
+//
+// The hook gets its live units from a WYSIWYG model session (`wysiwygUnits: true`) and spins with the
+// WYSIWYG entry (`spinLuteOf(lute, 'wysiwyg')`, 013-I1). Today the session stays off in WYSIWYG, so the
+// hook refuses with `model-off` and Vditor's block spin would run.
+describe('013 WYSIWYG unit spin through __vmdeSpinUnit', () => {
+  const DOC =
+    'intro\n\n| a | b |\n| - | - |\n| one | two |\n\n- first item\n- second item\n'
+  type Hook = (
+    vditor: unknown,
+    range: Range,
+    block: HTMLElement,
+    event: InputEvent | undefined,
+  ) => boolean
+  const sessions: ModelSession[] = []
+  let uninstall: (() => void) | undefined
+  afterEach(() => {
+    uninstall?.()
+    uninstall = undefined
+    for (const session of sessions.splice(0)) session.dispose()
+  })
+
+  function open() {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    const lute = real.lute
+    const root = document.createElement('div')
+    root.className = 'vditor-reset vditor-wysiwyg'
+    root.innerHTML = lute.Md2VditorDOM(DOC)
+    document.body.appendChild(root)
+    const session = createModelSession({
+      wysiwygUnits: true,
+      win: window,
+      getRoot: () => root,
+      getLute: () => lute,
+      getMode: () => 'wysiwyg',
+      isPreviewShowing: () => false,
+      isStreaming: () => false,
+      isComposing: () => false,
+      e2e: false,
+      countFallbackPublication: () => undefined,
+      requestAnimationFrame: () => 0,
+      cancelAnimationFrame: () => undefined,
+      now: () => 0,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      inViewport: () => false,
+    } as Parameters<typeof createModelSession>[0])
+    sessions.push(session)
+    session.onHostText(DOC, 1)
+    session.onEditDomComplete()
+    const factory = (unitLuteModule as unknown as Record<string, unknown>)
+      .spinLuteOf as ((lute: object, mode: 'wysiwyg') => SpinLute) | undefined
+    const spin = (): SpinLute => {
+      if (typeof factory !== 'function')
+        throw new Error('unit-lute exports no spinLuteOf (013-I1)')
+      return factory(lute, 'wysiwyg')
+    }
+    const counted: string[] = []
+    const deps: UnitSpinDeps = {
+      liveUnitOf: (node) => session.liveUnitOf(node),
+      isModelLive: () => session.isLive(),
+      spinCell: (html) => spinCellHtml(spin(), html),
+      spinListItem: (shell, item) => spinListItemHtml(spin(), shell, item),
+      spinListItems: (shell, items) => spinListItemsHtml(spin(), shell, items),
+      isSettleRespin: () => false,
+      listItemSpin: true,
+      count: (result) => counted.push(result),
+    }
+    uninstall = installUnitSpin(window, deps)
+    const hook = (window as unknown as { __vmdeSpinUnit: Hook }).__vmdeSpinUnit
+    return { root, lute, hook, counted }
+  }
+
+  /** Types `letter` at the end of `text` and puts the caret marker after it, as Vditor's input does. */
+  function typeAtEnd(text: Text, letter: string): Range {
+    text.data += letter
+    const range = document.createRange()
+    range.setStart(text, text.data.length)
+    range.collapse(true)
+    range.insertNode(document.createElement('wbr'))
+    return range
+  }
+
+  it('spins a WYSIWYG cell alone and writes the cell as the whole-table spin would', () => {
+    const r = open()
+    const table = r.root.querySelector(':scope > table') as HTMLElement
+    const cell = table.querySelector('td') as HTMLElement
+    const range = typeAtEnd(cell.firstChild as Text, 'x')
+    const holder = document.createElement('div')
+    holder.innerHTML = r.lute.SpinVditorDOM(table.outerHTML)
+    const expected = (holder.querySelector('td') as HTMLElement).innerHTML
+    const handled = r.hook({}, range, table, input('insertText', 'x'))
+    expect(r.counted).toEqual(['spun'])
+    expect(handled).toBe(true)
+    expect(table.isConnected).toBe(true)
+    expect(cell.innerHTML).toBe(expected)
+  })
+
+  it('spins a WYSIWYG bullet item alone and keeps the list element', () => {
+    const r = open()
+    const list = r.root.querySelector(':scope > ul') as HTMLElement
+    const item = list.children[0] as HTMLElement
+    const range = typeAtEnd(item.firstChild as Text, 'x')
+    const handled = r.hook({}, range, list, input('insertText', 'x'))
+    expect(r.counted).toEqual(['spun'])
+    expect(handled).toBe(true)
+    expect(list.isConnected).toBe(true)
+    expect(list.children[0].textContent).toBe('first itemx')
   })
 })

@@ -24,8 +24,10 @@ import {
   fakeLanes,
   irFixture,
   scaledFixture,
+  wysiwygFixture,
 } from '../testing/budget-harness'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import * as tableResize from './table-resize'
 
 // Counts the scroller lookups (a forced layout each) and keeps the real lookup.
 vi.mock('./toolbar-scroll-guard', async (importOriginal) => {
@@ -797,4 +799,217 @@ describe('persistent measurement host (D-13 B-07, M4)', {
     expect(host).not.toBeNull()
     expect(host?.className).toBe(shell.className)
   })
+})
+
+// ---- Task 733 / 013-T3: B-06 and B-07 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// Table resize over a live feed of Lute's WYSIWYG root, the editor in WYSIWYG. B-06: the frame after a
+// paragraph change or a cell change reads no header cells (no table query), queries nothing on the root
+// and reads at most 1 + the visible handle cells of layout; a row insert reconciles one table. B-07: the
+// fill's measurement host (M4, `measureHostFor`, 012-13) inserts at most one stylesheet over 100 slices
+// and follows the root's class.
+describe('013 B-06 and B-07 table resize on the WYSIWYG fixture', () => {
+  const feedListeners = new Set<(change: UnitsChange) => void>()
+  let wysiwygFrames: FrameRequestCallback[] = []
+  let stop: (() => void) | undefined
+  let measured: Set<Element>
+  beforeEach(() => {
+    wysiwygFrames = []
+    measured = new Set()
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      wysiwygFrames.push(cb)
+      return wysiwygFrames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+    for (const name of ['IntersectionObserver', 'ResizeObserver'])
+      vi.stubGlobal(
+        name,
+        class {
+          observe() {
+            // Nothing to observe in the fake.
+          }
+          unobserve() {
+            // Nothing to release in the fake.
+          }
+          disconnect() {
+            // Nothing to release in the fake.
+          }
+        },
+      )
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: Element) {
+        const owner = this.closest('table')
+        if (owner && this.tagName !== 'TABLE') measured.add(owner)
+        return {
+          left: 0,
+          right: 100,
+          top: 0,
+          bottom: 20,
+          width: 100,
+          height: 20,
+        } as DOMRect
+      },
+    )
+  })
+  afterEach(() => {
+    stop?.()
+    stop = undefined
+    provideUnitFeed(window, undefined)
+    feedListeners.clear()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    document.body.replaceChildren()
+  })
+  const runWysiwygFrames = (): void => {
+    for (let round = 0; round < 5 && wysiwygFrames.length > 0; round++)
+      for (const frame of wysiwygFrames.splice(0)) frame(0)
+  }
+  const settleWysiwyg = async (): Promise<void> => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+    runWysiwygFrames()
+  }
+  const emit = (partial: Partial<UnitsChange>): void => {
+    const change: UnitsChange = {
+      cause: 'mutation',
+      whole: false,
+      changed: [],
+      structural: [],
+      ...partial,
+    }
+    for (const listener of Array.from(feedListeners)) listener(change)
+  }
+  async function mountWysiwyg(factor: Factor) {
+    const holder = document.createElement('div')
+    holder.className = 'vditor'
+    const app = document.createElement('div')
+    app.className = 'vditor-wysiwyg'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = wysiwygFixture(tableHeavyMarkdown(factor)).root.innerHTML
+    app.append(root)
+    holder.append(app)
+    document.body.append(holder)
+    vi.stubGlobal('vditor', {
+      getCurrentMode: () => 'wysiwyg',
+      vditor: { wysiwyg: { element: root } },
+    })
+    const feed: UnitFeed = {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        feedListeners.add(listener)
+        return () => feedListeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    stop = installTableColumnResize()
+    await settleWysiwyg()
+    measured.clear()
+    return { root }
+  }
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it('B-06: a paragraph change reads no header cells and queries nothing on the root', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const paragraph = root.querySelector(':scope > p') as HTMLElement
+      ;(paragraph.firstChild as Text).data += 'x'
+      await settleWysiwyg()
+      const { counts } = countBudget(root, () => {
+        emit({
+          changed: [
+            {
+              el: paragraph,
+              members: [paragraph],
+              kind: 'paragraph',
+              top: paragraph,
+            },
+          ],
+        })
+        runWysiwygFrames()
+      })
+      expect(counts.tableQueries, 'table queries (header cells)').toBe(0)
+      expect(counts.rootQueries, 'root queries').toBe(0)
+      expect(counts.layoutReads, 'layout reads').toBeLessThanOrEqual(1)
+    }, 60_000)
+
+    it('B-06: a cell change reads no header cells and at most 1 + the handle cells of layout', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const table = root.querySelector(':scope > table') as HTMLElement
+      const cell = table.querySelectorAll('td')[7] as HTMLElement
+      ;(cell.firstChild as Text).data += 'x'
+      await settleWysiwyg()
+      const handles = table.querySelectorAll('thead th').length
+      const { counts } = countBudget(root, () => {
+        emit({
+          changed: [{ el: cell, members: [cell], kind: 'cell', top: table }],
+        })
+        runWysiwygFrames()
+      })
+      expect(counts.tableQueries, 'table queries (header cells)').toBe(0)
+      expect(counts.rootQueries, 'root queries').toBe(0)
+      expect(counts.layoutReads, 'layout reads').toBeLessThanOrEqual(
+        1 + handles,
+      )
+    }, 60_000)
+
+    it('B-06: a row insert reconciles its table only', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const [first] = Array.from(root.querySelectorAll(':scope > table'))
+      const body = first.querySelector('tbody') as HTMLElement
+      const row = body.children[3].cloneNode(true) as HTMLElement
+      body.children[3].after(row)
+      await settleWysiwyg()
+      // A reconcile reads its table (`querySelector` on the table, as the 012-13 case above counts).
+      const tables = Array.from(root.querySelectorAll(':scope > table'))
+      const reconciled = new Set<Element>()
+      for (const table of tables) {
+        const original = table.querySelector.bind(table)
+        vi.spyOn(table, 'querySelector').mockImplementation(((
+          selector: string,
+        ) => {
+          reconciled.add(table)
+          return original(selector)
+        }) as typeof table.querySelector)
+      }
+      const { counts } = countBudget(root, () => {
+        emit({ structural: [first as HTMLElement] })
+        runWysiwygFrames()
+      })
+      expect(counts.rootQueries, 'root queries').toBe(0)
+      expect([...reconciled]).toEqual([first])
+    }, 60_000)
+  })
+
+  it('B-07: the persistent measurement host inserts at most one stylesheet over 100 slices and follows the root class', async () => {
+    const { root } = await mountWysiwyg(16)
+    const measureHostFor = (tableResize as unknown as Record<string, unknown>)
+      .measureHostFor as
+      | ((root: HTMLElement) => {
+          element: HTMLElement
+          layout(kind: string): void
+          dispose(): void
+        })
+      | undefined
+    if (typeof measureHostFor !== 'function')
+      throw new Error('table-resize exports no measureHostFor (012-13)')
+    const { counts } = countBudget(root, () => {
+      for (let slice = 0; slice < 100; slice++) {
+        const host = measureHostFor(root)
+        host.layout('max')
+        host.dispose()
+      }
+    })
+    expect(counts.styleInsertions, 'stylesheet insertions').toBeLessThanOrEqual(
+      1,
+    )
+    root.className = 'vditor-reset vditor-reset--dark'
+    const host = measureHostFor(root)
+    expect(host.element.className).toBe(root.className)
+    host.dispose()
+  }, 60_000)
 })

@@ -8,6 +8,9 @@ import { installWebviewContext } from '../chrome/webview-context'
 import { tagCodeSource } from '../editing/code-source'
 import { wrapHtmlInlineFormattingLute } from '../editing/html-subscript'
 import { wrapLiveLineBreakIdentity } from '../editing/live-line-breaks'
+import { wrapLuteFlatten } from '../editing/wysiwyg-code-highlight'
+import { patchLuteSerialize, reintroduceChips } from '../links/wiki-serialize'
+import { domKind } from '../nav/unit-pairing'
 import type { UnitSpinResult } from '../editing/unit-spin'
 import { createRealLute } from '../testing/real-lute'
 import {
@@ -1023,3 +1026,273 @@ describe('serializeBlockHtml on the live webview code block (012-11 R1)', () => 
     expect(calls).toBeGreaterThan(0)
   })
 })
+
+// ---- Task 733 / 013-T1: the unit helpers on the WYSIWYG Lute pair (technical task 013 section 6.1) ----
+//
+// The model serves WYSIWYG through `unitLuteOf(lute, 'wysiwyg')` and `spinLuteOf(lute, 'wysiwyg')` (013-I1,
+// shared rules 3.12), which map `VditorDOM2Md`/`Md2VditorDOM`/`SpinVditorDOM` onto the `UnitLute` and
+// `SpinLute` names. Every case runs on the WYSIWYG Lute with the webview's wrappers (`boot/preload.ts`
+// order, plus the WYSIWYG code-source flattening); one case adds the wiki wrapper.
+describe('013 WYSIWYG unit Lute pair', () => {
+  type ModeLuteFactory = (lute: object, mode: 'ir' | 'wysiwyg') => UnitLute
+  type SpinFactory = (lute: object, mode: 'ir' | 'wysiwyg') => SpinLute
+  const exported = unitLute as unknown as Record<string, unknown>
+  /** The 013-I1 export `name`; a clear failure while it does not exist. */
+  function i1Export<T>(name: string): T {
+    const value = exported[name]
+    if (typeof value !== 'function')
+      throw new Error(`unit-lute exports no ${name} (013-I1)`)
+    return value as T
+  }
+  let wysiwyg: Record<string, (html: string) => string>
+  let wiki: Record<string, (html: string) => string>
+  const productionWysiwyg = (): Record<string, (html: string) => string> => {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wrapLiveLineBreakIdentity(real.lute)
+    wrapHtmlInlineFormattingLute(real.lute)
+    wrapLuteFlatten({ vditor: { lute: real.lute } })
+    return real.lute
+  }
+  beforeAll(() => {
+    wysiwyg = productionWysiwyg()
+    wiki = productionWysiwyg()
+    patchLuteSerialize({ vditor: { lute: wiki } })
+  })
+  const pair = (source = wysiwyg): UnitLute =>
+    i1Export<ModeLuteFactory>('unitLuteOf')(source, 'wysiwyg')
+  const spin = (source = wysiwyg): SpinLute =>
+    i1Export<SpinFactory>('spinLuteOf')(source, 'wysiwyg')
+  const wysiwygRoot = (markdown: string): HTMLElement => {
+    const div = document.createElement('div')
+    div.innerHTML = wysiwyg.Md2VditorDOM(markdown)
+    return div
+  }
+  /** `html` as the DOM serializer writes it, so a raw Lute string and a DOM read compare equal. */
+  const domHtml = (html: string): string => {
+    const holder = document.createElement('div')
+    holder.innerHTML = html
+    return holder.innerHTML
+  }
+  const shellOf = (list: Element): string =>
+    (list.cloneNode(false) as HTMLElement).outerHTML.replace(
+      /<\/(ul|ol)>$/u,
+      '',
+    )
+  /** canon === bytes, or the round trip of the bytes equals the canon (the proof rule of text-model). */
+  const provesCell = (bytes: string, canon: string): boolean =>
+    bytes === canon || roundTripCell(pair(), bytes) === canon
+
+  it('unitLuteOf and spinLuteOf map the WYSIWYG methods', () => {
+    const units = pair()
+    const markdown = 'alpha **b**\n'
+    expect(units.Md2VditorIRDOM(markdown)).toBe(wysiwyg.Md2VditorDOM(markdown))
+    const html = wysiwyg.Md2VditorDOM(markdown)
+    expect(units.VditorIRDOM2Md(html)).toBe(wysiwyg.VditorDOM2Md(html))
+    expect(spin().SpinVditorIRDOM(html)).toBe(wysiwyg.SpinVditorDOM(html))
+  })
+
+  it('proves every cell of tableHeavyMarkdown(1) and spins each alone as in its table', () => {
+    const markdown = tableHeavyMarkdown(1)
+    const div = wysiwygRoot(markdown)
+    const sourceTables = markdown
+      .split('\n\n')
+      .filter((block) => block.startsWith('| Name'))
+      .map((block) => block.split('\n'))
+    const tables = Array.from(div.querySelectorAll(':scope > table'))
+    expect(tables).toHaveLength(2)
+    let cells = 0
+    tables.forEach((table, t) => {
+      const rows = Array.from(
+        table.querySelectorAll(':scope > thead > tr, :scope > tbody > tr'),
+      )
+      rows.forEach((tr, r) => {
+        const bytes = splitRow(sourceTables[t][r === 0 ? 0 : r + 1])
+        Array.from(tr.children).forEach((cell, c) => {
+          cells++
+          expect(
+            provesCell(bytes[c], serializeCellHtml(pair(), cell.innerHTML)),
+            `table ${t} row ${r} cell ${c}`,
+          ).toBe(true)
+        })
+      })
+    })
+    expect(cells).toBe(985)
+    // Spin equality on a sample of rows (every row costs two Lute spins).
+    const table = tables[0] as HTMLElement
+    for (const r of [0, 7, 15]) {
+      const clone = table.cloneNode(true) as HTMLElement
+      const row = clone.querySelectorAll(
+        ':scope > thead > tr, :scope > tbody > tr',
+      )[r]
+      for (let c = 0; c < row.children.length; c++) {
+        const target = clone.querySelectorAll(
+          ':scope > thead > tr, :scope > tbody > tr',
+        )[r].children[c] as HTMLElement
+        target.insertAdjacentHTML('beforeend', '<wbr>')
+        const one = spinCellHtml(spin(), target.innerHTML)
+        const spun = wysiwygRoot('')
+        spun.innerHTML = wysiwyg.SpinVditorDOM(clone.outerHTML)
+        const expected = spun.querySelectorAll('tr')[r].children[c].innerHTML
+        expect(one.kind, `row ${r} cell ${c}`).toBe('spun')
+        if (one.kind === 'spun') expect(domHtml(one.html)).toBe(expected)
+        target.querySelector('wbr')?.remove()
+      }
+    }
+  }, 60_000)
+
+  it('proves every top-level block and list item of tableHeavyMarkdown(1)', () => {
+    const markdown = `${tableHeavyMarkdown(1)}\n> quote\n\n---\n\n$$\nx\n$$\n`
+    const div = wysiwygRoot(markdown)
+    const blocks = markdown.replace(/\n+$/u, '').split('\n\n')
+    const tops = Array.from(div.children) as HTMLElement[]
+    expect(tops).toHaveLength(blocks.length)
+    tops.forEach((top, k) => {
+      if (top.tagName === 'UL') {
+        const lines = blocks[k].split('\n')
+        Array.from(top.children).forEach((item, i) => {
+          expect(
+            serializeListItemHtml(pair(), shellOf(top), item.outerHTML),
+          ).toBe(lines[i])
+          const clone = top.cloneNode(true) as HTMLElement
+          clone.children[i].insertAdjacentHTML('beforeend', '<wbr>')
+          const one = spinListItemHtml(
+            spin(),
+            shellOf(top),
+            clone.children[i].outerHTML,
+          )
+          const spun = wysiwygRoot('')
+          spun.innerHTML = wysiwyg.SpinVditorDOM(clone.outerHTML)
+          expect(one.kind).toBe('spun')
+          if (one.kind === 'spun')
+            expect(domHtml(one.html)).toBe(
+              spun.firstElementChild?.children[i].outerHTML,
+            )
+        })
+        return
+      }
+      const canon = serializeBlockHtml(pair(), [top.outerHTML])
+      const bytes = blocks[k]
+      expect(
+        canon === bytes ||
+          roundTripBlock(pair(), domKindOfTop(top), bytes) === canon,
+        `block ${k} (${top.tagName})`,
+      ).toBe(true)
+    })
+  })
+
+  it('keeps the source spelling of both <br> forms in a cell and proves them', () => {
+    const div = wysiwygRoot(
+      '| a | b |\n| --- | --- |\n| x<br />y | z<br>w |\n| p | q |\n',
+    )
+    const cells = Array.from(div.querySelectorAll('td')).slice(0, 2)
+    const canons = cells.map((cell) =>
+      serializeCellHtml(pair(), cell.innerHTML),
+    )
+    // The WYSIWYG canon keeps `<br>` where the IR canon writes `<br />` (no IR projection, no opaque cell).
+    expect(canons).toEqual(['x<br />y', 'z<br>w'])
+    expect(provesCell('x<br />y', canons[0])).toBe(true)
+    expect(provesCell('z<br>w', canons[1])).toBe(true)
+  })
+
+  it('proves cells with code spans, escaped pipes, gaps, images and links', () => {
+    const lines = [
+      '| h | i |',
+      '| :-: | --- |',
+      '| `a\\|b` | `x` lead |',
+      '| left\\|right | a `b` c |',
+      '| **b** `c` | ![i](p.png) |',
+      '| [l](u.md) `k` | x<br />y `z` |',
+    ]
+    const div = wysiwygRoot(`${lines.join('\n')}\n`)
+    const rows = Array.from(div.querySelectorAll('tr'))
+    expect(rows).toHaveLength(5)
+    rows.forEach((tr, r) => {
+      const bytes = splitRow(lines[r === 0 ? 0 : r + 1])
+      Array.from(tr.children).forEach((cell, c) => {
+        expect(
+          provesCell(bytes[c], serializeCellHtml(pair(), cell.innerHTML)),
+          `row ${r} cell ${c}`,
+        ).toBe(true)
+      })
+    })
+  })
+
+  it('serializes task and ordered items as WYSIWYG writes them and refuses loose and nested item spins', () => {
+    const div = wysiwygRoot(
+      '- [ ] task one\n- [x] task two\n\n1. one\n2. two\n\n* loose a\n\n* loose b\n\n- nested\n  - inner\n',
+    )
+    const [tasks, ordered, loose, nested] = Array.from(div.children)
+    expect(
+      serializeListItemHtml(
+        pair(),
+        shellOf(tasks),
+        tasks.children[0].outerHTML,
+      ),
+    ).toBe('- [ ] task one')
+    // An ordered item serialized alone renumbers (the list path writes it; Q-46 keeps its spin refused).
+    expect(
+      serializeListItemHtml(
+        pair(),
+        shellOf(ordered),
+        ordered.children[1].outerHTML,
+      ),
+    ).toBe('1. two')
+    const marked = (list: Element): string => {
+      const item = list.children[0].cloneNode(true) as HTMLElement
+      ;(item.querySelector('p') ?? item).insertAdjacentHTML(
+        'beforeend',
+        '<wbr>',
+      )
+      return item.outerHTML
+    }
+    expect(spinListItemHtml(spin(), shellOf(loose), marked(loose))).toEqual({
+      kind: 'refused',
+      reason: 'shape',
+    })
+    expect(spinListItemHtml(spin(), shellOf(nested), marked(nested))).toEqual({
+      kind: 'refused',
+      reason: 'nested',
+    })
+  })
+
+  it('serializes and spins a wiki chip as its source with the wiki wrapper', () => {
+    const html = reintroduceChips('<p data-block="0">see [[Page]] here</p>')
+    expect(html).toContain('data-wiki-source')
+    expect(serializeBlockHtml(pair(wiki), [html])).toBe('see [[Page]] here')
+    const cell = reintroduceChips('cell [[Page]]<wbr>')
+    const spun = spinCellHtml(spin(wiki), cell)
+    expect(spun.kind).toBe('spun')
+    if (spun.kind === 'spun') expect(spun.html).toContain('data-wiki-source')
+  })
+
+  it('serializes the WYSIWYG fenced code block without a Lute call (the WYSIWYG text path)', () => {
+    const markdown = tableHeavyMarkdown(1)
+    const block = wysiwygRoot(markdown).querySelector(
+      ':scope > [data-type="code-block"]',
+    ) as HTMLElement
+    const source = markdown
+      .split('\n\n')
+      .find((part) => part.startsWith('```ts')) as string
+    let calls = 0
+    const counted = {
+      VditorIRDOM2Md: (html: string) => {
+        calls++
+        return wysiwyg.VditorDOM2Md(html)
+      },
+      Md2VditorIRDOM: (text: string) => {
+        calls++
+        return wysiwyg.Md2VditorDOM(text)
+      },
+      mode: 'wysiwyg' as const,
+    }
+    expect(serializeBlockHtml(counted, [block.outerHTML])).toBe(source)
+    expect(calls, 'Lute calls').toBe(0)
+  })
+})
+
+/** The movable kind of a WYSIWYG top-level block, for `roundTripBlock`. */
+function domKindOfTop(top: HTMLElement): Parameters<typeof roundTripBlock>[1] {
+  return domKind(top) as Parameters<typeof roundTripBlock>[1]
+}

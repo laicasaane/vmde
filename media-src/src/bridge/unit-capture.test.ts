@@ -10,6 +10,8 @@ import {
 } from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import { wysiwygFixture } from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
 import type { HistoryCapture } from '../util/unit-changes'
 import { insertWrapHint } from '../util/wrap-hint-mark'
@@ -1302,4 +1304,110 @@ describe('a list item Undo makes no whole-list Lute call (012-11)', () => {
       expect(redo, 'Redo').toBe(0)
     },
   )
+})
+
+// ---- Task 733 / 013-T1: B-17 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// A WYSIWYG session (`wysiwygUnits: true`, the WYSIWYG root and Lute) captures a list item edit and
+// restores it by units: Undo and Redo give back both checkpoint states with no whole-list Lute call.
+describe('013 B-17 WYSIWYG list item Undo and Redo', () => {
+  let wysiwyg: UnitLute & Record<string, (value: string) => string>
+  beforeAll(() => {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wysiwyg = real.lute
+  })
+  beforeEach(() => window.getSelection()?.removeAllRanges())
+
+  function openWysiwyg(markdown: string) {
+    const root = document.createElement('div')
+    root.className = 'vditor-reset vditor-wysiwyg'
+    document.body.appendChild(root)
+    const session = createModelSession({
+      wysiwygUnits: true,
+      win: window,
+      getRoot: () => root,
+      getLute: () => wysiwyg,
+      getMode: () => 'wysiwyg',
+      isPreviewShowing: () => false,
+      isStreaming: () => false,
+      isComposing: () => false,
+      e2e: true,
+      countFallbackPublication: () => undefined,
+      requestAnimationFrame: (cb: () => void) => frames.push(cb),
+      cancelAnimationFrame: () => undefined,
+      now: () => 0,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      inViewport: () => false,
+    } as Parameters<typeof createModelSession>[0])
+    live.push(session)
+    frames.length = 0
+    root.innerHTML = wysiwygFixture(markdown).root.innerHTML
+    session.onHostText(markdown, 1)
+    session.onEditDomComplete()
+    const port = (session as WithPort).historyPort()
+    const delta = session.deltaPort()
+    let sequence = 0
+    return {
+      root,
+      port,
+      sync(): void {
+        sequence += 1
+        const result = delta.prepareDelta(sequence)
+        expect(result.kind, 'model off: WYSIWYG units not served').not.toBe(
+          'fallback',
+        )
+      },
+      state() {
+        return { html: root.innerHTML, text: delta.modelText() }
+      },
+    }
+  }
+
+  function countWholeList(run: () => void): number {
+    const spy = vi.spyOn(wysiwyg, 'VditorDOM2Md')
+    try {
+      run()
+      return spy.mock.calls.filter(([html]) => {
+        const input = String(html)
+        return (
+          (input.startsWith('<ul') || input.startsWith('<ol')) &&
+          (input.match(/<li/gu)?.length ?? 0) >= 3
+        )
+      }).length
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    const markdown = tableHeavyMarkdown(factor)
+    const typed = markdown.replace('- list item 3\n', '- list item 3ab\n')
+
+    it('restores a typed item without a whole-list call', () => {
+      const r = openWysiwyg(markdown)
+      const first = r.state()
+      expect(first.text).toBe(markdown)
+      typeInto(r.root.querySelectorAll('li')[2] as HTMLElement, 'list item 3ab')
+      r.sync()
+      const second = r.state()
+      expect(second.text).toBe(typed)
+      const capture = r.port.capture() as HistoryCapture
+      expect(capture).toBeDefined()
+      const undo = countWholeList(() => {
+        expect(r.port.restore(capture, 'before')).toBe(true)
+        r.sync()
+      })
+      expect(r.state()).toEqual(first)
+      expect(undo, 'Undo').toBe(0)
+      const redo = countWholeList(() => {
+        expect(r.port.restore(capture, 'after')).toBe(true)
+        r.sync()
+      })
+      expect(r.state()).toEqual(second)
+      expect(redo, 'Redo').toBe(0)
+    }, 120_000)
+  })
 })

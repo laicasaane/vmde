@@ -12,6 +12,8 @@ import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdow
 import {
   countBudget,
   irFixture as budgetFixture,
+  wysiwygFixture,
+  type Factor,
 } from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
 import { createWrapHintSpan } from '../util/wrap-hint-mark'
@@ -1014,5 +1016,131 @@ describe('observeBareUrls budget across factors (Task 733 / 012-12, B-04)', () =
   it('rescans the same nodes for a list item Enter at every factor', () => {
     expect(enterSums.size).toBe(3)
     expect(new Set(enterSums.values()).size).toBe(1)
+  })
+})
+
+// ---- Task 733 / 013-T3: B-04 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// `observeBareUrls` over a live feed of Lute's WYSIWYG root: a list item Enter (a scoped change of the two items)
+// and a selection change in a code block the feed does not map stay within their scope elements:
+// no root query, and nodes walked plus nodes queried at most the scope's nodes plus 8, at every factor.
+describe('013 B-04 observeBareUrls on the WYSIWYG fixture', () => {
+  const NODE_SLACK = 8
+  const feedListeners = new Set<(change: UnitsChange) => void>()
+  let wysiwygFrames: FrameRequestCallback[] = []
+  let stop: (() => void) | undefined
+  beforeEach(() => {
+    wysiwygFrames = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      wysiwygFrames.push(cb)
+      return wysiwygFrames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+  })
+  afterEach(() => {
+    stop?.()
+    stop = undefined
+    provideUnitFeed(window, undefined)
+    feedListeners.clear()
+    vi.unstubAllGlobals()
+    window.getSelection()?.removeAllRanges()
+    document.body.replaceChildren()
+  })
+  const runWysiwygFrames = (): void => {
+    for (let round = 0; round < 5 && wysiwygFrames.length > 0; round++)
+      for (const frame of wysiwygFrames.splice(0)) frame(0)
+  }
+  /** The observer callbacks of earlier writes run, then the frames they queued. */
+  const settleWysiwyg = async (): Promise<void> => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+    runWysiwygFrames()
+  }
+  const nodesOf = (elements: readonly Element[]): number =>
+    elements.reduce((sum, el) => sum + 1 + el.querySelectorAll('*').length, 0)
+  /** The WYSIWYG fixture under `app > pre.vditor-reset`, a live fake feed over it, the observer on `app`. */
+  async function mountWysiwyg(factor: Factor) {
+    const app = document.createElement('div')
+    app.className = 'vditor-wysiwyg'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = wysiwygFixture(tableHeavyMarkdown(factor)).root.innerHTML
+    app.append(root)
+    document.body.append(app)
+    const feed: UnitFeed = {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        feedListeners.add(listener)
+        return () => feedListeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    stop = observeBareUrls(app)
+    await settleWysiwyg()
+    return { app, root }
+  }
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it('a list item Enter visits the two items only', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const list = root.querySelector(':scope > ul') as HTMLElement
+      const item = list.children[2] as HTMLElement
+      const added = item.cloneNode(true) as HTMLElement
+      item.after(added)
+      await settleWysiwyg()
+      const scopes = [item, added]
+      const change = {
+        cause: 'mutation',
+        whole: false,
+        changed: scopes.map(
+          (el): LiveUnit => ({
+            el,
+            members: [el],
+            kind: 'list-item',
+            top: list,
+          }),
+        ),
+        structural: [list],
+        scopes,
+      } as UnitsChange
+      const { counts } = countBudget(root, () => {
+        for (const listener of Array.from(feedListeners)) listener(change)
+        runWysiwygFrames()
+      })
+      expect(counts.rootQueries, 'root queries').toBe(0)
+      expect(
+        counts.nodesWalked + counts.queriedNodes,
+        'nodes walked and queried',
+      ).toBeLessThanOrEqual(nodesOf(scopes) + NODE_SLACK)
+    }, 60_000)
+
+    it('a selection change in an unmapped code block stays inside the block', async () => {
+      const { root } = await mountWysiwyg(factor)
+      const block = root.querySelector(
+        ':scope > [data-type="code-block"]',
+      ) as HTMLElement
+      const code = block.querySelector('code') as HTMLElement
+      const range = document.createRange()
+      range.setStart(code.firstChild as Text, 3)
+      range.collapse(true)
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+      await settleWysiwyg()
+      const { counts } = countBudget(root, () => {
+        document.dispatchEvent(new Event('selectionchange'))
+        runWysiwygFrames()
+      })
+      expect(counts.rootQueries, 'root queries').toBe(0)
+      expect(
+        counts.nodesWalked + counts.queriedNodes,
+        'nodes walked and queried',
+      ).toBeLessThanOrEqual(nodesOf([block]) + NODE_SLACK)
+    }, 60_000)
   })
 })

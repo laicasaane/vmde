@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi, describe } from 'vitest'
 import {
   planBlockAction,
   type BlockActionIntent,
@@ -665,4 +665,36 @@ it('passes no units when the model units are of other text (B-15)', async () => 
   expect(planning.plans).toEqual([whole])
   cancelPendingBlockActions()
   await expect(done).resolves.toBe(false)
+})
+
+// ---- Task 733 / 013-T2: B-15 in WYSIWYG (technical task 013 section 6.2) ----
+//
+// With WYSIWYG units the model owns the text in WYSIWYG too: a block action plans on the confirmed
+// model units and reads no whole document, as in IR. `planAndRequest` reads the model only in IR today.
+describe('013 WYSIWYG block action on the model units', () => {
+  const inWysiwyg = (): void => {
+    const inner = state.inner as {
+      currentMode: string
+      undo: Record<string, unknown>
+    }
+    inner.currentMode = 'wysiwyg'
+    inner.undo.wysiwyg = {
+      undoStack: [{ id: 'u1' }],
+      redoStack: [{ id: 'r1' }],
+      lastText: 'last',
+      hasUndo: true,
+    }
+  }
+
+  it('plans on the model units without a whole-document read while the model owns the text', async () => {
+    inWysiwyg()
+    const t = modelRoute()
+    const done = requestBlockAction(ACTION, { exact: HOST })
+    await vi.waitFor(() => expect(requests()).toHaveLength(1))
+    expect(requests()[0].before).toBe(HOST)
+    expect(state.unitCalls, 'whole-document unit resolution').toEqual([])
+    expect(t.getValue, 'whole-document read').not.toHaveBeenCalled()
+    cancelPendingBlockActions()
+    await expect(done).resolves.toBe(false)
+  })
 })

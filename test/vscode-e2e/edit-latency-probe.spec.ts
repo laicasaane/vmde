@@ -2,7 +2,7 @@ import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
-import { wf } from './webview-helpers'
+import { waitForE2EReadiness, wf } from './webview-helpers'
 
 // MEASUREMENT (diagnostic; a gate only with VMDE_PERF_ASSERT=1). Per gated operation (typing at two
 // cadences, Backspace, Enter, paste, Undo, Redo in a paragraph, a table cell, a list item and a code
@@ -16,6 +16,8 @@ import { wf } from './webview-helpers'
 // `__vmdeEditCounters`, numbers only). VMDE_PERF_OUT=<path> gets the
 // same JSON as the `EDIT-LATENCY` line. The JSON holds operation names, places and numbers only,
 // never document text. @probe: excluded from the default run.
+// VMDE_PERF_MODE=wysiwyg (task 733 / 013): switch to WYSIWYG after the open and measure the same rows
+// there; unset (or `ir`) keeps the IR rows unchanged.
 
 type Frame = ReturnType<typeof wf>
 
@@ -23,20 +25,31 @@ const EVENT_THRESHOLD_MS = 16
 const GATE_MS = 50
 const LETTERS = 'abcdefghij'
 
+const PERF_MODE: 'ir' | 'wysiwyg' =
+  process.env.VMDE_PERF_MODE === 'wysiwyg' ? 'wysiwyg' : 'ir'
+/** The mode tree the rows run in. */
+const MODE_ROOT = `.vditor-${PERF_MODE}`
+/** The editable source of a fenced code block in the measured mode. */
+const CODE_SOURCE =
+  PERF_MODE === 'ir' ? 'pre.vditor-ir__marker--pre' : 'pre.vditor-wysiwyg__pre'
+
 const PLACES = [
-  { name: 'paragraph', selector: '.vditor-ir .vditor-reset > p', nth: 2 },
+  { name: 'paragraph', selector: `${MODE_ROOT} .vditor-reset > p`, nth: 2 },
   {
     name: 'table cell',
-    selector: '.vditor-ir .vditor-reset > table td',
+    selector: `${MODE_ROOT} .vditor-reset > table td`,
     nth: 7,
   },
-  { name: 'list item', selector: '.vditor-ir .vditor-reset > ul > li', nth: 2 },
+  {
+    name: 'list item',
+    selector: `${MODE_ROOT} .vditor-reset > ul > li`,
+    nth: 2,
+  },
   {
     name: 'code block',
     // The fenced block's editable source; the YAML front matter is also a `pre > code`, but under
     // `data-type="yaml-front-matter"` with a view-only table preview over it.
-    selector:
-      '.vditor-ir .vditor-reset > [data-type="code-block"] pre.vditor-ir__marker--pre > code',
+    selector: `${MODE_ROOT} .vditor-reset > [data-type="code-block"] ${CODE_SOURCE} > code`,
     nth: 0,
     programmatic: true,
   },
@@ -97,32 +110,82 @@ async function placeCaretInCodeSource(
 ): Promise<void> {
   // The top window must hold keyboard focus before the page-side selection is set.
   await frame
-    .locator('.vditor-ir')
+    .locator(MODE_ROOT)
     .first()
     .click({ position: { x: 4, y: 4 } })
-  const placed = await frame.locator('body').evaluate((_body, sel) => {
-    const code = document.querySelector(sel as string)
-    const node = code?.closest('.vditor-ir__node')
-    const source = node?.querySelector<HTMLElement>('.vditor-ir__marker--pre')
-    if (!code || !node || !source) return false
-    node.classList.add('vditor-ir__node--expand')
-    // End of the first code line.
-    const text = document
-      .createTreeWalker(code, NodeFilter.SHOW_TEXT)
-      .nextNode() as Text | null
-    if (!text) return false
-    const content = text.textContent ?? ''
-    const newline = content.indexOf('\n')
-    const range = document.createRange()
-    range.setStart(text, newline < 0 ? content.length : newline)
-    range.collapse(true)
-    const selection = window.getSelection()
-    selection?.removeAllRanges()
-    selection?.addRange(range)
-    source.focus()
-    return true
-  }, selector)
+  const placed = await frame.locator('body').evaluate(
+    (_body, args) => {
+      const [sel, mode] = args as [string, 'ir' | 'wysiwyg']
+      const code = document.querySelector(sel)
+      const node = code?.closest(
+        mode === 'ir' ? '.vditor-ir__node' : '.vditor-wysiwyg__block',
+      )
+      const source = node?.querySelector<HTMLElement>(
+        mode === 'ir' ? '.vditor-ir__marker--pre' : '.vditor-wysiwyg__pre',
+      )
+      if (!code || !node || !source) return false
+      // IR expands the node; WYSIWYG shows the source pre it keeps hidden until the block is entered.
+      if (mode === 'ir') node.classList.add('vditor-ir__node--expand')
+      else source.style.removeProperty('display')
+      // End of the first code line.
+      const text = document
+        .createTreeWalker(code, NodeFilter.SHOW_TEXT)
+        .nextNode() as Text | null
+      if (!text) return false
+      const content = text.textContent ?? ''
+      const newline = content.indexOf('\n')
+      const range = document.createRange()
+      range.setStart(text, newline < 0 ? content.length : newline)
+      range.collapse(true)
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+      source.focus()
+      return true
+    },
+    [selector, PERF_MODE],
+  )
   if (!placed) throw new Error('code block source not found')
+}
+
+/** VMDE_PERF_MODE=wysiwyg: switch to WYSIWYG and let the new mode settle; IR: nothing. */
+async function enterMeasuredMode(frame: Frame): Promise<void> {
+  if (PERF_MODE !== 'wysiwyg') return
+  await switchToWysiwyg(frame)
+  await frame
+    .locator('body')
+    .evaluate(() => new Promise((r) => setTimeout(r, 4000)))
+}
+
+/** Switches the open editor to WYSIWYG through the edit-mode toolbar and waits for the mode report. */
+async function switchToWysiwyg(frame: Frame): Promise<void> {
+  const before = await waitForE2EReadiness(
+    frame,
+    (snapshot) => snapshot.editorEpoch > 0,
+    { message: 'the editor finished initialization' },
+  )
+  await frame.locator('body').evaluate(() => {
+    const v = (
+      window as unknown as {
+        vditor: {
+          vditor: { toolbar: { elements: Record<string, HTMLElement> } }
+        }
+      }
+    ).vditor.vditor
+    v.toolbar.elements['edit-mode']?.children[0]?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    document
+      .querySelector('button[data-mode="wysiwyg"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await frame.locator('.vditor-wysiwyg').first().waitFor({ timeout: 30_000 })
+  await waitForE2EReadiness(
+    frame,
+    (snapshot) =>
+      snapshot.modeEpoch > before.modeEpoch && snapshot.mode === 'wysiwyg',
+    { message: 'the editor reported WYSIWYG' },
+  )
 }
 
 const install = (frame: Frame) =>
@@ -223,6 +286,7 @@ test('edit latency on a large document @probe', async ({
   await frame
     .locator('body')
     .evaluate(() => new Promise((r) => setTimeout(r, 4000)))
+  await enterMeasuredMode(frame)
   await install(frame)
 
   // VMDE_PROFILE=<dir>: a CPU profile of each profiled burst, taken through a CDP session on the webview frame.
@@ -344,7 +408,9 @@ test('edit latency on a large document @probe', async ({
 
   // The first pointer move over the document, then a selection change by click.
   await record('first pointer move', 'table', async () => {
-    const firstTable = frame.locator('.vditor-ir .vditor-reset > table').first()
+    const firstTable = frame
+      .locator(`${MODE_ROOT} .vditor-reset > table`)
+      .first()
     await firstTable.scrollIntoViewIfNeeded()
     const box = await firstTable.boundingBox()
     if (!box) throw new Error('table has no bounding box')
@@ -410,6 +476,7 @@ test('edit latency on a large document @probe', async ({
     .map((row) => `${row.place} ${row.operation}`)
   const json = JSON.stringify({
     source: label,
+    mode: PERF_MODE,
     gateMs: GATE_MS,
     rows,
     failures,

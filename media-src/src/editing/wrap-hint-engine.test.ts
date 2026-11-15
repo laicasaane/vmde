@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 import {
   type BudgetCounts,
@@ -10,6 +9,7 @@ import {
   fakeLanes,
   irFixture,
   type LaneDeps,
+  wysiwygFixture,
 } from '../testing/budget-harness'
 import {
   applyWrapHintsSetting,
@@ -458,3 +458,118 @@ describe.each([1, 4, 16] as const)(
     )
   },
 )
+
+// ---- Task 733 / 013-T4: B-12 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// The first frame that plans table A of Lute's WYSIWYG DOM collects its runs under the slice budget by a
+// row cursor (N9): the nodes that frame walks do not grow with the table, and each frame stays within
+// 4 + 2 ms on an engine clock that charges 1 ms per cell style read.
+describe('013 B-12 wrap hints on the WYSIWYG fixture', () => {
+  const BUDGET = 4
+  let wysiwygFrames: FrameRequestCallback[] = []
+  let observedTops: Element[] = []
+  let notifyTops: IntersectionObserverCallback | undefined
+  let stop: (() => void) | undefined
+  const statsWindow = window as unknown as {
+    __vmdeE2EReadiness?: unknown
+    __vmdeWrapHintStats?: { codes: number }
+  }
+  afterEach(() => {
+    stop?.()
+    stop = undefined
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    delete statsWindow.__vmdeE2EReadiness
+    delete statsWindow.__vmdeWrapHintStats
+    wysiwygFrames = []
+    observedTops = []
+    notifyTops = undefined
+    document.body.replaceChildren()
+  })
+
+  function installOnWysiwyg(factor: Factor, clock: { t: number }): HTMLElement {
+    class FakeIntersections {
+      constructor(callback: IntersectionObserverCallback) {
+        notifyTops = callback
+      }
+      observe(target: Element) {
+        observedTops.push(target)
+      }
+      unobserve() {
+        // Nothing to release in the fake.
+      }
+      disconnect() {
+        // Nothing to release in the fake.
+      }
+    }
+    vi.stubGlobal('IntersectionObserver', FakeIntersections)
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      wysiwygFrames.push(cb)
+      return wysiwygFrames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+    vi.spyOn(performance, 'now').mockImplementation(() => clock.t)
+    const realStyle = window.getComputedStyle.bind(window)
+    const cellStyle = { paddingLeft: '0px', paddingRight: '0px' }
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
+      if (!(el instanceof HTMLTableCellElement)) return realStyle(el, pseudo)
+      clock.t += 1
+      return cellStyle as CSSStyleDeclaration
+    })
+    statsWindow.__vmdeE2EReadiness = {}
+    const holder = document.createElement('div')
+    holder.className = 'vditor-wysiwyg'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.innerHTML = wysiwygFixture(tableHeavyMarkdown(factor)).root.innerHTML
+    holder.append(root)
+    document.body.append(holder)
+    stop = installWrapHints(() => [root])
+    notifyTops?.(
+      observedTops.map(
+        (target) =>
+          ({ target, isIntersecting: true }) as IntersectionObserverEntry,
+      ),
+      {} as IntersectionObserver,
+    )
+    return root
+  }
+
+  /** The nodes walked by the first frame that plans a run, and the engine-clock ms of every frame. */
+  function runAll(
+    root: HTMLElement,
+    clock: { t: number },
+  ): { firstWalk: number; slices: number[] } {
+    const slices: number[] = []
+    let firstWalk = -1
+    for (let guard = 0; wysiwygFrames.length > 0 && guard < 50_000; guard++) {
+      const before = statsWindow.__vmdeWrapHintStats?.codes ?? 0
+      const started = clock.t
+      const frame = wysiwygFrames.shift() as FrameRequestCallback
+      const { counts } = countBudget(root, () => frame(0))
+      const grew = (statsWindow.__vmdeWrapHintStats?.codes ?? 0) - before
+      if (firstWalk < 0 && grew > 0) firstWalk = counts.nodesWalked
+      slices.push(clock.t - started)
+    }
+    expect(wysiwygFrames).toHaveLength(0)
+    return { firstWalk, slices }
+  }
+
+  const walks = new Map<Factor, number>()
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it('plans within the budget per frame and walks the same nodes in its first frame as at factor 1', () => {
+      const clock = { t: 0 }
+      const root = installOnWysiwyg(factor, clock)
+      const { firstWalk, slices } = runAll(root, clock)
+      expect(statsWindow.__vmdeWrapHintStats?.codes ?? 0).toBeGreaterThan(0)
+      expect(Math.max(...slices), 'slice ms').toBeLessThanOrEqual(BUDGET + 2)
+      walks.set(factor, firstWalk)
+      const base = walks.get(1)
+      if (factor !== 1 && base !== undefined)
+        expect(
+          firstWalk,
+          'nodes walked by the first planning frame',
+        ).toBeLessThanOrEqual(base * 2)
+    }, 120_000)
+  })
+})

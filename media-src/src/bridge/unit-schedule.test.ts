@@ -7,6 +7,9 @@ import {
   fakeLanes,
   irFixture,
   type LaneDeps,
+  countBudget,
+  countedLute,
+  wysiwygFixture,
 } from '../testing/budget-harness'
 import type { Unit, UnitKind } from './text-model'
 import {
@@ -15,6 +18,16 @@ import {
   type UnitSchedule,
   type UnitScheduleDeps,
 } from './unit-schedule'
+import { scanMovableBlocks } from '../../../src/shared/block-move'
+import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
+import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { createRealLute } from '../testing/real-lute'
+import { createBackgroundScheduler } from '../util/background-budget'
+import { installModelSync } from './model-structure'
+import { createTextModel } from './text-model'
+import { createUnitDom } from './unit-dom'
+import type { UnitLute } from './unit-lute'
+import * as unitLuteModule from './unit-lute'
 
 // Task 733 / 004-B: idle proof slices, the pre-touch proof, its listeners and the rotating audit.
 // The model is a small stub whose `prove` costs one fake millisecond, so the slice budget is exact.
@@ -1179,4 +1192,129 @@ describe.each([1, 4, 16] as const)('B-09 proofs at factor %i', (factor) => {
     },
     caseTimeout,
   )
+})
+
+// ---- Task 733 / 013-T1: B-09 on the WYSIWYG fixture (D-13 design section 5.2; technical task 013) ----
+//
+// A real model over Lute's WYSIWYG DOM (`createUnitDom` with `unitLuteOf(lute, 'wysiwyg')`, 013-I1) is
+// proven by the schedule in frames on the cost clock: each frame stays inside its slice and the proven
+// canons equal those of an unsliced proof.
+describe('013 B-09 WYSIWYG proofs in frame slices', () => {
+  let wysiwyg: object
+  beforeAll(() => {
+    installModelSync()
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wysiwyg = countedLute(real.lute)
+  })
+  function wysiwygPair(): UnitLute {
+    const factory = (unitLuteModule as unknown as Record<string, unknown>)
+      .unitLuteOf
+    if (typeof factory !== 'function')
+      throw new Error('unit-lute exports no unitLuteOf (013-I1)')
+    return (factory as (lute: object, mode: 'wysiwyg') => UnitLute)(
+      wysiwyg,
+      'wysiwyg',
+    )
+  }
+  function build(markdown: string) {
+    const root = document.createElement('div')
+    root.className = 'vditor-reset vditor-wysiwyg'
+    root.innerHTML = wysiwygFixture(markdown).root.innerHTML
+    document.body.appendChild(root)
+    const dom = createUnitDom(root, wysiwygPair(), {
+      mode: 'wysiwyg',
+    } as Parameters<typeof createUnitDom>[2])
+    const model = createTextModel(dom, scanMovableBlocks)
+    model.build(markdown)
+    expect(model.state, String(model.offReason)).toBe('live')
+    return { root, dom, model }
+  }
+  /** Every canon of the unit tree, in tree order. */
+  const canons = (units: readonly Unit<HTMLElement>[]): string[] => {
+    const out: string[] = []
+    const visit = (unit: Unit<HTMLElement>): void => {
+      out.push(`${unit.kind}:${unit.proof}:${unit.canon ?? ''}`)
+      for (const child of unit.children) visit(child)
+    }
+    for (const unit of units) visit(unit)
+    return out
+  }
+
+  // D-13 design 13.13: a table proof checks its deadline between rows, so one row is the indivisible
+  // unit; the slice bound is FRAME_SLICE_MS + max(MAX_UNIT_MS, the fixture's largest row proof on the
+  // cost clock): the cells of the widest row times the Lute charge of a call whose input is the
+  // largest cell's one-cell table.
+  const FRAME_SLICE_MS = 4
+  const MAX_UNIT_MS = 2
+  const CHARGES = { luteCallMs: 0.5, luteMsPer1000Chars: 0.1 }
+  const CELL_SHELL =
+    '<table data-block="0"><thead><tr><th></th></tr></thead></table>'.length
+  function largestRowProofMs(root: HTMLElement): number {
+    let widest = 0
+    let largestCell = 0
+    for (const row of Array.from(root.querySelectorAll('tr'))) {
+      widest = Math.max(widest, row.children.length)
+      for (const cell of Array.from(row.children))
+        largestCell = Math.max(largestCell, cell.innerHTML.length)
+    }
+    return (
+      widest *
+      (CHARGES.luteCallMs +
+        (CHARGES.luteMsPer1000Chars * (CELL_SHELL + largestCell)) / 1000)
+    )
+  }
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it('keeps each frame within 4 ms plus its largest row proof and proves the same canons as an unsliced proof', () => {
+      const markdown = tableHeavyMarkdown(factor)
+      const clock = costClock(CHARGES)
+      const frames: Array<() => void> = []
+      const sliced = build(markdown)
+      // The shared background scheduler (012-20) on the test's frames and cost clock.
+      const scheduler = createBackgroundScheduler({
+        now: () => clock.now(),
+        requestAnimationFrame: (cb) => frames.push(cb),
+        cancelAnimationFrame: () => undefined,
+        requestIdle: () => 0,
+        cancelIdle: () => undefined,
+        inputPending: () => false,
+      })
+      const schedule = createUnitSchedule({
+        scheduler,
+        model: sliced.model,
+        root: sliced.root,
+        serialize: (kind, members) => sliced.dom.serialize(kind, members),
+        htmlLength: (unit) =>
+          unit.members.reduce((sum, el) => sum + el.outerHTML.length, 0),
+        inViewport: () => false,
+        isActive: () => true,
+        drain: () => sliced.dom.drain(),
+        requestAnimationFrame: (cb) => frames.push(cb),
+        cancelAnimationFrame: () => undefined,
+        now: () => clock.now(),
+        setTimeout: () => 0,
+        clearTimeout: () => undefined,
+      })
+      schedule.start()
+      let maxSlice = 0
+      let guard = 0
+      while (frames.length > 0 && guard++ < 100_000) {
+        const frame = frames.shift() as () => void
+        const started = clock.now()
+        const { counts } = countBudget(sliced.root, frame)
+        maxSlice = Math.max(maxSlice, clock.now() - started)
+        expect(counts.rootQueries, 'root queries per frame').toBe(0)
+      }
+      schedule.stop()
+      expect(frames).toHaveLength(0)
+      expect(maxSlice, 'slice ms').toBeLessThanOrEqual(
+        FRAME_SLICE_MS + Math.max(MAX_UNIT_MS, largestRowProofMs(sliced.root)),
+      )
+      const whole = build(markdown)
+      for (const unit of whole.model.units) whole.model.prove(unit)
+      expect(canons(sliced.model.units)).toEqual(canons(whole.model.units))
+    }, 120_000)
+  })
 })

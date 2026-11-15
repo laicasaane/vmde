@@ -15,7 +15,7 @@ import { createModelSession, type ModelSession } from '../bridge/model-session'
 import type { UnitLute } from '../bridge/unit-lute'
 import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
-import { historyStoreOf } from './history-store'
+import { historyStoreOf, type RecordedEntry } from './history-store'
 import { invalidateCaret, requestCaret } from './caret'
 import { tagCodeSource } from './code-source'
 import {
@@ -84,10 +84,17 @@ const cap = (name: string) => ({ name }) as unknown as HistoryCapture
 
 let uninstall: (() => void) | undefined
 
-function rig(options: { port?: boolean; root?: HTMLElement } = {}) {
+function rig(
+  options: { port?: boolean; root?: HTMLElement; mode?: 'ir' | 'wysiwyg' } = {},
+) {
+  const mode = options.mode ?? 'ir'
+  // Task 733 / 013: Vditor keeps both mode trees; the rig's paragraphs live in the root of `mode`.
+  const other = document.createElement('div')
+  other.className = `vditor-reset vditor-${mode === 'ir' ? 'wysiwyg' : 'ir'}`
+  other.setAttribute('contenteditable', 'true')
   const root = options.root ?? document.createElement('div')
   if (!options.root) {
-    root.className = 'vditor-reset vditor-ir'
+    root.className = `vditor-reset vditor-${mode}`
     root.setAttribute('contenteditable', 'true')
     root.innerHTML = '<p>first</p><p>second</p><p>third</p>'
     document.body.appendChild(root)
@@ -98,8 +105,17 @@ function rig(options: { port?: boolean; root?: HTMLElement } = {}) {
     return wrap
   }
   const vditor = {
-    currentMode: 'ir',
-    ir: { element: root, composingLock: false, processTimeoutId: undefined },
+    currentMode: mode as string,
+    ir: {
+      element: mode === 'ir' ? root : other,
+      composingLock: false,
+      processTimeoutId: undefined,
+    },
+    wysiwyg: {
+      element: mode === 'wysiwyg' ? root : other,
+      composingLock: false,
+      processTimeoutId: undefined,
+    },
     undo: { ir: slot(), sv: slot(), wysiwyg: slot() },
     toolbar: { elements: { undo: button(), redo: button() } },
     options: {},
@@ -177,12 +193,10 @@ describe('claims', () => {
     const r = rig()
     expect(r.hook.claims(r.vditor)).toBe(true)
   })
-  it('is false outside IR', () => {
+  it('is false in Source', () => {
     const r = rig()
-    for (const mode of ['wysiwyg', 'sv']) {
-      r.vditor.currentMode = mode
-      expect(r.hook.claims(r.vditor)).toBe(false)
-    }
+    r.vditor.currentMode = 'sv'
+    expect(r.hook.claims(r.vditor)).toBe(false)
   })
   it("is false when the engine is 'vditor'", () => {
     const r = rig()
@@ -412,7 +426,7 @@ describe('drops', () => {
     r.record(cap('A'))
     r.record(cap('B'))
     r.hook.undo(r.vditor)
-    r.vditor.currentMode = 'wysiwyg'
+    r.vditor.currentMode = 'sv'
     expect(r.hook.claims(r.vditor)).toBe(false)
     r.vditor.currentMode = 'ir'
     expect(r.hook.claims(r.vditor)).toBe(true)
@@ -1272,5 +1286,96 @@ describe('B-14: one flush per Undo and Redo', () => {
       },
       60_000,
     )
+  })
+})
+
+// ---- Task 733 / 013-T2: the unit engine holds WYSIWYG history (technical task 013 sections 6.2, 6.3) ----
+//
+// The rig's paragraphs live in the WYSIWYG root; the patched Vditor `Undo` asks `claims` first and
+// delegates only when it holds (`patchUndoUnitEngine`), so these cases call the hook the same way.
+describe('013 WYSIWYG unit history', () => {
+  type R = ReturnType<typeof rig>
+  /** One call of the patched `Undo` method: the engine runs only while it claims the editor. */
+  const viaPatch = (r: R, method: 'undo' | 'redo' | 'record'): boolean => {
+    if (!r.hook.claims(r.vditor)) return false
+    r.hook[method](r.vditor)
+    return true
+  }
+  const recordViaPatch = (r: R, capture?: HistoryCapture): boolean => {
+    r.state.captures.push(capture)
+    return viaPatch(r, 'record')
+  }
+
+  it('claims WYSIWYG with the unit engine and a port, and keeps reading the mode', () => {
+    const r = rig({ mode: 'wysiwyg' })
+    expect(r.hook.claims(r.vditor)).toBe(true)
+    r.vditor.currentMode = 'sv'
+    expect(r.hook.claims(r.vditor)).toBe(false)
+  })
+
+  it('does not claim WYSIWYG without a port (WYSIWYG units off: no session port)', () => {
+    const r = rig({ mode: 'wysiwyg', port: false })
+    expect(r.hook.claims(r.vditor)).toBe(false)
+  })
+
+  it('records, undoes and redoes a WYSIWYG edit through the model port and publishes each move', () => {
+    const r = rig({ mode: 'wysiwyg' })
+    expect(recordViaPatch(r)).toBe(true)
+    expect(recordViaPatch(r, cap('A'))).toBe(true)
+    expect(viaPatch(r, 'undo')).toBe(true)
+    expect(viaPatch(r, 'redo')).toBe(true)
+    expect(r.names(r.state.restores)).toEqual([
+      ['A', 'before'],
+      ['A', 'after'],
+    ])
+    expect(r.state.published.map(([kind]) => kind)).toEqual(['undo', 'redo'])
+  })
+
+  it('reports its entries as WYSIWYG entries to the history store', () => {
+    const r = rig({ mode: 'wysiwyg' })
+    const seen: RecordedEntry[] = []
+    const store = historyStoreOf(r.vditor)
+    const stop = store?.onEntryRecorded((entry) => seen.push(entry))
+    recordViaPatch(r)
+    recordViaPatch(r, cap('A'))
+    stop?.()
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every((entry) => entry.mode === 'wysiwyg')).toBe(true)
+    expect(store?.top('wysiwyg')).toBeDefined()
+  })
+
+  it('B-14: an Undo and a Redo make at most one selection write and one layout flush each', () => {
+    const r = rig({ mode: 'wysiwyg' })
+    recordViaPatch(r)
+    recordViaPatch(r, cap('A'))
+    for (const method of ['undo', 'redo'] as const) {
+      let moved = false
+      const { counts } = countBudget(r.root, () => {
+        moved = viaPatch(r, method)
+      })
+      expect(moved, `${method} delegated`).toBe(true)
+      expect(counts.selectionWrites, method).toBeLessThanOrEqual(1)
+      expect(counts.flushes, method).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('B-14: a first-position key at an element endpoint inserts no node', () => {
+    const r = rig({ mode: 'wysiwyg' })
+    expect(recordViaPatch(r)).toBe(true)
+    const range = document.createRange()
+    range.setStart(r.root, 1)
+    range.collapse(true)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    const before = r.root.innerHTML
+    const { counts } = countBudget(r.root, () => {
+      if (r.hook.claims(r.vditor))
+        r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown'))
+    })
+    expect(r.hook.claims(r.vditor)).toBe(true)
+    expect(r.root.innerHTML).toBe(before)
+    expect(counts.selectionWrites).toBeLessThanOrEqual(1)
+    expect(counts.flushes).toBeLessThanOrEqual(1)
   })
 })

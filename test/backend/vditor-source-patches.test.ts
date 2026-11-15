@@ -6147,3 +6147,176 @@ describe('patchIrCodeEnterDetachedRange (012-16 V-3a — one flush per IR code b
     }
   })
 })
+
+// ---- Task 733 / 013-T2: WYSIWYG unit patches V-W1 to V-W4 (shared rules 3.12; technical task 013 6.6) ----
+describe('013 WYSIWYG unit patches (V-W1 to V-W4)', () => {
+  type Patch = (code: string) => string
+  /** The 013-I2 patch function `name`; a clear failure while it does not exist. */
+  const patchNamed = (name: string): Patch => {
+    const value = (sourcePatches as unknown as Record<string, unknown>)[name]
+    if (typeof value !== 'function')
+      throw new Error(`esbuild-shared exports no ${name} (013-I2)`)
+    return value as Patch
+  }
+  const count = (code: string, needle: string): number =>
+    code.split(needle).length - 1
+  const SPIN_START =
+    'const isWYSIWYGElement = blockElement.isEqualNode(vditor.wysiwyg.element);'
+  const SPIN_END = 'let firstLinkRefDefElement: Element;'
+  const HOOK_GUARD =
+    'if (!((window as any).__vmdeSpinUnit && (window as any).__vmdeSpinUnit(vditor, range, blockElement, event))) {'
+  const WYSIWYG_SPIN = 'html = vditor.lute.SpinVditorDOM(html);'
+  const WYSIWYG_PASTE_SPIN =
+    'blockElement.outerHTML = vditor.lute.SpinVditorDOM(blockElement.outerHTML);'
+  const TRAILING_QUERIES = [
+    `vditor.wysiwyg.element.querySelectorAll("[data-type='link-ref-defs-block']").forEach((item) => {`,
+    `vditor.wysiwyg.element.querySelectorAll("[data-type='footnotes-block']").forEach((item) => {`,
+    `const allLinkRefDefsElement = vditor.wysiwyg.element.querySelectorAll("[data-type='link-ref-defs-block']");`,
+    `const allFootnoteElement = vditor.wysiwyg.element.querySelectorAll("[data-type='footnotes-block']");`,
+  ]
+  const WBR_SWEEP =
+    'vditor.wysiwyg.element.querySelectorAll("wbr").forEach((wbr) => {'
+  const PREVIEW_LOOP = `vditor.wysiwyg.element.querySelectorAll(".vditor-wysiwyg__preview[data-render='2']")`
+
+  it('the shipped WYSIWYG input and paste handler hold every anchor exactly once (pre-patch)', () => {
+    for (const anchor of [
+      SPIN_START,
+      SPIN_END,
+      WYSIWYG_SPIN,
+      WBR_SWEEP,
+      PREVIEW_LOOP,
+      ...TRAILING_QUERIES,
+    ])
+      expect(count(wysiwygInputSource, anchor), anchor).toBe(1)
+    expect(count(fixBrowserSource, WYSIWYG_PASTE_SPIN)).toBe(1)
+  })
+
+  describe('V-W1 patchWysiwygUnitSpin', () => {
+    it('wraps the span from the root check to the definitions merge in the hook guard', () => {
+      const patched = patchNamed('patchWysiwygUnitSpin')(wysiwygInputSource)
+      const compact = patched.replace(/\s+/g, ' ')
+      expect(compact).toContain(HOOK_GUARD.replace(/\s+/g, ' '))
+      expect(
+        count(patched, '__vmdeSpinUnit(vditor, range, blockElement, event)'),
+      ).toBe(1)
+      const guardAt = patched.indexOf('__vmdeSpinUnit')
+      expect(guardAt).toBeLessThan(patched.indexOf(SPIN_START))
+      expect(patched.indexOf(SPIN_START)).toBeLessThan(
+        patched.indexOf(WYSIWYG_SPIN),
+      )
+      // The guard closes before the definitions merge, which runs for every key.
+      const closeAt = patched.lastIndexOf('}', patched.indexOf(SPIN_END))
+      expect(closeAt).toBeGreaterThan(patched.indexOf(WYSIWYG_SPIN))
+      expect(patched).toContain(SPIN_END)
+      // The caret marker and the [style] sweep stay before the hook.
+      expect(
+        patched.indexOf('range.insertNode(document.createElement("wbr"));'),
+      ).toBeLessThan(guardAt)
+    })
+
+    it('still parses as TypeScript and composes as the outermost transform of the wysiwyg/input.ts chain', () => {
+      const patched = patchNamed('patchWysiwygUnitSpin')(wysiwygInputSource)
+      expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+      const entry = VDITOR_TS_PATCHES.find(({ file }) =>
+        file.test('/vditor/src/ts/wysiwyg/input.ts'),
+      )
+      const chained = entry!.transform(wysiwygInputSource, {
+        path: '/vditor/src/ts/wysiwyg/input.ts',
+      })
+      expect(chained).toContain(
+        '__vmdeSpinUnit(vditor, range, blockElement, event)',
+      )
+      expect(chained).toContain('__vmdeTrailingBlocks')
+      expect(() => transformSync(chained, { loader: 'ts' })).not.toThrow()
+    })
+
+    it('fails the build when an anchor drifts or repeats', () => {
+      const patch = patchNamed('patchWysiwygUnitSpin')
+      expect(() => patch('// drift')).toThrow(/found 0 \(version drift\?\)/)
+      expect(() => patch(wysiwygInputSource + wysiwygInputSource)).toThrow(
+        /found 2/,
+      )
+    })
+  })
+
+  describe('V-W2 patchPasteUnitSpin, WYSIWYG branch', () => {
+    it('guards both the IR and the WYSIWYG paste spin with the hook and an undefined event', () => {
+      const patched = patchPasteUnitSpin(fixBrowserSource)
+      expect(
+        count(
+          patched,
+          '__vmdeSpinUnit(vditor, range, blockElement, undefined)',
+        ),
+      ).toBe(2)
+      expect(patched).toContain(WYSIWYG_PASTE_SPIN)
+      const wysiwygAt = patched.indexOf(WYSIWYG_PASTE_SPIN)
+      const guardAt = patched.lastIndexOf('__vmdeSpinUnit', wysiwygAt)
+      expect(guardAt).toBeGreaterThan(-1)
+      expect(wysiwygAt - guardAt).toBeLessThan(200)
+    })
+  })
+
+  describe('V-W3 patchWysiwygTrailingBlockLookups', () => {
+    it('routes the four trailing-block queries through the hook with the root query as fallback', () => {
+      const patched = patchNamed('patchWysiwygTrailingBlockLookups')(
+        wysiwygInputSource,
+      )
+      expect(
+        count(
+          patched,
+          '(window as any).__vmdeTrailingBlocks?.(vditor.wysiwyg.element, "link-ref-defs-block")',
+        ),
+      ).toBe(2)
+      expect(
+        count(
+          patched,
+          '(window as any).__vmdeTrailingBlocks?.(vditor.wysiwyg.element, "footnotes-block")',
+        ),
+      ).toBe(2)
+      // The original queries stay as the fallback after `??`.
+      expect(
+        count(
+          patched,
+          `?? vditor.wysiwyg.element.querySelectorAll("[data-type='link-ref-defs-block']")`,
+        ),
+      ).toBe(2)
+      expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+    })
+
+    it('fails the build when a query drifts', () => {
+      const patch = patchNamed('patchWysiwygTrailingBlockLookups')
+      expect(() => patch('// drift')).toThrow(/found 0 \(version drift\?\)/)
+    })
+  })
+
+  describe('V-W4 patchWysiwygScopedInputQueries', () => {
+    it('scopes the caret-marker sweep to the block while the feed answers, else keeps the root query', () => {
+      const patched = patchNamed('patchWysiwygScopedInputQueries')(
+        wysiwygInputSource,
+      )
+      expect(patched).toContain('__vmdeTrailingBlocks')
+      // The root sweep stays reachable as the fallback.
+      expect(patched).toContain(
+        'vditor.wysiwyg.element.querySelectorAll("wbr")',
+      )
+      expect(patched).toContain('blockElement.previousElementSibling')
+      expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+    })
+
+    it('routes the fresh-preview loop through the diagram render hook, keeping the stock loop', () => {
+      const patched = patchNamed('patchWysiwygScopedInputQueries')(
+        wysiwygInputSource,
+      )
+      expect(patched).toContain('__vmdeDeferIrDiagramRender')
+      expect(patched).toContain(PREVIEW_LOOP)
+      expect(patched.indexOf('__vmdeDeferIrDiagramRender')).toBeLessThan(
+        patched.indexOf(PREVIEW_LOOP),
+      )
+    })
+
+    it('fails the build when an anchor drifts', () => {
+      const patch = patchNamed('patchWysiwygScopedInputQueries')
+      expect(() => patch('// drift')).toThrow(/found 0 \(version drift\?\)/)
+    })
+  })
+})

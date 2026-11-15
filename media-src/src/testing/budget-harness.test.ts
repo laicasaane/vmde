@@ -8,6 +8,7 @@ import {
   fakeLanes,
   irFixture,
   scaledFixture,
+  wysiwygFixture,
 } from './budget-harness'
 
 const MARKDOWN = [
@@ -50,6 +51,41 @@ describe('irFixture', () => {
     expect(first.hasAttribute('data-prepared')).toBe(true)
     expect(irFixture(MARKDOWN).root).not.toBe(first)
     expect(irFixture(`${MARKDOWN}\nmore\n`).root).not.toBe(first)
+  })
+})
+
+describe('wysiwygFixture (013)', () => {
+  it('mounts the Lute WYSIWYG DOM under div.vditor-wysiwyg > pre.vditor-reset', () => {
+    const { root } = wysiwygFixture(MARKDOWN)
+    expect(root.localName).toBe('pre')
+    expect(root.classList.contains('vditor-reset')).toBe(true)
+    expect(root.getAttribute('contenteditable')).toBe('true')
+    expect(root.parentElement?.classList.contains('vditor-wysiwyg')).toBe(true)
+    expect(root.isConnected).toBe(true)
+    expect(root.querySelector(':scope > table[data-block]')).not.toBe(null)
+    expect(root.querySelector(':scope > ul > li')).not.toBe(null)
+    expect(
+      root.querySelector(
+        ':scope > .vditor-wysiwyg__block[data-type="code-block"]',
+      ),
+    ).not.toBe(null)
+    // WYSIWYG DOM: no IR markers.
+    expect(root.querySelector('.vditor-ir__node, .vditor-ir__marker')).toBe(
+      null,
+    )
+  })
+
+  it('builds once per markdown and prepare, apart from the IR fixture', () => {
+    const prepare = vi.fn((root: HTMLElement) =>
+      root.setAttribute('data-prepared', ''),
+    )
+    const first = wysiwygFixture(MARKDOWN, prepare).root
+    expect(wysiwygFixture(MARKDOWN, prepare).root).toBe(first)
+    expect(prepare).toHaveBeenCalledTimes(1)
+    expect(first.hasAttribute('data-prepared')).toBe(true)
+    expect(wysiwygFixture(MARKDOWN).root).not.toBe(first)
+    expect(wysiwygFixture(`${MARKDOWN}\nmore\n`).root).not.toBe(first)
+    expect(irFixture(MARKDOWN, prepare).root).not.toBe(first)
   })
 })
 

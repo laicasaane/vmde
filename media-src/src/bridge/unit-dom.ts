@@ -7,6 +7,7 @@ import {
 import { isHelper } from '../editing/trailing-paragraph'
 import { domKind } from '../nav/unit-pairing'
 import { registerQuietObserver } from '../util/mutation-impact'
+import type { UnitMode } from '../util/unit-changes'
 import { isOwnHintRecord, stripWrapHints } from '../util/wrap-hint-mark'
 import { installApplyText } from './apply-text'
 import type {
@@ -224,6 +225,8 @@ export interface UnitDomOptions {
   ): void
   /** Task 733 / 010: the inner Vditor editor, for the post-render steps of `render`; without one they are skipped. */
   vditor?(): unknown
+  /** Task 733 / 013: the mode of the root; absent means 'ir'. Selects the fresh-preview class and the caption mode of `render`. */
+  mode?: UnitMode
 }
 
 interface RenderVditor {
@@ -232,6 +235,7 @@ interface RenderVditor {
 }
 
 const PREVIEW_FRESH = ".vditor-ir__preview[data-render='2']"
+const WYSIWYG_PREVIEW_FRESH = ".vditor-wysiwyg__preview[data-render='2']"
 
 /** Top-level elements of an HTML string, parsed in the root's document (never inserted yet). */
 function parseElements(root: HTMLElement, html: string): HTMLElement[] {
@@ -605,14 +609,16 @@ export function createUnitDom(
   ): void => {
     const vditor = options?.vditor?.() as RenderVditor | undefined
     if (!vditor) return
+    const mode = options?.mode ?? 'ir'
+    const fresh = mode === 'ir' ? PREVIEW_FRESH : WYSIWYG_PREVIEW_FRESH
     for (const element of inserted) {
-      const previews = Array.from(element.querySelectorAll(PREVIEW_FRESH))
-      if (element.matches(PREVIEW_FRESH)) previews.push(element)
+      const previews = Array.from(element.querySelectorAll(fresh))
+      if (element.matches(fresh)) previews.push(element)
       for (const preview of previews)
         processCodeRender(preview as HTMLElement, vditor as never)
       renderImageCaptions(
         element,
-        'ir',
+        mode,
         Boolean(vditor.options?.preview?.markdown?.imageCaption),
       )
     }

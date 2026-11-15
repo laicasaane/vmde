@@ -24,14 +24,17 @@ import {
   installPreTouchListeners,
   type UnitSchedule,
 } from './unit-schedule'
-import type {
-  HistoryModelPort,
-  LiveUnit,
-  UnitLines,
-  UnitsChange,
+import {
+  type HistoryModelPort,
+  type LiveUnit,
+  type UnitLines,
+  type UnitMode,
+  type UnitsChange,
+  unitModeOf,
+  WYSIWYG_UNITS,
 } from '../util/unit-changes'
 import { createUnitCapture } from './unit-capture'
-import type { UnitLute } from './unit-lute'
+import { type ModeLute, type UnitLute, unitLuteOf } from './unit-lute'
 
 // Task 733 (004-C): one text model per Vditor instance, kept beside the edit-sync controller. It
 // builds the model from the host text once the complete IR edit DOM exists, tracks the DOM through
@@ -106,6 +109,8 @@ export interface ModelSessionDeps {
   /** The live (wrapped) Lute of the editor, or null. */
   getLute(): UnitLute | null
   getMode(): string | null
+  /** Task 733 / 013: WYSIWYG units on; default WYSIWYG_UNITS. Tests pass false to prove today's path. */
+  wysiwygUnits?: boolean
   /**
    * The Preview pane is showing over the IR editor (Vditor's current mode stays `ir`). The model does
    * no work then: no proof slices, no audit.
@@ -576,6 +581,14 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let stale = false
   /** Entering IR again: the first IR post asks for the host bytes, and its rebind builds the model (3.6). */
   let modeReentry = false
+  /** Task 733 / 013: the mode the current model was built for (shared rules 3.12). */
+  let builtMode: UnitMode | undefined
+  /** The mode the model serves for Vditor's current mode; O(1), no allocation. */
+  const servedMode = (): UnitMode | undefined =>
+    unitModeOf(deps.getMode(), deps.wysiwygUnits ?? WYSIWYG_UNITS)
+  /** Vditor shows the mode the model was built for. */
+  const servesBuiltMode = (): boolean =>
+    builtMode !== undefined && servedMode() === builtMode
   let prediction: Prediction | undefined
   let restartTimer: number | undefined
   let preTouchFallback = false
@@ -759,7 +772,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     model: () => model,
     root: () => deps.getRoot() ?? undefined,
     drain: () => dom?.drain(),
-    ready: () => live() && deps.getMode() === 'ir' && !awaitingNow() && !stale,
+    ready: () => live() && servesBuiltMode() && !awaitingNow() && !stale,
     // A model that is off observes nothing, so the unit engine could not capture an edit and its Undo
     // would do nothing: the old engine holds the history then (an IR re-entry before the first post's
     // answer, a deferred edit view before its build, a permanent off). Only a rebuild over the same
@@ -767,6 +780,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     claimable: () => live() || buildFrame !== undefined,
     vditor: () =>
       (win as unknown as { vditor?: { vditor?: unknown } }).vditor?.vditor,
+    mode: () => builtMode ?? 'ir',
   })
 
   /** One mutation change per animation frame, after the last batch of the frame. */
@@ -818,7 +832,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     cancelBuild()
     teardown()
     confirmed = false
-    if (deps.getMode() !== 'ir') {
+    const mode = servedMode()
+    if (!mode) {
       offReason = 'mode'
       return
     }
@@ -832,12 +847,12 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     // editor has now, so a later wrapper put around the editor's Lute calls (an end-to-end spec
     // counting edit-path calls, an instrument) sees the editor's calls and not this shadow work, which
     // the shadow stats report instead. Every production wrapper is already installed by now.
-    const boundLute: UnitLute = {
-      VditorIRDOM2Md: lute.VditorIRDOM2Md.bind(lute),
-      Md2VditorIRDOM: lute.Md2VditorIRDOM.bind(lute),
-    }
+    // Task 733 / 013: the pair of the served mode (WYSIWYG maps VditorDOM2Md / Md2VditorDOM onto it).
+    const boundLute: UnitLute = unitLuteOf(lute as unknown as ModeLute, mode)
+    builtMode = mode
     modelLute = boundLute
     const unitDom = createUnitDom(root, boundLute, {
+      mode,
       onBatch,
       // The post-render steps of an apply (previews, captions, outline) need the inner editor.
       vditor: () =>
@@ -860,7 +875,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         unit.members.reduce((sum, el) => sum + el.outerHTML.length, 0),
       inViewport: (unit) => (unit.el ? deps.inViewport(unit.el) : false),
       isActive: () =>
-        deps.getMode() === 'ir' &&
+        servesBuiltMode() &&
         !deps.isPreviewShowing() &&
         model?.state === 'live',
       drain: () => unitDom.drain(),
@@ -959,6 +974,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     return {
       state: model?.state ?? 'off',
       offReason: model ? model.offReason : offReason,
+      // Task 733 / 013: the served mode of the live model (kinds only, SR-5).
+      mode: live() ? builtMode : undefined,
       units: treeStats?.units ?? 0,
       proven: treeStats?.proven ?? 0,
       opaque: treeStats?.opaque ?? 0,
@@ -1031,7 +1048,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   /** The reasons a publication cannot be a delta before the model is asked: a fallback result, else undefined. */
   const deltaGate = (): PrepareResult | undefined => {
     if (!model || !live()) return offFallback
-    if (deps.getMode() !== 'ir') {
+    if (!servesBuiltMode()) {
       session.onModeChange(deps.getMode())
       return offFallback
     }
@@ -1051,8 +1068,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     sequence: number,
     options?: { requestId?: string },
   ): { rebind: true } | undefined => {
-    if (!modeReentry || deps.getMode() !== 'ir' || !domComplete)
-      return undefined
+    if (!modeReentry || !servedMode() || !domComplete) return undefined
     modeReentry = false
     awaited = sequence
     if (options?.requestId !== undefined)
@@ -1197,7 +1213,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     },
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the apply's gates, plan, render, kind check and commit are one transaction (handoff 2.4)
     applyText(changes, origin) {
-      if (!model || !dom || !live() || deps.getMode() !== 'ir') return APPLY_OFF
+      if (!model || !dom || !live() || !servesBuiltMode()) return APPLY_OFF
       if (origin === 'exact' && !session.ownsText()) return APPLY_OFF
       // A composition owns the DOM under the caret.
       if (deps.isComposing()) return applyFallback('dirty-overlap')
@@ -1300,9 +1316,10 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       offReason = reason
     },
     onModeChange(mode) {
-      if (mode === 'ir') {
-        // Back in IR with the complete edit DOM: the first IR post asks for the host bytes, and the
-        // matched `rebind` builds the model (3.6). A model that is live or was never built does nothing.
+      const next = unitModeOf(mode, deps.wysiwygUnits ?? WYSIWYG_UNITS)
+      if (next !== undefined && (!model || next === builtMode)) {
+        // Back in a served mode with the complete edit DOM: the first post asks for the host bytes, and
+        // the matched `rebind` builds the model (3.6). A model of this mode, or none ever built, does nothing.
         if (!model && offReason === 'mode' && domComplete) modeReentry = true
         return
       }
@@ -1315,6 +1332,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       awaited = undefined
       awaitingWrite = false
       offReason = 'mode'
+      // Task 733 / 013: a switch between the served modes (IR to WYSIWYG) re-enters at once.
+      if (next !== undefined && domComplete) modeReentry = true
     },
     onEditDomComplete() {
       domComplete = true
@@ -1322,7 +1341,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     },
     beforeWholeTextPost(sequence, options) {
       if (!live() || !model) return reentryPost(sequence, options)
-      if (deps.getMode() !== 'ir') {
+      if (!servesBuiltMode()) {
         session.onModeChange(deps.getMode())
         return undefined
       }
@@ -1356,7 +1375,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       return { rebind: true }
     },
     onHistoryTransition() {
-      if (!live() || !model || deps.getMode() !== 'ir') return
+      if (!live() || !model || !servesBuiltMode()) return
       dom?.drain()
       stale = true
       confirmed = false
@@ -1383,13 +1402,9 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     },
     deltaPort: () => port,
     historyPort: () => capture.port,
-    canPublishDelta: () => live() && deps.getMode() === 'ir',
+    canPublishDelta: () => live() && servesBuiltMode(),
     ownsText: () =>
-      live() &&
-      deps.getMode() === 'ir' &&
-      !awaitingNow() &&
-      !stale &&
-      confirmed,
+      live() && servesBuiltMode() && !awaitingNow() && !stale && confirmed,
     onWholeTextPublished(sequence, options) {
       if (!live()) return
       if (options?.requestId !== undefined)

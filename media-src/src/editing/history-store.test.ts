@@ -4,6 +4,7 @@ import {
   type HistoryEntryToken,
   IR_HISTORY_ENGINE,
   historyStoreOf,
+  provideUnitHistoryDelegate,
   type RecordedEntry,
 } from './history-store'
 
@@ -510,5 +511,59 @@ describe('review repairs (Task 003)', () => {
     expect(second).not.toBe(first)
     f.inner.undo = undefined
     expect(historyStoreOf(f.inner)).toBeUndefined()
+  })
+})
+
+// ---- Task 733 / 013-T2: the unit engine answers the WYSIWYG history it claims (shared rules 3.12) ----
+describe('013 WYSIWYG delegation', () => {
+  function fakeDelegate(claimed: boolean) {
+    const entry = { id: 'unit-top' } as unknown as HistoryEntryToken
+    return {
+      entry,
+      delegate: {
+        claims: () => claimed,
+        top: () => entry,
+        redoTop: () => undefined,
+        base: () => entry,
+        slot: () => undefined,
+        isEmpty: () => false,
+        revision: () => 7,
+        savepoint: () => undefined,
+        restore: () => undefined,
+        amendTopCaret: () => 'unchanged' as const,
+        isSourceNeutral: () => true,
+      },
+    }
+  }
+
+  it('reads the WYSIWYG bookmarks from the unit engine while it claims the editor in WYSIWYG', () => {
+    const f = fakeInner()
+    f.inner.currentMode = 'wysiwyg'
+    const store = storeOf(f)
+    const { entry, delegate } = fakeDelegate(true)
+    provideUnitHistoryDelegate(delegate)
+    try {
+      expect(store.top('wysiwyg')).toBe(entry)
+      expect(store.top()).toBe(entry)
+      expect(store.revision('wysiwyg')).toBe(7)
+      expect(store.isEmpty('wysiwyg')).toBe(false)
+      // Source keeps Vditor's engine.
+      expect(store.top('sv')).not.toBe(entry)
+    } finally {
+      provideUnitHistoryDelegate(undefined)
+    }
+  })
+
+  it('keeps the old engine in WYSIWYG when the unit engine does not claim the editor', () => {
+    const f = fakeInner()
+    f.inner.currentMode = 'wysiwyg'
+    const store = storeOf(f)
+    const { entry, delegate } = fakeDelegate(false)
+    provideUnitHistoryDelegate(delegate)
+    try {
+      expect(store.top('wysiwyg')).not.toBe(entry)
+    } finally {
+      provideUnitHistoryDelegate(undefined)
+    }
   })
 })
