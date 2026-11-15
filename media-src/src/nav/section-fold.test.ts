@@ -14,6 +14,21 @@ import {
   unfoldAtCaret,
 } from './section-fold'
 import { pauseCoalescedObservers } from '../util/observe-coalesce'
+import {
+  type LiveUnit,
+  provideUnitFeed,
+  type UnitFeed,
+  type UnitsChange,
+} from '../util/unit-changes'
+import {
+  costClock,
+  countBudget,
+  type Factor,
+  fakeLanes,
+  irFixture,
+} from '../testing/budget-harness'
+import { createBackgroundScheduler } from '../util/background-budget'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 const fixture = () => {
   const root = document.createElement('div')
@@ -512,14 +527,17 @@ describe('list fold gutter hit testing', () => {
 // Task 641: the glyph centre is measured after the first paint, only for items near the viewport.
 // The stubs below are the environment's idle scheduler and viewport observer, driven by the tests.
 function glyphEnvironment() {
-  const idle: (() => void)[] = []
+  const idle: ((deadline: IdleDeadline) => void)[] = []
   const resize: { callback?: ResizeObserverCallback } = {}
   const near: {
     callback?: IntersectionObserverCallback
     options?: IntersectionObserverInit
     observed: Set<Element>
   } = { observed: new Set() }
-  vi.stubGlobal('requestIdleCallback', (run: () => void) => idle.push(run))
+  vi.stubGlobal(
+    'requestIdleCallback',
+    (run: (deadline: IdleDeadline) => void) => idle.push(run),
+  )
   vi.stubGlobal('cancelIdleCallback', () => undefined)
   vi.stubGlobal(
     'ResizeObserver',
@@ -564,8 +582,10 @@ function glyphEnvironment() {
     resize,
     near,
     /** The first idle period: the controller starts measuring. */
+    // An idle period long enough for the glyph job to finish its work.
     runIdle: () => {
-      for (const run of idle.splice(0)) run()
+      for (const run of idle.splice(0))
+        run({ didTimeout: false, timeRemaining: () => 50 })
     },
     /** The viewport observer reports `items` as inside (or outside) the margin. */
     report: (items: Element[], isIntersecting = true) =>
@@ -1492,3 +1512,306 @@ function toggleAtNode(root: HTMLElement, needle: string): boolean {
   }
   throw new Error(`${needle} missing`)
 }
+
+// The factor-16 fixture takes seconds to mount in jsdom on a loaded machine.
+const BUDGET_TIMEOUT_MS = 60_000
+
+// Task 733 (D-13 B-11): while a live feed describes the fold surface, its scoped changes drive the
+// fold frame; the frame makes no root query and leaves the whole clear to whole changes.
+describe('section fold on unit feed changes (Task 733, B-11)', {
+  timeout: BUDGET_TIMEOUT_MS,
+}, () => {
+  type Change = Pick<UnitsChange, 'whole'> &
+    Partial<UnitsChange> & { scopes?: readonly HTMLElement[] }
+
+  const nodesIn = (node: Node): number => {
+    let count = 1
+    for (let child = node.firstChild; child; child = child.nextSibling)
+      count += nodesIn(child)
+    return count
+  }
+  const unit = (
+    el: HTMLElement,
+    kind: LiveUnit['kind'],
+    top: HTMLElement = el,
+  ): LiveUnit => ({ el, members: [el], kind, top })
+  const settle = () => new Promise<void>((done) => setTimeout(done, 0))
+
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+  })
+
+  function setup(factor: Factor, initialState?: SectionFoldState) {
+    const ir = irFixture(tableHeavyMarkdown(factor), () => undefined).root
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      frames.push(callback),
+    )
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+    vi.stubGlobal('requestIdleCallback', () => 0)
+    vi.stubGlobal('cancelIdleCallback', () => undefined)
+    const listeners = new Set<(change: UnitsChange) => void>()
+    const feed: UnitFeed = {
+      root: ir,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    const emit = (change: Change) => {
+      const full: UnitsChange = {
+        cause: 'mutation',
+        changed: [],
+        structural: [],
+        ...change,
+      }
+      for (const listener of Array.from(listeners)) listener(full)
+    }
+    createSectionFoldController({} as never, {
+      surface: () => ir,
+      initialState,
+    })
+    frames.splice(0)
+    // Every frame queued so far and every frame they queue (the shared scheduler's slices), counted
+    // as one run on the IR root.
+    const runFrames = () =>
+      countBudget(ir, () => {
+        for (let round = 0; round < 1000 && frames.length > 0; round++)
+          for (const frame of frames.splice(0)) frame(0)
+      }).counts
+    const list = ir.querySelector<HTMLElement>(':scope > ul')!
+    return { ir, emit, runFrames, list }
+  }
+
+  describe.each([1, 4, 16] as Factor[])('at factor %i', (factor) => {
+    it('a paragraph change makes no root query', async () => {
+      const { ir, emit, runFrames } = setup(factor)
+      const paragraph = Array.from(ir.children).find((block) =>
+        block.textContent?.startsWith('Fourth paragraph'),
+      ) as HTMLElement
+      paragraph.firstChild!.textContent = 'Fourth paragraph, edited.'
+      emit({
+        whole: false,
+        changed: [unit(paragraph, 'paragraph')],
+        scopes: [paragraph],
+      })
+      await settle()
+      const counts = runFrames()
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes).toBeLessThanOrEqual(
+        nodesIn(paragraph) + ir.childElementCount,
+      )
+    })
+
+    it('a list item change reconciles its list with no root query', async () => {
+      const { ir, emit, runFrames, list } = setup(factor)
+      const item = list.children[2] as HTMLElement
+      item.append(document.createElement('wbr'))
+      emit({
+        whole: false,
+        changed: [unit(item, 'list-item', list)],
+        structural: [list],
+        scopes: [item],
+      })
+      await settle()
+      const counts = runFrames()
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes).toBeLessThanOrEqual(
+        nodesIn(list) + ir.childElementCount,
+      )
+    })
+
+    it('a pending list replaced before the frame takes the change scopes, not a whole pass', async () => {
+      const { ir, emit, runFrames, list } = setup(factor)
+      emit({
+        whole: false,
+        changed: [unit(list.children[2] as HTMLElement, 'list-item', list)],
+        structural: [list],
+        scopes: [list.children[2] as HTMLElement],
+      })
+      const replacement = list.cloneNode(true) as HTMLElement
+      list.replaceWith(replacement)
+      const item = replacement.children[2] as HTMLElement
+      emit({
+        whole: false,
+        changed: [unit(item, 'list-item', replacement)],
+        structural: [replacement],
+        scopes: [item],
+      })
+      await settle()
+      const counts = runFrames()
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes).toBeLessThanOrEqual(
+        nodesIn(replacement) + ir.childElementCount,
+      )
+    })
+  })
+
+  it('a heading change still refreshes its fold', async () => {
+    const { ir, emit, runFrames } = setup(1, {
+      headings: [{ id: 'Code', text: 'Code', level: 2 }],
+      lists: [],
+    })
+    const heading = Array.from(ir.children).find(
+      (block) => block.textContent === '## Code',
+    ) as HTMLElement
+    expect(heading.hasAttribute('data-vmde-folded')).toBe(true)
+    // A respin replaces the heading with one that carries no fold attributes.
+    const respun = heading.cloneNode(true) as HTMLElement
+    respun.removeAttribute('data-vmde-folded')
+    respun.removeAttribute('data-vmde-foldable')
+    delete respun.dataset.vmdeFoldCount
+    heading.replaceWith(respun)
+    emit({
+      whole: false,
+      changed: [unit(respun, 'heading')],
+      structural: [respun],
+      scopes: [respun],
+    })
+    await settle()
+    const counts = runFrames()
+    expect(respun.hasAttribute('data-vmde-folded')).toBe(true)
+    expect(
+      respun.nextElementSibling?.hasAttribute('data-vmde-fold-hidden'),
+    ).toBe(true)
+    // Heading folds may iterate the root's children, never query the root.
+    expect(counts.rootQueries).toBe(0)
+    expect(counts.nodesWalked + counts.queriedNodes).toBeLessThanOrEqual(
+      ir.childElementCount + nodesIn(respun),
+    )
+  })
+
+  it('a whole change runs the whole fold pass', async () => {
+    const { ir, emit, runFrames, list } = setup(1)
+    const stale = list.children[0] as HTMLElement
+    stale.setAttribute('data-vmde-list-foldable', '1')
+    emit({ whole: true, cause: 'rebind' })
+    await settle()
+    const counts = runFrames()
+    expect(stale.hasAttribute('data-vmde-list-foldable')).toBe(false)
+    expect(counts.rootQueries).toBeGreaterThan(0)
+    expect(ir.isConnected).toBe(true)
+  })
+})
+
+// Task 733 (D-13 B-01 rules, design 1.1): the whole fold pass and the glyph alignment run as the
+// background jobs `fold-apply` (frame lane) and `fold-glyphs` (idle lane) on the shared scheduler,
+// in slices measured on the cost clock.
+describe('section fold background jobs (Task 733)', {
+  timeout: BUDGET_TIMEOUT_MS,
+}, () => {
+  const FRAME_LIMIT_MS = 4 + 2
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+  })
+
+  function setupJobs(factor: Factor, nestItems = false) {
+    const ir = irFixture(tableHeavyMarkdown(factor), () => undefined).root
+    const list = ir.querySelector<HTMLElement>(':scope > ul')!
+    // Items with a nested list are foldable, so each one has a glyph to align.
+    if (nestItems)
+      for (const item of Array.from(list.children))
+        item.insertAdjacentHTML('beforeend', '<ul><li>nested</li></ul>')
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      frames.push(callback),
+    )
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+    vi.stubGlobal('requestIdleCallback', () => 0)
+    vi.stubGlobal('cancelIdleCallback', () => undefined)
+    const listeners = new Set<(change: UnitsChange) => void>()
+    const feed: UnitFeed = {
+      root: ir,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    const clock = costClock()
+    const lanes = fakeLanes(clock)
+    const scheduler = createBackgroundScheduler(lanes)
+    const options = {
+      surface: () => ir,
+      initialState: {
+        headings: [{ id: 'Code', text: 'Code', level: 2 }],
+        lists: [],
+      },
+      scheduler,
+    }
+    createSectionFoldController({} as never, options)
+    // Runs the controller's own frames and `count` scheduler frames (or idle callbacks of `idle` ms),
+    // all counted so that every operation charges the cost clock.
+    const drive = (count: number, idle?: number) =>
+      countBudget(ir, () => {
+        for (let index = 0; index < count; index++) {
+          for (const frame of frames.splice(0)) frame(0)
+          if (idle === undefined) lanes.runFrame()
+          else lanes.runIdle(idle)
+        }
+      }).counts
+    const whole = () => {
+      const change: UnitsChange = {
+        cause: 'rebind',
+        whole: true,
+        changed: [],
+        structural: [],
+      }
+      for (const listener of Array.from(listeners)) listener(change)
+    }
+    return { ir, list, scheduler, drive, whole }
+  }
+
+  it.each([1, 4, 16] as Factor[])(
+    'a whole change runs the fold pass as the fold-apply job in frame slices at factor %i',
+    async (factor) => {
+      const { ir, list, scheduler, drive, whole } = setupJobs(factor)
+      const heading = Array.from(ir.children).find(
+        (block) => block.textContent === '## Code',
+      ) as HTMLElement
+      const stale = list.children[0] as HTMLElement
+      stale.setAttribute('data-vmde-list-foldable', '1')
+      heading.removeAttribute('data-vmde-folded')
+      whole()
+      await new Promise<void>((done) => setTimeout(done, 0))
+      drive(400)
+      const stats = scheduler.stats('fold-apply')
+      expect(stats.slices).toBeGreaterThan(0)
+      expect(stats.overruns).toBe(0)
+      expect(stats.maxSliceMs).toBeLessThanOrEqual(FRAME_LIMIT_MS)
+      expect(stale.hasAttribute('data-vmde-list-foldable')).toBe(false)
+      expect(heading.hasAttribute('data-vmde-folded')).toBe(true)
+      expect(
+        heading.nextElementSibling?.hasAttribute('data-vmde-fold-hidden'),
+      ).toBe(true)
+    },
+  )
+
+  it.each([
+    [16, 50],
+    [16, 3],
+  ] as Array<[Factor, number]>)(
+    'aligns the glyphs as the fold-glyphs job in idle slices at factor %i with %i ms idle',
+    (factor, idle) => {
+      const { list, scheduler, drive } = setupJobs(factor, true)
+      const counts = drive(400, idle)
+      const stats = scheduler.stats('fold-glyphs')
+      expect(stats.slices).toBeGreaterThan(0)
+      expect(stats.overruns).toBe(0)
+      expect(stats.maxSliceMs).toBeLessThanOrEqual(Math.min(idle, 8) + 2)
+      // Every foldable item is measured once the job is done.
+      expect(counts.layoutReads).toBeGreaterThanOrEqual(list.children.length)
+    },
+  )
+})

@@ -56,9 +56,10 @@ export function markTrailingActive(
   editor: HTMLElement,
   caretNode: Node | null,
 ): void {
-  for (const p of Array.from(
-    editor.querySelectorAll<HTMLElement>(`:scope > p[${TRAILING_ATTR}]`),
-  )) {
+  // Task 733 (D-13 B-11): runs in every selection frame, so it walks the root's children instead of
+  // querying the root.
+  for (let p = editor.firstElementChild; p; p = p.nextElementSibling) {
+    if (p.tagName !== 'P' || !p.hasAttribute(TRAILING_ATTR)) continue
     p.classList.toggle(
       TRAILING_ACTIVE_CLASS,
       !!caretNode && p.contains(caretNode),

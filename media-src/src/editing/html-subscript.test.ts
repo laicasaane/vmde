@@ -16,6 +16,13 @@ import {
   type UnitFeed,
   type UnitsChange,
 } from '../util/unit-changes'
+import {
+  type BudgetCounts,
+  countBudget,
+  type Factor,
+  irFixture,
+} from '../testing/budget-harness'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 // Task 654: the link reader consults the live open policy on pointer events; tests drive it directly.
 vi.mock('../links/link-open-policy', () => ({
@@ -629,5 +636,97 @@ describe('HTML inline reader on unit feed changes (Task 733)', () => {
     // The feed owns the cells: the outside record does not trigger a pass over them.
     expect(cells[2].querySelector(SUB_DECORATED)).toBeNull()
     dispose()
+  })
+})
+
+// The factor-16 fixture takes seconds to mount in jsdom on a loaded machine.
+const BUDGET_TIMEOUT_MS = 60_000
+
+// Task 733 (D-13 B-04): counted budgets on the probe fixture. The reader observes the IR root
+// itself, so every query with that root as receiver is a root query.
+describe('HTML inline reader scoped budgets (Task 733, B-04)', {
+  timeout: BUDGET_TIMEOUT_MS,
+}, () => {
+  const FACTORS: Factor[] = [1, 4, 16]
+  const sums = new Map<string, number[]>()
+  const walked = (counts: BudgetCounts) =>
+    counts.nodesWalked + counts.queriedNodes
+  const record = (name: string, value: number) => {
+    const values = sums.get(name) ?? []
+    values.push(value)
+    sums.set(name, values)
+  }
+  // A fresh mount per case: the cases insert items and decorate.
+  const mount = (factor: Factor) =>
+    irFixture(tableHeavyMarkdown(factor), () => undefined).root
+  const subtreeNodes = (node: Node): number => {
+    let count = 1
+    for (let child = node.firstChild; child; child = child.nextSibling)
+      count += subtreeNodes(child)
+    return count
+  }
+  const itemUnit = (item: HTMLElement): LiveUnit => ({
+    el: item,
+    members: [item],
+    kind: 'list-item',
+    top: item.parentElement as HTMLElement,
+  })
+
+  describe.each(FACTORS)('at factor %i', (factor) => {
+    it('a list item Enter visits the two items only, with no root query', () => {
+      const ir = mount(factor)
+      const feed = fakeFeed(ir)
+      const dispose = observeHtmlInlineFormattingReaders(ir)
+      const list = ir.querySelector<HTMLElement>(':scope > ul')!
+      const first = list.children[2] as HTMLElement
+      const second = document.createElement('li')
+      second.setAttribute('data-marker', '-')
+      second.textContent = 'list item 3b'
+      first.after(second)
+      const scopes = [first, second]
+      const change = {
+        whole: false,
+        changed: scopes.map(itemUnit),
+        structural: [list],
+        scopes,
+      }
+      const { counts } = countBudget(ir, () => feed.emit(change))
+      expect(counts.rootQueries).toBe(0)
+      const budget = subtreeNodes(first) + subtreeNodes(second) + 8
+      expect(walked(counts)).toBeLessThanOrEqual(budget)
+      // The scope still decorates what the new item holds.
+      second.innerHTML = SUB_FRESH
+      feed.emit(change)
+      expect(second.querySelector(SUB_DECORATED)).not.toBeNull()
+      record('enter', walked(counts))
+      dispose()
+    })
+
+    it('a selection change in a code block the feed does not map yet makes no root query', () => {
+      const ir = mount(factor)
+      fakeFeed(ir)
+      const dispose = observeHtmlInlineFormattingReaders(ir)
+      const block = ir.querySelector<HTMLElement>(
+        ':scope > [data-type="code-block"]',
+      )!
+      const text = block.querySelector('code')!.firstChild!
+      document.getSelection()!.collapse(text, 3)
+      const { counts } = countBudget(ir, () =>
+        document.dispatchEvent(new Event('selectionchange')),
+      )
+      expect(counts.rootQueries).toBe(0)
+      expect(walked(counts)).toBeLessThanOrEqual(subtreeNodes(block) + 8)
+      record('selection', walked(counts))
+      document.getSelection()?.removeAllRanges()
+      dispose()
+    })
+  })
+
+  it('costs the same at every factor', () => {
+    for (const name of ['enter', 'selection']) {
+      const values = sums.get(name) ?? []
+      expect(values).toHaveLength(FACTORS.length)
+      expect(new Set(values).size).toBe(1)
+    }
   })
 })

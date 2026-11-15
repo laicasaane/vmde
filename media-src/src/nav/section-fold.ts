@@ -12,10 +12,19 @@ import { deferWhilePaused } from '../util/observe-coalesce'
 import {
   classifyEditorMutations,
   type EditorMutationImpact,
+  forEachChangeScope,
   type HelperMutationPass,
+  liveFeedOf,
   recordHelperMutationPass,
+  recordsOutsideFeed,
   writeQuietly,
 } from '../util/mutation-impact'
+import {
+  type BackgroundJob,
+  type BackgroundScheduler,
+  backgroundSchedulerOf,
+} from '../util/background-budget'
+import { onUnitFeed, type UnitsChange } from '../util/unit-changes'
 export type { SectionFoldState } from '../../../src/shared/protocol'
 
 const FOLD_HIDDEN_ATTR = 'data-vmde-fold-hidden'
@@ -67,6 +76,8 @@ interface ControllerOptions {
   persist?: (state: SectionFoldState) => void
   /** The surface to fold; the IR/WYSIWYG editor by default. installSectionFold passes foldSurface. */
   surface?: () => HTMLElement | null
+  /** Task 733: the scheduler of the `fold-apply` and `fold-glyphs` jobs; the window's by default. */
+  scheduler?: BackgroundScheduler
 }
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6'
@@ -509,8 +520,6 @@ function alignListFoldGlyphs(items: readonly HTMLElement[]): void {
 // first paint (an idle period) and only for items near the viewport; the CSS fallback centre
 // stands in until then. An item scrolled into the margin is measured when the observer reports it.
 const GLYPH_NEAR_MARGIN_PX = 600
-const GLYPH_IDLE_TIMEOUT_MS = 1000
-const GLYPH_FALLBACK_DELAY_MS = 100
 
 /** The innermost ancestor that scrolls and clips the editor, or null when the document scrolls. An
  * intersection observer's margin widens only its root, never a clipping ancestor, so the root must
@@ -531,15 +540,6 @@ function glyphScrollRoot(editor: HTMLElement): HTMLElement | null {
       return element
   }
   return null
-}
-
-function scheduleGlyphIdle(run: () => void): () => void {
-  if (typeof requestIdleCallback === 'function') {
-    const id = requestIdleCallback(run, { timeout: GLYPH_IDLE_TIMEOUT_MS })
-    return () => cancelIdleCallback?.(id)
-  }
-  const id = setTimeout(run, GLYPH_FALLBACK_DELAY_MS)
-  return () => clearTimeout(id)
 }
 
 function renderedListFoldGutterRect(
@@ -668,6 +668,24 @@ function sameHeading(a: HeadingFoldIdentity, b: HeadingFoldIdentity): boolean {
   )
 }
 
+/** `sameHeading` against each stored fold, reading the heading text only when an id does not decide
+ * and a fold of the same level exists (Task 733: a heading change refolds every top-level heading). */
+function matchesStoredFold(
+  heading: HTMLElement,
+  foldedHeadings: readonly HeadingFoldIdentity[],
+): boolean {
+  const id = heading.id ? stableHeadingId(heading.id) : undefined
+  const level = foldLevel(heading) ?? 0
+  let text: string | undefined
+  for (const folded of foldedHeadings) {
+    if (id && folded.id && folded.id === id) return true
+    if (folded.level !== level) continue
+    text ??= headingLabel(heading)
+    if (folded.text === text) return true
+  }
+  return false
+}
+
 function directLists(parent: Element): HTMLElement[] {
   return Array.from(parent.children).filter(
     (child): child is HTMLElement =>
@@ -753,34 +771,13 @@ function resolveListPath(
 }
 
 function clearFoldAttributes(surface: HTMLElement): void {
-  const selector = `[${FOLD_HIDDEN_ATTR}], [${FOLDED_ATTR}], [${FOLDABLE_ATTR}], [${LIST_FOLDED_ATTR}], [${LIST_FOLDABLE_ATTR}]`
   const elements = [
-    ...(surface.matches(selector) ? [surface] : []),
-    ...Array.from(surface.querySelectorAll<HTMLElement>(selector)),
+    ...(surface.matches(FOLD_SELECTOR) ? [surface] : []),
+    ...Array.from(surface.querySelectorAll<HTMLElement>(FOLD_SELECTOR)),
   ]
   // Fold state is view-only: quiet, so the unit-DOM shadow model sees no edit.
   writeQuietly(() => {
-    for (const element of elements) {
-      element.removeAttribute(FOLD_HIDDEN_ATTR)
-      element.removeAttribute(FOLDED_ATTR)
-      element.removeAttribute(FOLDABLE_ATTR)
-      element.removeAttribute(LIST_FOLDED_ATTR)
-      element.removeAttribute(LIST_FOLDABLE_ATTR)
-      delete element.dataset.vmdeFoldCount
-    }
-  })
-}
-
-function clearListFoldAttributes(scope: HTMLElement): void {
-  writeQuietly(() => {
-    for (const element of scope.querySelectorAll<HTMLElement>(
-      `[${LIST_FOLDED_ATTR}], [${LIST_FOLDABLE_ATTR}], [${FOLD_HIDDEN_ATTR}]`,
-    )) {
-      element.removeAttribute(LIST_FOLDED_ATTR)
-      element.removeAttribute(LIST_FOLDABLE_ATTR)
-      element.removeAttribute(FOLD_HIDDEN_ATTR)
-      delete element.dataset.vmdeFoldCount
-    }
+    for (const element of elements) clearFold(element)
   })
 }
 
@@ -817,9 +814,7 @@ function foldHeadings(
     if (!range || range.end <= range.start + 1) continue
     heading.setAttribute(FOLDABLE_ATTR, '1')
     if (foldedHeadings.length === 0) continue
-    const identity = headingIdentity(heading)
-    if (!foldedHeadings.some((folded) => sameHeading(folded, identity)))
-      continue
+    if (!matchesStoredFold(heading, foldedHeadings)) continue
     heading.setAttribute(FOLDED_ATTR, '1')
     heading.dataset.vmdeFoldCount = String(range.end - range.start - 1)
     for (let index = range.start + 1; index < range.end; index++)
@@ -841,21 +836,66 @@ function applyListFoldsWithin(
         onFoldable(item)
       }
     }
-    for (const folded of foldedLists) {
-      const item = resolveListPath(editor, folded.path)
-      const nested = item ? directLists(item)[0] : undefined
-      if (
-        !item ||
-        !scope.contains(item) ||
-        !nested ||
-        !listTextMatches(item, folded.text)
-      )
-        continue
-      item.setAttribute(LIST_FOLDED_ATTR, '1')
-      item.dataset.vmdeFoldCount = String(item.querySelectorAll('li').length)
-      nested.setAttribute(FOLD_HIDDEN_ATTR, '1')
-    }
+    applyStoredListFolds(editor, scope, foldedLists)
   })
+}
+
+/** The stored list folds whose item is inside `scope` (callers write quietly). */
+function applyStoredListFolds(
+  editor: HTMLElement,
+  scope: HTMLElement,
+  foldedLists: readonly ListFoldIdentity[],
+): void {
+  for (const folded of foldedLists) {
+    const item = resolveListPath(editor, folded.path)
+    const nested = item ? firstDirectList(item) : undefined
+    if (
+      !item ||
+      !scope.contains(item) ||
+      !nested ||
+      !listTextMatches(item, folded.text)
+    )
+      continue
+    item.setAttribute(LIST_FOLDED_ATTR, '1')
+    item.dataset.vmdeFoldCount = String(item.querySelectorAll('li').length)
+    nested.setAttribute(FOLD_HIDDEN_ATTR, '1')
+  }
+}
+
+/** The first direct `ul`/`ol` child of `item`, without allocating. */
+function firstDirectList(item: Element): HTMLElement | undefined {
+  for (
+    let child = item.firstElementChild;
+    child;
+    child = child.nextElementSibling
+  )
+    if (child.tagName === 'UL' || child.tagName === 'OL')
+      return child as HTMLElement
+  return undefined
+}
+
+/** Removes the list-owned fold attributes of one element (callers write quietly). */
+function clearListFold(element: HTMLElement): void {
+  element.removeAttribute(LIST_FOLDED_ATTR)
+  element.removeAttribute(LIST_FOLDABLE_ATTR)
+  element.removeAttribute(FOLD_HIDDEN_ATTR)
+  delete element.dataset.vmdeFoldCount
+}
+
+/** The top-level element under `root` that holds `element`, or null when it is outside `root`. */
+function topUnder(root: HTMLElement, element: Element): HTMLElement | null {
+  let el: Element | null = element
+  while (el && el.parentElement !== root) el = el.parentElement
+  return el as HTMLElement | null
+}
+
+const FOLD_SELECTOR = `[${FOLD_HIDDEN_ATTR}], [${FOLDED_ATTR}], [${FOLDABLE_ATTR}], [${LIST_FOLDED_ATTR}], [${LIST_FOLDABLE_ATTR}]`
+
+/** Removes every fold attribute of one element (callers write quietly). */
+function clearFold(element: HTMLElement): void {
+  element.removeAttribute(FOLDED_ATTR)
+  element.removeAttribute(FOLDABLE_ATTR)
+  clearListFold(element)
 }
 
 function applyListFolds(
@@ -1016,8 +1056,13 @@ export function createSectionFoldController(
   let applying = false
   let frame = 0
   let pendingFull = false
+  // Task 733: a whole feed change (the sliced `fold-apply` job) and a feed heading change (a pass
+  // over the top-level blocks), beside the list blocks to reconcile.
+  let pendingWhole = false
+  let pendingHeadings = false
   const pendingListBlocks = new Set<HTMLElement>()
   const surface = options.surface ?? (() => blockModeElement(vditor))
+  const scheduler = options.scheduler ?? backgroundSchedulerOf(window)
   let glyphFrame = 0
   let observedSurface: HTMLElement | null = null
   const observedItems = new Set<HTMLElement>()
@@ -1028,7 +1073,8 @@ export function createSectionFoldController(
   const nearGlyphs = new Set<HTMLElement>()
   const watchedGlyphs = new Set<HTMLElement>()
   let glyphsLive = false
-  let cancelGlyphIdle: (() => void) | undefined
+  // True while the `fold-glyphs` job owns the dirty items: marking one schedules no frame flush.
+  let glyphJobQueued = false
   let nearObserver: IntersectionObserver | null = null
   const observesNearness = typeof IntersectionObserver === 'function'
   const flushGlyphs = () => {
@@ -1055,7 +1101,7 @@ export function createSectionFoldController(
   }
   const markGlyphDirty = (item: HTMLElement) => {
     dirtyGlyphs.add(item)
-    if (glyphsLive) scheduleGlyphFlush()
+    if (glyphsLive && !glyphJobQueued) scheduleGlyphFlush()
   }
   const refreshGlyphs = () => {
     if (disposed) return
@@ -1111,8 +1157,6 @@ export function createSectionFoldController(
   // The first idle period after the controller exists: the editor has painted, so the viewport
   // observer starts and the items near the viewport are measured.
   const startGlyphs = () => {
-    cancelGlyphIdle = undefined
-    if (disposed) return
     glyphsLive = true
     const editor = surface()
     if (!editor) return
@@ -1122,14 +1166,58 @@ export function createSectionFoldController(
     watchGlyphs(editor, items)
     if (!observesNearness) for (const item of items) markGlyphDirty(item)
   }
-  cancelGlyphIdle = scheduleGlyphIdle(startGlyphs)
+  // Task 733 (D-13 design 1.1): the idle glyph work is the `fold-glyphs` job. Its first step starts
+  // the glyphs; every step measures dirty near items until the slice is spent (all reads), then
+  // writes their positions (one forced layout per step at most). The two arrays are reused.
+  const glyphBatch: HTMLElement[] = []
+  const glyphPositions: Array<ListGlyphPosition | null> = []
+  // Measures dirty near items into the reused batch until the slice is spent; true when some are left.
+  const measureDirtyGlyphs = (budget: { spent(): boolean }): boolean => {
+    for (const item of dirtyGlyphs) {
+      if (budget.spent()) return true
+      const gone = !item.isConnected || !item.hasAttribute(LIST_FOLDABLE_ATTR)
+      if (!gone && observesNearness && !nearGlyphs.has(item)) continue
+      dirtyGlyphs.delete(item)
+      if (gone) continue
+      glyphBatch.push(item)
+      glyphPositions.push(measureListFoldGlyph(item))
+    }
+    return false
+  }
+  const glyphJob: BackgroundJob = {
+    name: 'fold-glyphs',
+    lane: 'idle',
+    step(budget) {
+      if (disposed) {
+        glyphJobQueued = false
+        return false
+      }
+      if (!glyphsLive) startGlyphs()
+      const left = measureDirtyGlyphs(budget)
+      for (let index = 0; index < glyphBatch.length; index++)
+        writeListFoldGlyph(glyphBatch[index], glyphPositions[index])
+      glyphBatch.length = 0
+      glyphPositions.length = 0
+      glyphJobQueued = left
+      return left
+    },
+  }
+  glyphJobQueued = true
+  scheduler.post(glyphJob)
   // Marker width can change after font loading, zoom or a split-pane resize even
   // when Vditor has not replaced a node. Observe each foldable LI as well as the surface.
   const glyphObserver =
     typeof ResizeObserver === 'function'
       ? new ResizeObserver(scheduleGlyphRefresh)
       : null
-  const observeGlyphs = (editor: HTMLElement) => {
+  // `items`: the foldable items when the caller already holds them (the sliced whole pass); otherwise
+  // they are queried.
+  const observeGlyphs = (
+    editor: HTMLElement,
+    items: Iterable<HTMLElement> = editor.querySelectorAll<HTMLElement>(
+      `li[${LIST_FOLDABLE_ATTR}]`,
+    ),
+  ) => {
     if (observedSurface !== editor) {
       nearObserver?.disconnect()
       nearObserver = null
@@ -1140,7 +1228,7 @@ export function createSectionFoldController(
       glyphObserver?.observe(editor)
       observedSurface = editor
     }
-    watchGlyphs(editor, editor.querySelectorAll(`li[${LIST_FOLDABLE_ATTR}]`))
+    watchGlyphs(editor, items)
     if (!glyphObserver) return
     for (const item of observedItems) {
       if (
@@ -1152,12 +1240,18 @@ export function createSectionFoldController(
       glyphObserver.unobserve(item)
       observedItems.delete(item)
     }
-    for (const item of editor.querySelectorAll<HTMLElement>(
-      `li[${LIST_FOLDABLE_ATTR}]`,
-    )) {
-      if (observedItems.has(item)) continue
+    for (const item of items) watchGlyph(item)
+  }
+  // One foldable item of a scoped list pass: observed for resize and nearness. Items that left the
+  // document are released by the next whole pass.
+  const watchGlyph = (item: HTMLElement) => {
+    if (glyphObserver && !observedItems.has(item)) {
       glyphObserver.observe(item)
       observedItems.add(item)
+    }
+    if (nearObserver && !watchedGlyphs.has(item)) {
+      nearObserver.observe(item)
+      watchedGlyphs.add(item)
     }
   }
   window.addEventListener('resize', scheduleGlyphRefresh)
@@ -1203,11 +1297,108 @@ export function createSectionFoldController(
     slice()
   }
 
+  // Task 733 (D-13 design 1.1): the whole pass of a whole feed change is the `fold-apply` job, in
+  // frame slices: collect the fold attributes (one query), clear them, fold the headings, mark the
+  // foldable items, apply the stored list folds, then watch the glyphs. A step reads the surface
+  // again (R-1): a new surface restarts the pass.
+  let applyPhase = 0
+  let applyEditor: HTMLElement | null = null
+  let applyList: HTMLElement[] = []
+  let applyIndex = 0
+  const applyFoldable: HTMLElement[] = []
+  // Visits the collected elements from the cursor until the slice is spent; true when all are done.
+  const visitList = (
+    budget: { spent(): boolean },
+    visit: (element: HTMLElement) => void,
+  ): boolean => {
+    while (applyIndex < applyList.length && !budget.spent())
+      visit(applyList[applyIndex++])
+    return applyIndex >= applyList.length
+  }
+  const collect = (editor: HTMLElement, selector: string) => {
+    applyList = Array.from(editor.querySelectorAll<HTMLElement>(selector))
+    applyIndex = 0
+  }
+  const markFoldable = (item: HTMLElement) => {
+    if (!item.isConnected || !firstDirectList(item)) return
+    item.setAttribute(LIST_FOLDABLE_ATTR, '1')
+    markGlyphDirty(item)
+    applyFoldable.push(item)
+  }
+  // Phase n runs `applyPhases[n - 1]`, which returns true when the phase is done.
+  const applyPhases: Array<
+    (editor: HTMLElement, budget: { spent(): boolean }) => boolean
+  > = [
+    (editor) => {
+      collect(editor, FOLD_SELECTOR)
+      return true
+    },
+    (_editor, budget) => visitList(budget, clearFold),
+    (editor) => {
+      foldHeadings(foldBlocks(editor), stored.headings)
+      return true
+    },
+    (editor) => {
+      collect(editor, 'li')
+      applyFoldable.length = 0
+      return true
+    },
+    (_editor, budget) => visitList(budget, markFoldable),
+    (editor) => {
+      applyStoredListFolds(editor, editor, stored.lists)
+      return true
+    },
+    (editor) => {
+      observeGlyphs(editor, applyFoldable)
+      applyList = []
+      applyFoldable.length = 0
+      return true
+    },
+  ]
+  const applyStep = (editor: HTMLElement, budget: { spent(): boolean }) => {
+    if (!applyPhases[applyPhase - 1](editor, budget)) return
+    applyPhase = applyPhase >= applyPhases.length ? 0 : applyPhase + 1
+  }
+  const applyJob: BackgroundJob = {
+    name: 'fold-apply',
+    lane: 'frame',
+    step(budget) {
+      const editor = surface()
+      if (disposed || !editor || applyPhase === 0) return false
+      if (editor !== applyEditor) {
+        applyEditor = editor
+        applyPhase = 1
+      }
+      applying = true
+      try {
+        // Fold state is view-only: quiet, so the unit-DOM shadow model sees no edit.
+        writeQuietly(() => {
+          while (applyPhase !== 0 && !budget.spent()) applyStep(editor, budget)
+        })
+      } finally {
+        applying = false
+      }
+      return applyPhase !== 0
+    },
+  }
+  const startApplyJob = () => {
+    applyPhase = 1
+    applyEditor = null
+    scheduler.post(applyJob)
+  }
+  const cancelApplyJob = () => {
+    applyPhase = 0
+    applyList = []
+    applyFoldable.length = 0
+    scheduler.cancel(applyJob)
+  }
+
   const apply = () => {
     if (disposed || applying) return
     const editor = surface()
     if (!editor) return
     cancelPreviewPass()
+    cancelApplyJob()
     applying = true
     try {
       clearFoldAttributes(editor)
@@ -1231,7 +1422,11 @@ export function createSectionFoldController(
     if (!deferWhilePaused(restartPreviewPass)) restartPreviewPass()
   }
 
-  const scheduleApply = (records: MutationRecord[]) => {
+  const scheduleApply = (batch: MutationRecord[]) => {
+    // Task 733 (D-13 binding rule 6): the live feed delivers the changes inside its root.
+    const observed = surface()
+    const records = observed ? recordsOutsideFeed(observed, batch) : batch
+    if (records.length === 0) return
     const impact = classifyEditorMutations(records)
     const decision = foldMutationDecision(impact)
     recordHelperMutationPass(
@@ -1247,10 +1442,82 @@ export function createSectionFoldController(
     } else if (!pendingFull) {
       for (const block of decision.listBlocks) pendingListBlocks.add(block)
     }
+    scheduleFlush()
+  }
+
+  const scheduleFlush = () => {
     if (frame || disposed) return
     frame = requestAnimationFrame(() => {
       frame = 0
       flushPending()
+    })
+  }
+
+  // Task 733 (D-13 binding rules 1 to 4): a feed change names what to reconcile. A whole change runs
+  // the sliced whole pass; a list scope or a structural list reconciles that list; a heading (or a
+  // spun block, which can start or end a section) refolds the top-level blocks. Nothing else in a
+  // non-whole change can move a fold, and nothing reads the root.
+  const noteTop = (top: HTMLElement, structural: boolean) => {
+    if (top.tagName === 'UL' || top.tagName === 'OL') pendingListBlocks.add(top)
+    else if (top.tagName !== 'TABLE' && (structural || foldLevel(top) !== null))
+      pendingHeadings = true
+  }
+  const onFeedChange = (change: UnitsChange, editor: HTMLElement) => {
+    if (change.whole) {
+      pendingWhole = true
+      pendingHeadings = false
+      pendingListBlocks.clear()
+    } else if (!pendingWhole && !pendingFull) {
+      for (const top of change.structural)
+        if (top.parentElement === editor) noteTop(top, true)
+      forEachChangeScope(change, (element) => {
+        const top = topUnder(editor, element)
+        if (top) noteTop(top, false)
+      })
+    }
+    if (pendingWhole || pendingHeadings || pendingListBlocks.size > 0)
+      scheduleFlush()
+  }
+  const offFeed = onUnitFeed(window, (change, feed) => {
+    const editor = surface()
+    if (
+      disposed ||
+      !editor ||
+      !feed.isLive() ||
+      !editor.contains(feed.root) ||
+      isPreviewSurface(editor)
+    )
+      return
+    onFeedChange(change, editor)
+  })
+
+  // The top-level blocks of a feed heading change: heading-owned attributes cleared and refolded.
+  const refoldHeadings = (editor: HTMLElement) => {
+    const blocks = foldBlocks(editor)
+    writeQuietly(() => {
+      for (const block of blocks) {
+        block.removeAttribute(FOLDED_ATTR)
+        block.removeAttribute(FOLDABLE_ATTR)
+        block.removeAttribute(FOLD_HIDDEN_ATTR)
+        if (block.tagName !== 'UL' && block.tagName !== 'OL')
+          delete block.dataset.vmdeFoldCount
+      }
+      foldHeadings(blocks, stored.headings)
+    })
+  }
+
+  // One list of a scoped change: one query of the list, its list-owned attributes cleared, its
+  // foldable items marked and watched, and the stored folds inside it applied.
+  const reconcileList = (editor: HTMLElement, block: HTMLElement) => {
+    writeQuietly(() => {
+      for (const element of block.querySelectorAll<HTMLElement>('li, ul, ol')) {
+        clearListFold(element)
+        if (element.tagName !== 'LI' || !firstDirectList(element)) continue
+        element.setAttribute(LIST_FOLDABLE_ATTR, '1')
+        markGlyphDirty(element)
+        watchGlyph(element)
+      }
+      applyStoredListFolds(editor, block, stored.lists)
     })
   }
 
@@ -1261,33 +1528,43 @@ export function createSectionFoldController(
     if (editor && isPreviewSurface(editor)) startPreviewPass(editor)
   }
 
+  // A live feed replaces a pending block that left the document by the scopes of a later change
+  // (rule 4); without one, a replaced block still means the whole pass.
+  function replacedWithoutFeed(editor: HTMLElement, live: boolean): boolean {
+    if (live) return false
+    for (const block of pendingListBlocks)
+      if (!block.isConnected || !editor.contains(block)) return true
+    return false
+  }
+
+  // The scoped work of a frame: the heading refold and the pending lists.
+  function flushScoped(editor: HTMLElement, live: boolean): void {
+    applying = true
+    try {
+      if (pendingHeadings) refoldHeadings(editor)
+      for (const block of pendingListBlocks) {
+        // The top-level list itself may be hidden by a folded heading. Reconcile only list-owned
+        // descendant attributes so local list work never steals that heading-owned visibility.
+        if (block.isConnected && editor.contains(block))
+          reconcileList(editor, block)
+      }
+      if (!live) observeGlyphs(editor)
+    } finally {
+      applying = false
+    }
+  }
+
   // The pending edit-surface work of the frame scheduled above.
   function flushPending(): void {
     if (disposed) return
     const editor = surface()
-    if (
-      pendingFull ||
-      !editor ||
-      [...pendingListBlocks].some(
-        (block) => !block.isConnected || !editor.contains(block),
-      )
-    ) {
-      apply()
-    } else if (!applying) {
-      applying = true
-      try {
-        for (const block of pendingListBlocks) {
-          // The top-level list itself may be hidden by a folded heading. Reconcile only list-owned
-          // descendant attributes so local list work never steals that heading-owned visibility.
-          clearListFoldAttributes(block)
-          applyListFoldsWithin(editor, block, stored.lists, markGlyphDirty)
-        }
-        observeGlyphs(editor)
-      } finally {
-        applying = false
-      }
-    }
+    const live = editor ? liveFeedOf(editor) !== undefined : false
+    if (pendingFull || !editor || replacedWithoutFeed(editor, live)) apply()
+    else if (pendingWhole) startApplyJob()
+    else if (!applying) flushScoped(editor, live)
     pendingFull = false
+    pendingWhole = false
+    pendingHeadings = false
     pendingListBlocks.clear()
   }
 
@@ -1424,9 +1701,12 @@ export function createSectionFoldController(
       if (disposed) return
       disposed = true
       observer.disconnect()
+      offFeed()
       glyphObserver?.disconnect()
       nearObserver?.disconnect()
-      cancelGlyphIdle?.()
+      scheduler.cancel(glyphJob)
+      glyphJobQueued = false
+      cancelApplyJob()
       dirtyGlyphs.clear()
       nearGlyphs.clear()
       watchedGlyphs.clear()

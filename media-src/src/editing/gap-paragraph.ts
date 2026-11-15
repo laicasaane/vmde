@@ -87,11 +87,17 @@ export function promoteThematicBreaks(
   caretNode: Node | null,
 ): boolean {
   let changed = false
-  for (const candidate of Array.from(
-    editor.querySelectorAll<HTMLElement>(
-      ':scope > p, :scope > [data-type="yaml-front-matter"]',
-    ),
-  )) {
+  // Task 733 (D-13 B-11): a walk over the root's children, never a root query (`:scope > p` matches
+  // over the whole subtree in Chromium); the next sibling is read before a candidate is replaced.
+  let next: Element | null
+  for (let block = editor.firstElementChild; block; block = next) {
+    next = block.nextElementSibling
+    const candidate = block as HTMLElement
+    if (
+      candidate.tagName !== 'P' &&
+      candidate.dataset.type !== 'yaml-front-matter'
+    )
+      continue
     if (caretNode && candidate.contains(caretNode)) continue
     if (
       !isThematicBreakParagraph(candidate) &&
@@ -139,9 +145,13 @@ export function cleanupGapParagraphs(
     !!el &&
     (el.getAttribute('data-type') === 'code-block' ||
       (el.tagName === 'BLOCKQUOTE' && el.hasAttribute('data-callout')))
-  for (const p of Array.from(
-    editor.querySelectorAll<HTMLElement>(':scope > p'),
-  )) {
+  // Task 733 (D-13 B-11): a walk over the root's children, never a root query; the next sibling is
+  // read before a paragraph is removed.
+  let following: Element | null
+  for (let block = editor.firstElementChild; block; block = following) {
+    following = block.nextElementSibling
+    if (block.tagName !== 'P') continue
+    const p = block as HTMLElement
     if (!isEmptyGapParagraph(p)) continue
     if (caretNode && p.contains(caretNode)) continue
     if (p.hasAttribute(TRAILING_ATTR)) continue // maintained by the trailing invariant
@@ -204,9 +214,17 @@ export function ensureLeadingBlock(editor: HTMLElement): boolean {
   let changed = false
   // A leading paragraph the user has typed into is real content now — drop the tag so it's never
   // mistaken for the manufactured seed again (mirrors ensureTrailingParagraph's same rule).
-  const tagged = editor.querySelector<HTMLElement>(
-    `:scope > p[${LEADING_ATTR}]`,
+  // Task 733 (D-13 B-11): the root's children, never a root query.
+  let tagged: HTMLElement | undefined
+  for (
+    let block = editor.firstElementChild;
+    block;
+    block = block.nextElementSibling
   )
+    if (block.tagName === 'P' && block.hasAttribute(LEADING_ATTR)) {
+      tagged = block as HTMLElement
+      break
+    }
   if (tagged && !isEmptyGapParagraph(tagged)) {
     tagged.removeAttribute(LEADING_ATTR)
     changed = true

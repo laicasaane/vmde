@@ -215,9 +215,7 @@ export function scopeOfChange(change: UnitsChange): MutationScope {
 }
 
 /** The cell, list item or top-level block under `root` that holds `node`; undefined only for `root` itself
- *  (or a node outside `root`). Walks the ancestors only: no query.
- * @knipignore — knip cannot see the use in its test, which reads it through a cast; the first
- *   consumer (tasks 012-12 to 012-16) imports it by name, and the tag is removed then. */
+ *  (or a node outside `root`). Walks the ancestors only: no query. */
 export function provisionalScopeOf(
   root: HTMLElement,
   node: Node,

@@ -26,6 +26,13 @@ import {
   type UnitFeed,
   type UnitsChange,
 } from '../util/unit-changes'
+import {
+  type BudgetCounts,
+  countBudget,
+  type Factor,
+  irFixture,
+} from '../testing/budget-harness'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 function root(html: string) {
   document.body.innerHTML = `<div id="root">${html}</div>`
@@ -459,5 +466,92 @@ describe('inline PICTURE reader on unit feed changes (Task 733)', () => {
     // The feed owns the cells: the outside record does not trigger a pass over them.
     expect(cells[2].querySelector(PICTURE_DECORATED)).toBeNull()
     dispose()
+  })
+})
+
+// The factor-16 fixture takes seconds to mount in jsdom on a loaded machine.
+const BUDGET_TIMEOUT_MS = 60_000
+
+// Task 733 (D-13 B-04): counted budgets on the probe fixture, with the IR root observed directly.
+describe('inline picture scoped budgets (Task 733, B-04)', {
+  timeout: BUDGET_TIMEOUT_MS,
+}, () => {
+  const FACTORS: Factor[] = [1, 4, 16]
+  const costs = new Map<string, number[]>()
+  const cost = (counts: BudgetCounts) =>
+    counts.nodesWalked + counts.queriedNodes
+  const keep = (name: string, value: number) =>
+    costs.set(name, [...(costs.get(name) ?? []), value])
+  const nodesIn = (node: Node): number => {
+    let count = 1
+    for (let child = node.firstChild; child; child = child.nextSibling)
+      count += nodesIn(child)
+    return count
+  }
+  // The Enter split of list item 3: the item and the new item after it, both in the scopes.
+  const enterSplit = (ir: HTMLElement) => {
+    const list = ir.querySelector<HTMLElement>(':scope > ul')!
+    const item = list.children[2] as HTMLElement
+    const added = document.createElement('li')
+    added.setAttribute('data-marker', '-')
+    added.textContent = 'list item 3b'
+    item.after(added)
+    const scopes = [item, added]
+    const change = {
+      whole: false,
+      changed: scopes.map(
+        (el): LiveUnit => ({ el, members: [el], kind: 'list-item', top: list }),
+      ),
+      structural: [list],
+      scopes,
+    }
+    return { item, added, change, budget: nodesIn(item) + nodesIn(added) + 8 }
+  }
+
+  describe.each(FACTORS)('at factor %i', (factor) => {
+    const fresh = () =>
+      irFixture(tableHeavyMarkdown(factor), () => undefined).root
+
+    it('a list item Enter visits the two items only, with no root query', () => {
+      const ir = fresh()
+      const feed = fakeFeed(ir)
+      const dispose = observeInlinePictures(ir)
+      const { added, change, budget } = enterSplit(ir)
+      const { counts } = countBudget(ir, () => feed.emit(change))
+      expect(counts.rootQueries).toBe(0)
+      expect(cost(counts)).toBeLessThanOrEqual(budget)
+      keep('enter', cost(counts))
+      added.innerHTML = PICTURE_FRESH
+      feed.emit(change)
+      expect(added.querySelector(PICTURE_DECORATED)).not.toBeNull()
+      dispose()
+    })
+
+    it('a selection change in a code block the feed does not map yet makes no root query', () => {
+      const ir = fresh()
+      fakeFeed(ir)
+      const dispose = observeInlinePictures(ir)
+      const block = ir.querySelector<HTMLElement>(
+        ':scope > [data-type="code-block"]',
+      )!
+      document
+        .getSelection()!
+        .collapse(block.querySelector('code')!.firstChild!, 2)
+      const { counts } = countBudget(ir, () =>
+        document.dispatchEvent(new Event('selectionchange')),
+      )
+      expect(counts.rootQueries).toBe(0)
+      expect(cost(counts)).toBeLessThanOrEqual(nodesIn(block) + 8)
+      keep('selection', cost(counts))
+      document.getSelection()?.removeAllRanges()
+      dispose()
+    })
+  })
+
+  it('costs the same at every factor', () => {
+    for (const name of ['enter', 'selection'])
+      expect(costs.get(name)).toEqual(
+        Array(FACTORS.length).fill(costs.get(name)?.[0]),
+      )
   })
 })

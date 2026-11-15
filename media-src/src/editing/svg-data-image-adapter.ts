@@ -1,7 +1,7 @@
 import { loadScript } from '../util/load-script'
 import {
   countDecoratorPass,
-  forEachScopeElement,
+  forEachChangeScope,
   onLiveChange,
   forEachRecordScope,
   writeQuietly,
@@ -438,11 +438,12 @@ export function observeSvgDataImagePreviews(
     }
     loadIfNeeded([scope])
   }
-  // Task 733: the units of one feed change are the only places that can need a preview.
-  const runScoped = (change: Pick<UnitsChange, 'changed' | 'structural'>) => {
+  // Task 733: the scope elements of one feed change (the items of a list item change, never the
+  // whole list) are the only places that can need a preview.
+  const runScoped = (change: UnitsChange) => {
     countDecoratorPass('scoped')
     const scope: HTMLElement[] = []
-    forEachScopeElement(change, (element) => {
+    forEachChangeScope(change, (element) => {
       applyWithin(element)
       scope.push(element)
     })

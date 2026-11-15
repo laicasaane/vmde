@@ -1,8 +1,12 @@
 import {
   classifyAndRecordEditorSurfaceMutations,
+  forEachChangeScope,
+  onLiveChange,
   recordHelperMutationPass,
+  recordsOutsideFeed,
   type EditorMutationImpact,
 } from '../util/mutation-impact'
+import type { UnitsChange } from '../util/unit-changes'
 import { reportError } from '../util/webview-log'
 
 const HEADING_OR_TOC_SELECTOR =
@@ -101,6 +105,26 @@ export function tocImpactRequiresRefresh(
   )
 }
 
+function touchesHeadingOrToc(element: Element): boolean {
+  return (
+    element.matches(HEADING_OR_TOC_SELECTOR) ||
+    element.closest('[data-type="toc-block"]') !== null ||
+    element.querySelector(HEADING_OR_TOC_SELECTOR) !== null
+  )
+}
+
+/** Task 733 (D-13 B-11): a feed change decides from its scope elements and structural tops (heading
+ * or not); it never reads the root. A whole change always refreshes. */
+function changeRequiresRefresh(change: UnitsChange): boolean {
+  if (change.whole) return true
+  for (const top of change.structural) if (touchesHeadingOrToc(top)) return true
+  let found = false
+  forEachChangeScope(change, (element) => {
+    if (!found && touchesHeadingOrToc(element)) found = true
+  })
+  return found
+}
+
 type TocMutationDecision =
   | 'refresh'
   | 'irrelevant'
@@ -109,12 +133,12 @@ type TocMutationDecision =
   | 'already-attempted'
 
 function decideTocMutation(
-  impact: EditorMutationImpact,
+  requiresRefresh: boolean,
   request: RenderTocRequest | undefined,
   requestRevision: number,
   attemptedRevision: number,
 ): TocMutationDecision {
-  if (!tocImpactRequiresRefresh(impact)) return 'irrelevant'
+  if (!requiresRefresh) return 'irrelevant'
   if (!request) return 'unbound'
   if (!hasTocConsumer(request.vditor)) return 'no-consumer'
   if (requestRevision <= attemptedRevision) return 'already-attempted'
@@ -163,13 +187,9 @@ export function installTocInvalidation(
     })
   }
 
-  const observer = new MutationObserver((records) => {
-    // WYSIWYG rebuilds its contextual button panel alongside ordinary content. That panel is Vditor
-    // chrome outside every reset surface; its rows cannot affect heading ids or either ToC consumer.
-    const impact = classifyTocMutationRecords(records)
-    if (!impact) return
+  const decide = (requiresRefresh: boolean): void => {
     const decision = decideTocMutation(
-      impact,
+      requiresRefresh,
       latestRequest,
       requestRevision,
       attemptedRevision,
@@ -193,7 +213,22 @@ export function installTocInvalidation(
     if (stats) stats.invalidations++
     invalid = true
     schedule()
+  }
+
+  // Task 733 (D-13 binding rule 6): while a live feed describes this root, its changes carry the
+  // edits inside the feed root; the observer keeps only the records outside it (panels, Preview).
+  const observer = new MutationObserver((batch) => {
+    const records = recordsOutsideFeed(root, batch)
+    if (records.length === 0) return
+    // WYSIWYG rebuilds its contextual button panel alongside ordinary content. That panel is Vditor
+    // chrome outside every reset surface; its rows cannot affect heading ids or either ToC consumer.
+    const impact = classifyTocMutationRecords(records)
+    if (!impact) return
+    decide(tocImpactRequiresRefresh(impact))
   })
+  const offFeed = onLiveChange(root, (change) =>
+    decide(changeRequiresRefresh(change)),
+  )
   observer.observe(root, {
     characterData: true,
     childList: true,
@@ -225,6 +260,7 @@ export function installTocInvalidation(
     },
     dispose: () => {
       observer.disconnect()
+      offFeed()
       ownerDocument.removeEventListener(
         'compositionstart',
         onCompositionStart,

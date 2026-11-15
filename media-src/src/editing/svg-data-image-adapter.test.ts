@@ -12,6 +12,13 @@ import {
   type UnitFeed,
   type UnitsChange,
 } from '../util/unit-changes'
+import {
+  type BudgetCounts,
+  countBudget,
+  type Factor,
+  irFixture,
+} from '../testing/budget-harness'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 const SAFE_SVG =
   'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxIDEiPjxwYXRoIGQ9Ik0wIDBoMXYxSDB6Ii8+PC9zdmc+'
@@ -347,5 +354,83 @@ describe('SVG data image previews on unit feed changes (Task 733)', () => {
     await settle()
     expect(block.querySelector(PREVIEW)).not.toBeNull()
     dispose()
+  })
+})
+
+// The factor-16 fixture takes seconds to mount in jsdom on a loaded machine.
+const BUDGET_TIMEOUT_MS = 60_000
+
+// Task 733 (D-13 B-04): counted budgets on the probe fixture, with the IR root observed directly.
+describe('SVG data image scoped budgets (Task 733, B-04)', {
+  timeout: BUDGET_TIMEOUT_MS,
+}, () => {
+  const FACTORS: Factor[] = [1, 4, 16]
+  const costs = new Map<string, number[]>()
+  const cost = (counts: BudgetCounts) =>
+    counts.nodesWalked + counts.queriedNodes
+  const keep = (name: string, value: number) =>
+    costs.set(name, [...(costs.get(name) ?? []), value])
+  const nodesIn = (node: Node): number => {
+    let count = 1
+    for (let child = node.firstChild; child; child = child.nextSibling)
+      count += nodesIn(child)
+    return count
+  }
+  // The Enter split of list item 3: the item and the new item after it, both in the scopes.
+  const enterSplit = (ir: HTMLElement) => {
+    const list = ir.querySelector<HTMLElement>(':scope > ul')!
+    const item = list.children[2] as HTMLElement
+    const added = document.createElement('li')
+    added.setAttribute('data-marker', '-')
+    added.textContent = 'list item 3b'
+    item.after(added)
+    const scopes = [item, added]
+    const change = {
+      whole: false,
+      changed: scopes.map(
+        (el): LiveUnit => ({ el, members: [el], kind: 'list-item', top: list }),
+      ),
+      structural: [list],
+      scopes,
+    }
+    return { item, added, change, budget: nodesIn(item) + nodesIn(added) + 8 }
+  }
+
+  const INLINE_CANDIDATE = `<span data-type="html-inline"><code>&lt;img src=&quot;${SAFE_SVG}&quot; alt=&quot;safe icon&quot;&gt;</code></span>`
+
+  beforeEach(() => {
+    window.DOMPurify = DOMPurify
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:preview'),
+      revokeObjectURL: vi.fn(),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it.each(FACTORS)(
+    'a list item Enter visits the two items only, with no root query, at factor %i',
+    (factor) => {
+      const ir = irFixture(tableHeavyMarkdown(factor), () => undefined).root
+      const feed = fakeFeed(ir)
+      const dispose = observeSvgDataImagePreviews(ir, 'local')
+      const { added, change, budget } = enterSplit(ir)
+      const { counts } = countBudget(ir, () => feed.emit(change))
+      expect(counts.rootQueries).toBe(0)
+      expect(cost(counts)).toBeLessThanOrEqual(budget)
+      keep('enter', cost(counts))
+      added.innerHTML = INLINE_CANDIDATE
+      feed.emit(change)
+      expect(added.querySelector(PREVIEW)).not.toBeNull()
+      dispose()
+    },
+  )
+
+  it('costs the same at every factor', () => {
+    expect(costs.get('enter')).toEqual(
+      Array(FACTORS.length).fill(costs.get('enter')?.[0]),
+    )
   })
 })

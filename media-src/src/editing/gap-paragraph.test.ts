@@ -13,6 +13,13 @@ import { installCompositionState } from '../util/caret-gesture'
 // own describe blocks (trailing-paragraph.test.ts) — still needed here for the one integration
 // test below that exercises promoteThematicBreaks + ensureTrailingParagraph together.
 import { ensureTrailingParagraph } from './trailing-paragraph'
+import {
+  type BudgetCounts,
+  countBudget,
+  type Factor,
+  irFixture,
+} from '../testing/budget-harness'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 const TRAILING = 'data-vmde-trailing'
 const GAP = 'data-vmde-gap'
@@ -369,5 +376,82 @@ describe('promoteThematicBreaks — render a left-behind `---` as an <hr>', () =
       '<p>before</p><div data-block="0" data-type="yaml-front-matter"><pre><code data-type="yaml-front-matter">key: value</code></pre></div>',
     )
     expect(promoteThematicBreaks(nonempty, null)).toBe(false)
+  })
+})
+
+// The factor-16 fixture takes seconds to mount in jsdom on a loaded machine.
+const BUDGET_TIMEOUT_MS = 60_000
+
+// Task 733 (D-13 B-11): counted budgets on the probe fixture. The top-level passes iterate the
+// root's children; none of them queries the root.
+describe('gap paragraph budgets (Task 733, B-11)', {
+  timeout: BUDGET_TIMEOUT_MS,
+}, () => {
+  const FACTORS: Factor[] = [1, 4, 16]
+  const frameCosts: number[] = []
+  const cost = (counts: BudgetCounts) =>
+    counts.nodesWalked + counts.queriedNodes
+  const nodesIn = (node: Node): number => {
+    let count = 1
+    for (let child = node.firstChild; child; child = child.nextSibling)
+      count += nodesIn(child)
+    return count
+  }
+
+  describe.each(FACTORS)('at factor %i', (factor) => {
+    const mount = () =>
+      irFixture(tableHeavyMarkdown(factor), () => undefined).root
+
+    it.each([
+      [
+        'promoteThematicBreaks',
+        (ir: HTMLElement) => promoteThematicBreaks(ir, null),
+      ],
+      [
+        'cleanupGapParagraphs',
+        (ir: HTMLElement) => cleanupGapParagraphs(ir, null),
+      ],
+      ['ensureLeadingBlock', (ir: HTMLElement) => ensureLeadingBlock(ir)],
+    ])(
+      '%s makes no root query and visits the top level only',
+      (_name, pass) => {
+        const ir = mount()
+        const { counts } = countBudget(ir, () => pass(ir))
+        expect(counts.rootQueries).toBe(0)
+        expect(cost(counts)).toBeLessThanOrEqual(ir.childElementCount + 8)
+      },
+    )
+
+    it('the selection frame makes no root query', () => {
+      const ir = mount()
+      const frames: FrameRequestCallback[] = []
+      vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+        frames.push(callback),
+      )
+      const dispose = observeGapParagraphs(() => ir)
+      const caretBlock = Array.from(ir.children).find((block) =>
+        block.textContent?.startsWith('Fourth paragraph'),
+      ) as HTMLElement
+      document.getSelection()!.collapse(caretBlock.firstChild!, 3)
+      document.dispatchEvent(new Event('selectionchange'))
+      // A case above may leave its own observer subscribed; its frame runs here too.
+      expect(frames.length).toBeGreaterThan(0)
+      const { counts } = countBudget(ir, () => {
+        for (const frame of frames.splice(0)) frame(0)
+      })
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes).toBeLessThanOrEqual(
+        nodesIn(caretBlock) + ir.childElementCount,
+      )
+      frameCosts.push(cost(counts))
+      document.getSelection()?.removeAllRanges()
+      dispose()
+      vi.unstubAllGlobals()
+    })
+  })
+
+  it('costs the same at every factor', () => {
+    expect(frameCosts).toHaveLength(FACTORS.length)
+    expect(new Set(frameCosts).size).toBe(1)
   })
 })

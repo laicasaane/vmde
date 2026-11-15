@@ -8,14 +8,15 @@ import { shouldOpenLink } from '../links/link-open-policy'
 import { deferWhilePaused } from '../util/observe-coalesce'
 import {
   countDecoratorPass,
-  forEachScopeElement,
+  forEachChangeScope,
   liveFeedOf,
+  provisionalScopeOf,
   onLiveChange,
   queryIncludingSelf,
   forEachRecordScope,
   writeQuietly,
 } from '../util/mutation-impact'
-import type { UnitsChange } from '../util/unit-changes'
+import type { UnitFeed, UnitsChange } from '../util/unit-changes'
 import { parseHtmlInlineToken } from './html-inline-token'
 
 interface HtmlInlineDescriptor {
@@ -399,21 +400,39 @@ function decorate(
   }
 }
 
-const NO_CHANGE = { changed: [], structural: [] } as const
-
 const CONTAINER_SELECTOR = 'p,h1,h2,h3,h4,h5,h6,td,th,li'
 
-/** Decorates the containers of the elements of one non-`whole` change, and the listed containers. */
+/** Decorates the containers of the scope elements of one non-`whole` change (Task 733: the items of
+ * a list item change, never the whole list), and the listed containers. */
 function decorateScope(
-  change: Pick<UnitsChange, 'changed' | 'structural'>,
+  change: UnitsChange | undefined,
   containers: readonly Element[],
   descriptors: readonly HtmlInlineDescriptor[],
 ): void {
   for (const container of containers)
     if (container.isConnected) decorate([container], descriptors)
-  forEachScopeElement(change, (element) =>
-    decorate(queryIncludingSelf(element, CONTAINER_SELECTOR), descriptors),
-  )
+  if (change)
+    forEachChangeScope(change, (element) =>
+      decorate(queryIncludingSelf(element, CONTAINER_SELECTOR), descriptors),
+    )
+}
+
+/**
+ * The elements a selection can touch while a live feed describes the root (Task 733): the members of
+ * the unit that holds it, or, for a node the feed does not map yet, its cell, item or top-level block
+ * (binding rule 4). Undefined when the selection spans two scopes: the caller queries the root.
+ */
+function selectionScope(
+  feed: UnitFeed,
+  range: Range,
+): readonly Element[] | undefined {
+  const unit = feed.liveUnitOf(range.startContainer)
+  if (unit)
+    return feed.liveUnitOf(range.endContainer)?.el === unit.el
+      ? unit.members
+      : undefined
+  const scope = provisionalScopeOf(feed.root, range.startContainer)
+  return scope?.contains(range.endContainer) ? [scope] : undefined
 }
 
 /** Reversible inactive-reading presentation for authored `<sub>` marker pairs. */
@@ -442,7 +461,7 @@ function observeHtmlInlineFormatting(
   }
   // Task 733: the units of one feed change are the only places that can need decoration.
   const runScoped = (
-    change: Pick<UnitsChange, 'changed' | 'structural'>,
+    change: UnitsChange | undefined,
     containers: readonly Element[] = [],
   ) => {
     // The composition-end pass decorates what a composition left undone.
@@ -493,15 +512,16 @@ function observeHtmlInlineFormatting(
     return true
   }
   // Owned elements a selection can touch: only those of the unit that holds it while the feed is
-  // live; a selection that spans units, or sits outside every unit, queries the whole root. Units the
-  // caret left need no visit here: the `revealed` loop below re-decorates them.
+  // live. A node the feed does not map yet (a just-spun block) is scoped to its cell, item or
+  // top-level block (Task 733, binding rule 4); a selection that spans two scopes, or no live feed,
+  // queries the whole root. Units the caret left need no visit here: the `revealed` loop below
+  // re-decorates them.
   const ownedNear = (range: Range): Element[] => {
     const feed = liveFeedOf(root)
-    const unit = feed?.liveUnitOf(range.startContainer)
-    if (!feed || !unit || feed.liveUnitOf(range.endContainer)?.el !== unit.el)
-      return Array.from(root.querySelectorAll(OWNED_SELECTOR))
+    const members = feed && selectionScope(feed, range)
+    if (!members) return Array.from(root.querySelectorAll(OWNED_SELECTOR))
     const found: Element[] = []
-    for (const member of unit.members) {
+    for (const member of members) {
       if (member.matches(OWNED_SELECTOR)) found.push(member)
       for (const owned of member.querySelectorAll(OWNED_SELECTOR))
         found.push(owned)
@@ -543,7 +563,7 @@ function observeHtmlInlineFormatting(
       })
       revealed.delete(container)
       // Only the container the caret left needs decorating again.
-      if (liveFeedOf(root)) runScoped(NO_CHANGE, [container])
+      if (liveFeedOf(root)) runScoped(undefined, [container])
       else run()
     }
   }

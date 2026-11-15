@@ -7,6 +7,13 @@ import {
   parseGithubColorLiteral,
   setGithubColorLiteralsEnabled,
 } from './github-color-literals'
+import {
+  provideUnitFeed,
+  type UnitFeed,
+  type UnitsChange,
+} from '../util/unit-changes'
+import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 describe('parseGithubColorLiteral', () => {
   it.each([
@@ -199,6 +206,112 @@ describe('observeGithubColorLiterals', () => {
     setGithubColorLiteralsEnabled(false)
     expect(code.classList.contains(COLOR_CLASS)).toBe(false)
     expect(code.style.getPropertyValue(COLOR_PROPERTY)).toBe('')
+    dispose()
+  })
+})
+
+// The factor-16 fixture takes seconds to mount in jsdom on a loaded machine.
+const BUDGET_TIMEOUT_MS = 60_000
+
+// Task 733 (D-13 B-11): with a live feed over the IR root, the feed's changes decorate their scopes
+// and the observer leaves records inside the feed root to the feed.
+describe('observeGithubColorLiterals on unit feed changes (Task 733, B-11)', {
+  timeout: BUDGET_TIMEOUT_MS,
+}, () => {
+  const liveFeed = (feedRoot: HTMLElement) => {
+    const listeners = new Set<(change: UnitsChange) => void>()
+    const feed: UnitFeed = {
+      root: feedRoot,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    return (change: Pick<UnitsChange, 'whole'> & Partial<UnitsChange>) => {
+      const full = { cause: 'mutation', changed: [], structural: [], ...change }
+      for (const listener of Array.from(listeners))
+        listener(full as UnitsChange)
+    }
+  }
+  const nodesIn = (node: Node): number => {
+    let count = 1
+    for (let child = node.firstChild; child; child = child.nextSibling)
+      count += nodesIn(child)
+    return count
+  }
+  const paragraph = (ir: HTMLElement, start: string) =>
+    Array.from(ir.children).find((block) =>
+      block.textContent?.startsWith(start),
+    ) as HTMLElement
+  const paragraphChange = (p: HTMLElement) => ({
+    whole: false,
+    changed: [{ el: p, members: [p], kind: 'paragraph' as const, top: p }],
+    structural: [],
+    scopes: [p],
+  })
+  const settleFrames = () => new Promise((resolve) => setTimeout(resolve, 40))
+
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+    setGithubColorLiteralsEnabled(false)
+  })
+
+  it.each([1, 4, 16] as Factor[])(
+    'decorates the scope of a paragraph change with no root query at factor %i',
+    async (factor) => {
+      const ir = irFixture(tableHeavyMarkdown(factor), () => undefined).root
+      const emit = liveFeed(ir)
+      setGithubColorLiteralsEnabled(true)
+      const dispose = observeGithubColorLiterals(ir)
+      await settleFrames()
+      const p = paragraph(ir, 'Fifth paragraph')
+      p.innerHTML = 'Fifth paragraph <code>#abcdef</code>'
+      const { counts } = countBudget(ir, () => emit(paragraphChange(p)))
+      expect(p.querySelector('code')?.classList.contains(COLOR_CLASS)).toBe(
+        true,
+      )
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes).toBeLessThanOrEqual(
+        nodesIn(p) + ir.childElementCount,
+      )
+      dispose()
+    },
+  )
+
+  it('leaves records inside the live feed root to the feed', async () => {
+    const ir = irFixture(tableHeavyMarkdown(1), () => undefined).root
+    liveFeed(ir)
+    setGithubColorLiteralsEnabled(true)
+    const dispose = observeGithubColorLiterals(ir)
+    await settleFrames()
+    const p = paragraph(ir, 'Fourth paragraph')
+    p.innerHTML = 'Fourth paragraph <code>#123456</code>'
+    await settleFrames()
+    expect(p.querySelector('code')?.classList.contains(COLOR_CLASS)).toBe(false)
+    dispose()
+  })
+
+  it('runs the whole pass for a whole change', async () => {
+    const ir = irFixture(tableHeavyMarkdown(1), () => undefined).root
+    const emit = liveFeed(ir)
+    setGithubColorLiteralsEnabled(true)
+    const dispose = observeGithubColorLiterals(ir)
+    await settleFrames()
+    const first = paragraph(ir, 'First paragraph')
+    const second = paragraph(ir, 'Second paragraph')
+    first.innerHTML = 'First <code>#111111</code>'
+    second.innerHTML = 'Second <code>#222222</code>'
+    emit({ whole: true, cause: 'rebind' })
+    for (const p of [first, second])
+      expect(p.querySelector('code')?.classList.contains(COLOR_CLASS)).toBe(
+        true,
+      )
     dispose()
   })
 })

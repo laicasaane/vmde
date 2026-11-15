@@ -1,5 +1,11 @@
 import { coalescePerFrameWithRecords } from '../util/observe-coalesce'
-import { queryIncludingSelf, scopeMutations } from '../util/mutation-impact'
+import {
+  onLiveChange,
+  queryIncludingSelf,
+  recordsOutsideFeed,
+  scopeMutations,
+  scopeOfChange,
+} from '../util/mutation-impact'
 
 const HEX_LITERAL = /^#([\da-f]{6})$/iu
 const RGB_LITERAL = /^rgb\(([\d]{1,3}) *, *([\d]{1,3}) *, *([\d]{1,3})\)$/u
@@ -109,7 +115,19 @@ export function observeGithubColorLiterals(
       for (const block of scope.blocks) applyGithubColorLiterals(block, enabled)
     }
   })
-  const observer = new MutationObserver(run)
+  // Task 733 (D-13 binding rule 6): while a live feed describes the IR root inside `root`, its
+  // changes decorate their scope elements, and the observer keeps only the records outside the feed
+  // root. A batch with none left is dropped here: empty records would mean a whole pass to `run`.
+  const observer = new MutationObserver((records) => {
+    const outside = recordsOutsideFeed(root, records)
+    if (outside.length > 0) run(outside)
+  })
+  const offFeed = onLiveChange(root, (change) => {
+    const scope = scopeOfChange(change)
+    if (scope.full) applyAll()
+    else
+      for (const block of scope.blocks) applyGithubColorLiterals(block, enabled)
+  })
   observer.observe(root, {
     childList: true,
     subtree: true,
@@ -120,6 +138,7 @@ export function observeGithubColorLiterals(
 
   return () => {
     observer.disconnect()
+    offFeed()
     run.cancel()
     activeReappliers.delete(applyAll)
   }

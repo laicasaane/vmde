@@ -2,6 +2,8 @@
 
 import { describe, expect, it } from 'vitest'
 import { createBlockAnchor, resolveBlockAnchor } from './block-anchor'
+import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
 function blocks(markup: string): HTMLElement[] {
   document.body.innerHTML = `<main>${markup}</main>`
@@ -72,5 +74,49 @@ describe('block anchor text (Task 733, 007)', () => {
     const marked = createBlockAnchor(first, table).hash
     expect(clones).toBe(0)
     expect(marked).toBe(createBlockAnchor(plain[0], plain).hash)
+  })
+})
+
+// The factor-16 fixture takes seconds to mount in jsdom on a loaded machine.
+const BUDGET_TIMEOUT_MS = 60_000
+
+// Task 733 (D-13 B-11): an anchor reads the anchored block and the heading path above it; it never
+// queries the root, and its cost does not grow with the rest of the document.
+describe('block anchor budgets (Task 733, B-11)', {
+  timeout: BUDGET_TIMEOUT_MS,
+}, () => {
+  const FACTORS: Factor[] = [1, 4, 16]
+  const costs: number[] = []
+  const nodesIn = (node: Node): number => {
+    let count = 1
+    for (let child = node.firstChild; child; child = child.nextSibling)
+      count += nodesIn(child)
+    return count
+  }
+
+  it.each(FACTORS)(
+    'anchors a paragraph below the tables without a root query at factor %i',
+    (factor) => {
+      const { root } = irFixture(tableHeavyMarkdown(factor))
+      const blocks = Array.from(root.children) as HTMLElement[]
+      const block = blocks.find((candidate) =>
+        candidate.textContent?.startsWith('Sixth paragraph'),
+      )!
+      const { result, counts } = countBudget(root, () =>
+        createBlockAnchor(block, blocks),
+      )
+      expect(result.index).toBe(blocks.indexOf(block))
+      expect(result.headingPath).toEqual(['1:Overview', '2:Tables'])
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.nodesWalked + counts.queriedNodes).toBeLessThanOrEqual(
+        nodesIn(block) + blocks.length,
+      )
+      costs.push(counts.nodesWalked + counts.queriedNodes)
+    },
+  )
+
+  it('costs the same at every factor', () => {
+    expect(costs).toHaveLength(FACTORS.length)
+    expect(new Set(costs).size).toBe(1)
   })
 })
