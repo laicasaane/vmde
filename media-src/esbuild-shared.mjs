@@ -218,10 +218,19 @@ export function patchDmpInterop(code) {
 // caret.ts, via `window.__vmdeRestoreUndoSnapshotCaret`), which arms no intent and keeps any live one.
 // Exception: a caret at or before the end of a block's leading hidden marker (IR heading `(h1, 0|1)`
 // beside the `# ` marker span) is not captured; the block path keeps landing it at the content start.
+//
+// Task 733 / 012-21 (same patch): `insertNode` on a collapsed live Range moves the Range end past the
+// marker, and removing the marker does not collapse it again. The first-key snapshot runs without
+// `setFocus`, so nothing restored it: a table cell Enter then inserted its `br` into that open range,
+// and the next checkpoint stored both ends as the same block offset and wrote the caret back before
+// the `br`. A caret capture (`cloneRange.collapsed`) therefore collapses the live Range to its start
+// right after the insert; a selection keeps its range.
 const UNDO_CARET_OFFSET_DECL_ANCHOR = 'let cloneRange: Range;'
 const UNDO_CARET_OFFSET_CAPTURE_ANCHOR =
   '                cloneRange = range.cloneRange();\n' +
-  '                const wbrElement = document.createElement("span");'
+  '                const wbrElement = document.createElement("span");\n' +
+  '                wbrElement.className = "vditor-wbr";\n' +
+  '                range.insertNode(wbrElement);'
 const UNDO_CARET_OFFSET_RESTORE_ANCHOR =
   '        if (setFocus && cloneRange) {\n' +
   '            setSelectionFocus(cloneRange);\n' +
@@ -358,7 +367,10 @@ export function patchUndoCaretSplitRestore(code) {
         "                // before the end of a block's leading hidden marker (an IR heading `(h1, 0|1)`) stays\n" +
         '                // on the block path, which lands it at the content start (task 609).\n' +
         '                vmdeCaretElement = range.collapsed && range.startContainer.nodeType === Node.ELEMENT_NODE && !(range.startOffset <= 1 && (range.startContainer.firstChild as Element | null)?.classList?.contains("vditor-ir__marker")) ? { node: range.startContainer, offset: range.startOffset } : null;\n' +
-        '                const wbrElement = document.createElement("span");',
+        '                const wbrElement = document.createElement("span");\n' +
+        '                wbrElement.className = "vditor-wbr";\n' +
+        '                range.insertNode(wbrElement);\n' +
+        '                if (cloneRange.collapsed) range.collapse(true);',
     )
     .replace(
       UNDO_CARET_OFFSET_RESTORE_ANCHOR,

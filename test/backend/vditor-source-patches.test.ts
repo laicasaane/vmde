@@ -2445,6 +2445,90 @@ describe('patchUndoCaretSplitRestore (task 445 — undo-snapshot caret restore s
       'window.__vmdeRequestCaret({ textOffset: vmdeCaretOffset });',
     )
   })
+
+  // Task 733 / 012-21 (D-13 design 13.14): `insertNode` on a collapsed live Range moves its end past
+  // the marker, and removing the marker does not collapse it again. The first-key snapshot runs
+  // without `setFocus`, so nothing restores it: a table cell Enter then inserted its br into that open
+  // range and the next checkpoint wrote the caret back before the br. The patch collapses a caret
+  // capture right after the marker insert; a selection keeps its range.
+  describe('a caret capture leaves the live Range collapsed', () => {
+    const COLLAPSE = 'if (cloneRange.collapsed) range.collapse(true)'
+    const patched = () =>
+      patchUndoCaretSplitRestore(patchDmpInterop(undoSource))
+    const addCaretOf = (code: string) => {
+      const match = /\n {4}private addCaret\(/.exec(code)
+      if (!match) throw new Error('addCaret not found')
+      const start = match.index + 1
+      const end = code.indexOf('\n    }\n', start)
+      return code.slice(start, end + '\n    }\n'.length)
+    }
+    const { JSDOM } = require('jsdom')
+    // Runs the patched addCaret without `setFocus` (the first-key snapshot) on a one-cell table.
+    const run = (start: number, end: number) => {
+      const dom = new JSDOM(
+        '<!doctype html><div id="root"><table><tbody><tr><td>cellA</td></tr></tbody></table></div>',
+      )
+      const { document, Node } = dom.window
+      const root = document.getElementById('root') as HTMLElement
+      const text = root.querySelector('td')?.firstChild as Text
+      const selection = dom.window.getSelection() as Selection
+      const range = document.createRange()
+      range.setStart(text, start)
+      range.setEnd(text, end)
+      selection.removeAllRanges()
+      selection.addRange(range)
+      const code = patched()
+      // The capture helpers the patch adds before the class.
+      const prelude = code.slice(
+        code.indexOf('function vmdeCaretTextOffset('),
+        code.indexOf('class Undo {'),
+      )
+      const { code: js } = transformSync(
+        `${prelude}\nclass T {\n${addCaretOf(code)}}\nreturn T;`,
+        { loader: 'ts' },
+      )
+      const T = new Function(
+        'getSelection',
+        'setSelectionFocus',
+        'document',
+        'Node',
+        'window',
+        js,
+      )(
+        () => selection,
+        () => undefined,
+        document,
+        Node,
+        dom.window,
+      )
+      new T().addCaret({ currentMode: 'ir', ir: { element: root } })
+      return { selection, root }
+    }
+
+    it('adds the collapse once, right after the marker insert', () => {
+      const code = patched()
+      expect(code.split(COLLAPSE).length - 1).toBe(1)
+      expect(code).toMatch(
+        /range\.insertNode\(wbrElement\);\s*if \(cloneRange\.collapsed\) range\.collapse\(true\)/,
+      )
+      // The capture anchors are still found once each in the patched source.
+      expect(code.split('cloneRange = range.cloneRange();').length - 1).toBe(1)
+      expect(code.split('range.insertNode(wbrElement);').length - 1).toBe(1)
+    })
+
+    it('keeps a collapsed caret collapsed after the marker insert and removal', () => {
+      const { selection, root } = run(3, 3)
+      expect(root.querySelector('.vditor-wbr')).toBeNull()
+      expect(selection.isCollapsed).toBe(true)
+      expect(selection.toString()).toBe('')
+    })
+
+    it('leaves a non-collapsed selection as it is', () => {
+      const { selection } = run(1, 3)
+      expect(selection.isCollapsed).toBe(false)
+      expect(selection.toString()).toBe('el')
+    })
+  })
 })
 
 describe('patchUndoRestoreCaretFallback (task 597 — restore without a usable caret marker)', () => {

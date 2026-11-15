@@ -237,49 +237,53 @@ test.describe('IR Enter caret with VDITOR_SINGLE_SELECTION_WRITE on and off (012
         .toContain('const echo = 1\nZ\nconst foxtrot = 2')
     })
 
-    test(`guard ${guard}: a table cell Enter puts the caret right after the inserted br`, async ({
-      page,
-    }) => {
-      // Vditor puts the caret after the br; a VMDE rewrite one to two frames later moves it before the
-      // br (D-13 design section 13.1). Task 012-21 fixes it and removes this annotation.
-      test.fail(
-        true,
-        'B-1: pre-existing caret rewrite after a table cell Enter (F-4)',
-      )
-      await openEditor(page, guard)
-      await caretIn(page, 'cellA', 3)
-      await page.keyboard.press('Enter')
-      // The caret the next key types into: after the frames that follow the key.
-      await settleFrames(page)
-      const position = await page.evaluate(() => {
-        const selection = getSelection() as Selection
-        const anchor = selection.anchorNode as Node
-        const cell = (
-          anchor instanceof Element ? anchor : anchor.parentElement
-        )?.closest('td, th')
-        const brs = cell ? Array.from(cell.querySelectorAll('br')) : []
-        // The inserted br is the one followed by the rest of the cell text.
-        const br = brs.find((node) => node.nextSibling?.textContent === 'lA')
-        if (!br?.parentNode) return null
-        return {
-          collapsed: selection.isCollapsed,
-          atBr:
-            selection.anchorNode === br.parentNode &&
-            selection.anchorOffset ===
-              Array.from(br.parentNode.childNodes).indexOf(br) + 1,
+    // The first key takes the history baseline snapshot, whose caret marker once left the live Range
+    // open, so the br landed inside it and the next checkpoint wrote the caret back before the br
+    // (task 012-21, D-13 design 13.14). A key typed before the Enter takes no baseline snapshot.
+    const CELL_ENTERS = [
+      { name: 'as the first key', typed: '', row: 'cel<br />QlA' },
+      { name: 'after one typed key', typed: 'x', row: 'celx<br />QlA' },
+    ] as const
+    for (const variant of CELL_ENTERS) {
+      test(`guard ${guard}: a table cell Enter ${variant.name} puts the caret right after the inserted br`, async ({
+        page,
+      }) => {
+        await openEditor(page, guard)
+        await caretIn(page, 'cellA', 3)
+        if (variant.typed) {
+          await page.keyboard.type(variant.typed)
+          await page.waitForTimeout(SETTLE_MS)
         }
+        await page.keyboard.press('Enter')
+        // The caret the next key types into: after the frames that follow the key.
+        await settleFrames(page)
+        const position = await page.evaluate(() => {
+          const selection = getSelection() as Selection
+          const cell = Array.from(document.querySelectorAll('td')).find((td) =>
+            td.textContent?.startsWith('cel'),
+          )
+          // The inserted br is the cell's first; the rest of the cell text follows it, possibly after
+          // empty text nodes left by a caret marker.
+          const br = cell?.querySelector('br')
+          const rest = Array.from(cell?.childNodes ?? []).find(
+            (node) => node.textContent === 'lA',
+          )
+          if (!br || !rest || selection.rangeCount === 0) return null
+          // Right after the br: between the point after it and the rest, with no text in between.
+          const after = document.createRange()
+          after.setStartAfter(br)
+          after.setEnd(rest, 0)
+          const caret = selection.getRangeAt(0)
+          return {
+            collapsed: selection.isCollapsed,
+            atBr: after.isPointInRange(caret.startContainer, caret.startOffset),
+          }
+        })
+        expect(position).toEqual({ collapsed: true, atBr: true })
+        await page.keyboard.type('Q')
+        await expect.poll(() => getValue(page)).toContain(variant.row)
       })
-      expect(position).toEqual({ collapsed: true, atBr: true })
-      await page.keyboard.type('Q')
-      const typed = await page.evaluate(() => {
-        const cell = Array.from(document.querySelectorAll('td')).find((td) =>
-          td.textContent?.startsWith('cel'),
-        )
-        const br = cell?.querySelector('br')
-        return br?.nextSibling?.textContent ?? null
-      })
-      expect(typed?.startsWith('Q')).toBe(true)
-    })
+    }
 
     // Each unit runs on a fresh page, so its edit is the first entry and its Undo caret is the caret the
     // first key found (a programmatic caret move between entries is no checkpoint).
