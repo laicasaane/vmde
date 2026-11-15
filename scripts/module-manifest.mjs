@@ -192,6 +192,7 @@ export const WEBVIEW_MODULES = {
       'edit-counters', // Task 733 — end-to-end-only edit-path counters; installed by finish-init
       'e2e-readiness', // task 512 — gated test-only lifecycle observability; zero imports
       'real-lute', // Task 574 — test-only vendored-Lute loader for serializer-parity units
+      'budget-harness', // Task 733 / 012-19 — test-only counted budget harness (fixtures, DOM counts, cost clock, fake lanes)
     ],
   },
   util: {
