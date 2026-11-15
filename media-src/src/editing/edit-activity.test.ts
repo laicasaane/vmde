@@ -1,5 +1,16 @@
 // @vitest-environment jsdom
-import { test, expect, beforeEach, afterEach, vi } from 'vitest'
+import {
+  test,
+  expect,
+  beforeEach,
+  afterEach,
+  beforeAll,
+  afterAll,
+  describe,
+  vi,
+} from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import { type Factor, countBudget, irFixture } from '../testing/budget-harness'
 import {
   isTyping,
   markEditActivity,
@@ -9,7 +20,9 @@ import {
   installEditActivity,
   hasFreshRender,
   flushPendingEditorRespin,
+  isSettleRespinning,
 } from './edit-activity'
+import { tagCodeSource } from './code-source'
 import {
   hasLiveCaretIntent,
   installCaretInvalidation,
@@ -18,7 +31,11 @@ import {
 } from './caret'
 import { tocImpactRequiresRefresh } from './toc-invalidation'
 import type { EditorMutationImpact } from '../util/mutation-impact'
-import { provideUnitFeed, type UnitFeed } from '../util/unit-changes'
+import {
+  type LiveUnit,
+  provideUnitFeed,
+  type UnitFeed,
+} from '../util/unit-changes'
 
 // The gate's quiet window is 220 ms (private const in edit-activity.ts); tests advance well under it
 // (100 ms = "still typing") and well over it (300 ms = "settled") so they don't depend on the exact value.
@@ -1629,4 +1646,319 @@ test('deferIrDiagramRender, live: pending entries that do not qualify cost no al
   } finally {
     r.dispose()
   }
+})
+
+// Task 733 / 012-15 (D-13 budget test B-13): the settle re-spin of a skipped keystroke in a table cell
+// re-spins the cell through the unit spin hook (shared rules 3.2) while the model is live and the unit is
+// known. The synthetic input that re-enters Vditor's IR `input()` stays only as the fallback for an
+// unknown unit or a model that is off, because that input re-spins the whole table or code block.
+// Fixtures are the counted IR DOM of `tableHeavyMarkdown(f)`; table A has 130 x f body rows.
+const B13_FACTORS: readonly Factor[] = [1, 4, 16]
+// queriedNodes of the first key of a burst, per case and factor (B-13 asks the same at every factor).
+const b13SnapshotNodes = new Map<string, Map<Factor, number>>()
+// The counts of the code block's live settle fallback, per factor (D-13 13.6: the same at every factor).
+const b13CodeFallback = new Map<Factor, Record<string, unknown>>()
+
+// The probe's code block tagging (as 012-11's `probeCodeBlock`): raw Lute DOM hides the code paths.
+function prepareProbeCodeBlock(root: HTMLElement): void {
+  tagCodeSource(root)
+  root
+    .querySelector(':scope > [data-type="code-block"]')
+    ?.classList.add('vditor-ir__node--expand')
+}
+
+type B13Case = 'table cell' | 'code block'
+
+interface B13Unit {
+  unit: LiveUnit
+  /** The text node the keystroke lands in, and the offset after which it lands. */
+  text: Text
+  offset: number
+}
+
+function b13Unit(root: HTMLElement, which: B13Case): B13Unit {
+  if (which === 'table cell') {
+    const table = root.querySelector(':scope > table') as HTMLElement
+    // Row 2 of table A, first column: "Item a2" at every factor.
+    const cell = table.querySelectorAll('tbody > tr')[1]
+      .firstElementChild as HTMLElement
+    const text = cell.firstChild as Text
+    expect(text.data).toBe('Item a2')
+    return {
+      unit: { el: cell, members: [cell], kind: 'cell', top: table },
+      text,
+      offset: text.length,
+    }
+  }
+  const block = root.querySelector(
+    ':scope > [data-type="code-block"]',
+  ) as HTMLElement
+  const text = block.querySelector('.vditor-ir__marker--pre code')
+    ?.firstChild as Text
+  return {
+    unit: { el: block, members: [block], kind: 'fence', top: block },
+    text,
+    offset: text.data.indexOf('\n'),
+  }
+}
+
+/** A unit feed of `root` that knows `units`; `live` false is a model that is off. */
+function unitFeedOfUnits(
+  root: HTMLElement,
+  units: readonly LiveUnit[],
+  live: boolean,
+): UnitFeed {
+  return {
+    root,
+    isLive: () => live,
+    liveUnitOf: (node) =>
+      live ? units.find((unit) => unit.el.contains(node)) : undefined,
+    liveUnits: () => (live ? units : undefined),
+    onUnitsChanged: () => () => undefined,
+    confirmNow: () => false,
+    confirmedLines: () => undefined,
+  }
+}
+
+interface UnitSpinCall {
+  blockElement: HTMLElement
+  inUnit: boolean
+  settle: boolean
+}
+
+interface B13Rig {
+  root: HTMLElement
+  target: B13Unit
+  /** Synthetic settle inputs (empty data) that reached the editor. */
+  dispatches: number
+  /** The elements whose outerHTML the Vditor stand-in read, with the length read. */
+  reads: Array<{ element: Element; length: number }>
+  spins: UnitSpinCall[]
+  keystroke(): void
+  dispose(): void
+}
+
+/**
+ * Installs the gate on the fixture and a stand-in for Vditor's IR input: the synthetic settle input
+ * reads the outerHTML of the caret's top-level block, as `ir/input.ts` does before `SpinVditorIRDOM`.
+ * The unit spin hook stands in for `installUnitSpin` with its model rule (rule 2), its unit rule
+ * (`unit.top` is the block) and its kinds (cells and list items; a fence is `not-a-unit`, so the code
+ * block keeps the fallback input, D-13 13.6); `refuse` makes it refuse every call.
+ */
+function b13Rig(
+  root: HTMLElement,
+  which: B13Case,
+  feed: 'live' | 'off' | 'unknown unit',
+  refuse = false,
+): B13Rig {
+  const app = root.parentElement as HTMLElement
+  const target = b13Unit(root, which)
+  const units = feed === 'unknown unit' ? [] : [target.unit]
+  const unitFeed = unitFeedOfUnits(root, units, feed !== 'off')
+  provideUnitFeed(window, unitFeed)
+  const dispose = installEditActivity(app)
+  const disposeGestures = installCaretInvalidation()
+  setCaretPaintabilityProbeForTests(() => true)
+  const rig: B13Rig = {
+    root,
+    target,
+    dispatches: 0,
+    reads: [],
+    spins: [],
+    keystroke() {
+      const range = document.createRange()
+      range.setStart(target.text, target.offset)
+      range.collapse(true)
+      window.getSelection()?.removeAllRanges()
+      window.getSelection()?.addRange(range.cloneRange())
+      expect(
+        trySkip(
+          vditor,
+          range,
+          new InputEvent('input', { inputType: 'insertText', data: 'x' }),
+        ),
+      ).toBe(true)
+    },
+    dispose() {
+      root.removeEventListener('input', onInput)
+      disposeGestures()
+      resetCaretAuthorityForTests()
+      dispose()
+      provideUnitFeed(window, undefined)
+      delete (window as unknown as Record<string, unknown>).__vmdeSpinUnit
+      window.getSelection()?.removeAllRanges()
+    },
+  }
+  const vditor = {
+    ir: { element: root, composingLock: false },
+    options: { input: vi.fn() },
+  }
+  const onInput = (event: Event): void => {
+    if ((event as InputEvent).data !== '') return
+    rig.dispatches++
+    const selection = window.getSelection()
+    const start = selection?.rangeCount
+      ? selection.getRangeAt(0).startContainer
+      : null
+    const host = start instanceof Element ? start : start?.parentElement
+    const block = host?.closest('[data-block="0"]')
+    if (block)
+      rig.reads.push({ element: block, length: block.outerHTML.length })
+  }
+  root.addEventListener('input', onInput)
+  ;(window as unknown as Record<string, unknown>).__vmdeSpinUnit = (
+    _vditor: unknown,
+    range: Range,
+    blockElement: HTMLElement,
+  ): boolean => {
+    const unit = unitFeed.liveUnitOf(range.startContainer)
+    rig.spins.push({
+      blockElement,
+      inUnit: target.unit.el.contains(range.startContainer),
+      settle: isSettleRespinning(),
+    })
+    return (
+      !refuse &&
+      unit !== undefined &&
+      unit.top === blockElement &&
+      (unit.kind === 'cell' || unit.kind === 'list-item')
+    )
+  }
+  const trySkip = (window as unknown as Record<string, unknown>)
+    .__vmdeTrySkipFenceSpin as (
+    v: unknown,
+    range: Range,
+    event: InputEvent,
+  ) => boolean
+  return rig
+}
+
+describe.each(B13_FACTORS)(
+  'B-13 settle re-spin scope at factor %i',
+  (factor) => {
+    let root: HTMLElement
+    beforeAll(() => {
+      root = irFixture(tableHeavyMarkdown(factor), prepareProbeCodeBlock).root
+    })
+    afterAll(() => root.parentElement?.remove())
+
+    test('code block: the live settle keeps the fallback input, bounded to the block', () => {
+      const rig = b13Rig(root, 'code block', 'live')
+      try {
+        rig.keystroke()
+        const block = rig.target.unit.el
+        const blockHtml = block.outerHTML.length
+        const { counts } = countBudget(root, () => vi.advanceTimersByTime(300))
+        b13CodeFallback.set(factor, {
+          dispatches: rig.dispatches,
+          reads: rig.reads.map((read) => read.length),
+          ...counts,
+        })
+        expect(rig.dispatches).toBe(1)
+        expect(rig.reads).toHaveLength(1)
+        expect(rig.reads[0].element).toBe(block)
+        expect(rig.reads[0].length).toBeLessThanOrEqual(blockHtml)
+        expect(counts.innerHtmlReads).toBe(1)
+        expect(counts.rootQueries).toBe(0)
+      } finally {
+        rig.dispose()
+      }
+    })
+
+    test('table cell: the live settle re-spins the unit, with no synthetic input and no innerHTML read', () => {
+      const rig = b13Rig(root, 'table cell', 'live')
+      try {
+        rig.keystroke()
+        const { counts } = countBudget(root, () => vi.advanceTimersByTime(300))
+        expect(rig.dispatches).toBe(0)
+        expect(counts.innerHtmlReads).toBe(0)
+        expect(rig.spins).toHaveLength(1)
+        expect(rig.spins[0]).toEqual({
+          blockElement: rig.target.unit.top,
+          inUnit: true,
+          settle: true,
+        })
+      } finally {
+        rig.dispose()
+      }
+    })
+
+    for (const which of ['table cell', 'code block'] as const) {
+      test(`${which}: with the model off the settle dispatches the fallback input once`, () => {
+        const rig = b13Rig(root, which, 'off')
+        try {
+          rig.keystroke()
+          const { counts } = countBudget(root, () =>
+            vi.advanceTimersByTime(300),
+          )
+          expect(rig.dispatches).toBe(1)
+          // The fallback reaches the block spin stand-in, which reads the whole block once.
+          expect(counts.innerHtmlReads).toBe(1)
+        } finally {
+          rig.dispose()
+        }
+      })
+
+      test(`${which}: an unknown unit keeps the fallback input`, () => {
+        const rig = b13Rig(root, which, 'unknown unit')
+        try {
+          rig.keystroke()
+          vi.advanceTimersByTime(300)
+          expect(rig.dispatches).toBe(1)
+        } finally {
+          rig.dispose()
+        }
+      })
+
+      test(`${which}: a refused unit spin keeps the fallback input`, () => {
+        const rig = b13Rig(root, which, 'live', true)
+        try {
+          rig.keystroke()
+          vi.advanceTimersByTime(300)
+          expect(rig.dispatches).toBe(1)
+        } finally {
+          rig.dispose()
+        }
+      })
+
+      test(`${which}: the first key of a burst snapshots renders with no root query`, () => {
+        const rig = b13Rig(root, which, 'live')
+        try {
+          const range = document.createRange()
+          range.setStart(rig.target.text, rig.target.offset)
+          range.collapse(true)
+          window.getSelection()?.removeAllRanges()
+          window.getSelection()?.addRange(range)
+          expect(isTyping()).toBe(false)
+          const { counts } = countBudget(root, () => markEditActivity())
+          let byFactor = b13SnapshotNodes.get(which)
+          if (!byFactor) {
+            byFactor = new Map()
+            b13SnapshotNodes.set(which, byFactor)
+          }
+          byFactor.set(factor, counts.queriedNodes)
+          expect(counts.rootQueries).toBe(0)
+        } finally {
+          rig.dispose()
+        }
+      })
+    }
+  },
+)
+
+test('B-13: the first key of a burst queries the same nodes at every factor', () => {
+  for (const which of ['table cell', 'code block'] as const) {
+    const byFactor = b13SnapshotNodes.get(which)
+    expect(byFactor?.size, which).toBe(B13_FACTORS.length)
+    const first = byFactor?.get(1)
+    for (const factor of B13_FACTORS)
+      expect(byFactor?.get(factor), `${which} at factor ${factor}`).toBe(first)
+  }
+})
+
+test('B-13: the code block live settle fallback has the same counts at every factor', () => {
+  expect(b13CodeFallback.size).toBe(B13_FACTORS.length)
+  const first = b13CodeFallback.get(1)
+  for (const factor of B13_FACTORS)
+    expect(b13CodeFallback.get(factor), `factor ${factor}`).toEqual(first)
 })

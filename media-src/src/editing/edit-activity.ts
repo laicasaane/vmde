@@ -23,6 +23,8 @@
 //   - our observeCustomDiagrams (d2/wavedrom/nomnoml/geojson/topojson/vega/stl): it calls isTyping()
 //     and defers its pass; on settle it calls beginSettleRender()/scheduleReveal() like the native path.
 
+import { processAfterRender } from 'vditor/src/ts/ir/process'
+import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import { engineLangSet } from '../diagram-kit/engine-registry'
 import { isCompositionActive } from '../util/caret-gesture'
 import {
@@ -34,7 +36,7 @@ import { shouldSkipFenceSpin, shouldSkipProseSpin } from './spin-skip-fence'
 import { stripPreviewForSpin } from './spin-strip'
 import { installTocInvalidation } from './toc-invalidation'
 import { GAP_ATTR, TRAILING_ATTR } from './trailing-paragraph'
-import { unitFeedOf } from '../util/unit-changes'
+import { type LiveUnit, unitFeedOf } from '../util/unit-changes'
 
 // The quiet window stays 220 ms. A shorter "appear sooner" window was tried and REVERTED: it is < the
 // typical inter-keystroke gap (~180 ms), so the settle fires MID-BURST and repeatedly destroys+re-renders
@@ -432,8 +434,120 @@ function placeCaretAtTarget(position: { node: Node; offset: number }): boolean {
   })
 }
 
+type SpinUnitHook = (
+  vditor: unknown,
+  range: Range,
+  blockElement: HTMLElement,
+  event: InputEvent | undefined,
+) => boolean
+
+type SettleVditor = {
+  ir: { element: HTMLElement; composingLock?: boolean; preventInput?: boolean }
+}
+
+/** The live cell or list item that holds `node`, the only units the unit spin re-spins (shared rules
+ * 3.2 rules 3 and 4); undefined while the model is not live for `root`. */
+function settleUnitOf(root: HTMLElement, node: Node): LiveUnit | undefined {
+  const feed = unitFeedOf(window)
+  if (!feed || feed.root !== root || !feed.isLive()) return undefined
+  const unit = feed.liveUnitOf(node)
+  return unit?.kind === 'cell' || unit?.kind === 'list-item' ? unit : undefined
+}
+
+/** Removes the caret marker and returns the caret position it stood for (the rule of Vditor's
+ * `setRangeByWbr` for text neighbours). Text split by the marker's insertion is joined again. */
+function removeMarker(marker: Element): { node: Node; offset: number } {
+  const previous = marker.previousSibling
+  const next = marker.nextSibling
+  const parent = marker.parentNode as Node
+  if (previous instanceof Text) {
+    const offset = previous.length
+    marker.remove()
+    if (next instanceof Text) {
+      previous.appendData(next.data)
+      next.remove()
+    }
+    return { node: previous, offset }
+  }
+  if (next instanceof Text) {
+    marker.remove()
+    return { node: next, offset: 0 }
+  }
+  const offset = Array.prototype.indexOf.call(parent.childNodes, marker)
+  marker.remove()
+  return { node: parent, offset }
+}
+
+/** Vditor's tail of IR `input()` for a spun unit: render the unit's fresh previews (inline math), then
+ * the after-render pass (undo checkpoint, input signal, hint), as the dispatched input would. */
+function finishUnitSpin(vditor: SettleVditor, unit: HTMLElement): void {
+  if (unit.querySelector(FRESH_PREVIEW))
+    for (const preview of Array.from(
+      unit.querySelectorAll<HTMLElement>(FRESH_PREVIEW),
+    ))
+      processCodeRender(preview, vditor as never)
+  processAfterRender(vditor as never, {
+    enableAddUndoStack: true,
+    enableHint: true,
+    enableInput: true,
+  })
+}
+
+// Task 733 / 012-15: the settle re-spin of a keystroke in a live cell or list item calls the unit spin
+// hook directly instead of re-entering Vditor's IR `input()`. That input reads the whole table or list
+// before its unit spin hook (`innerHTML` for its heading and rule checks, `textContent` space scans, a
+// `[style]` query) and queries the root for expanded nodes. Returns false, with the DOM as it was, when
+// the unit spin does not apply; the synthetic input then runs as the fallback.
+function spinSettleUnit(
+  vditor: SettleVditor,
+  root: HTMLElement,
+  position: { node: Node; offset: number },
+  kept: KeptSelection | null,
+): boolean {
+  const hook = (window as unknown as { __vmdeSpinUnit?: SpinUnitHook })
+    .__vmdeSpinUnit
+  if (!hook || vditor.ir.preventInput || composing(vditor)) return false
+  if (!window.getSelection()?.rangeCount) return false
+  const unit = settleUnitOf(root, position.node)
+  const block = unit ? spinBlockOf(position.node) : null
+  if (!unit || !(block instanceof HTMLElement)) return false
+  // The caret marker Vditor's `input()` inserts before its spin; the unit spin's shape check needs it.
+  const marker = document.createElement('wbr')
+  const range = document.createRange()
+  range.setStart(position.node, position.offset)
+  range.collapse(true)
+  range.insertNode(marker)
+  let spun = false
+  try {
+    spun = hook(vditor, range, block, undefined)
+  } catch {
+    /* a throwing hook is a refusal: the fallback input re-spins the block */
+  }
+  if (!spun) {
+    if (marker.isConnected) removeMarker(marker)
+    return false
+  }
+  const written = unit.el.querySelector('wbr')
+  const caret = written ? removeMarker(written) : null
+  if (kept) restoreLiveSelection(root, kept)
+  else if (caret)
+    // Transparent: puts the caret where the spun unit's marker was, as `setRangeByWbr` does.
+    writeSelectionKeepingIntent({
+      anchorNode: caret.node,
+      anchorOffset: caret.offset,
+      focusNode: caret.node,
+      focusOffset: caret.offset,
+    })
+  try {
+    finishUnitSpin(vditor, unit.el)
+  } catch {
+    /* the after-render pass is best-effort, as the dispatched input is */
+  }
+  return true
+}
+
 function settleRespin(
-  vditor: { ir: { element: HTMLElement; composingLock?: boolean } },
+  vditor: SettleVditor,
   target: RespinTarget,
   again: () => void,
 ): void {
@@ -449,6 +563,7 @@ function settleRespin(
   fenceRespinning = true
   try {
     const kept = captureLiveSelection(vditor, target)
+    if (spinSettleUnit(vditor, root, position, kept)) return
     if (!kept || !placeCaretAtTarget(position)) {
       dispatchRespin(root)
       return
@@ -542,6 +657,10 @@ const OVERLAY_CLASS = 'vmde-stale-overlay'
 const renderCache = new Map<string, { html: string; h: number }>()
 
 function irRoot(): HTMLElement | null {
+  // Task 733 / 012-15: while the model is live its feed names the IR root, so no document query runs.
+  // `.vditor-ir` is the wrapper of that root; the scoped helpers below compare against the feed root.
+  const feed = unitFeedOf(window)
+  if (feed?.isLive()) return feed.root
   return document.querySelector('.vditor-ir')
 }
 
@@ -879,7 +998,8 @@ function codeBlocksNearCaret(root: HTMLElement): Element[] | undefined {
   if (!top) return undefined
   const found: Element[] = []
   for (const el of [top.previousElementSibling, top, top.nextElementSibling]) {
-    if (!el) continue
+    // A table cell holds inline content only, so a table holds no code block: no query of its rows.
+    if (!el || el.localName === 'table') continue
     if (el.matches(CODE_BLOCK)) found.push(el)
     for (const node of Array.from(el.querySelectorAll(CODE_BLOCK)))
       found.push(node)
