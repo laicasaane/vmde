@@ -25,11 +25,98 @@ function firstCell(markdown: string): string {
   return line.slice(start, end).trim()
 }
 
+// ---- Task 733 / 012-5: the code-block text path ----
+//
+// A fenced code block in the IR DOM is the open marker, the info string, the body `code` element,
+// the preview and the close marker. Lute writes it back as `open + info + '\n' + body + close`, so
+// its canon is built here from the outerHTML string without a Lute call (about 28 ms for a 40-line
+// block). Every shape whose Lute bytes this cannot reproduce exactly returns undefined and takes
+// the Lute path: an element or entity other than the DOM serializer's own in the body, a body text
+// Lute rewrites (see BODY_REWRITTEN) and a body line that could close the fence.
+
+/** The exact Lute render of a fenced code block; the groups are the open marker, the info string, the raw body HTML and the close marker. */
+const CODE_BLOCK =
+  /^<div data-block="0" data-type="code-block" class="vditor-ir__node(?: vditor-ir__node--expand)?"><span data-type="code-block-open-marker">(`{3,}|~{3,})<\/span><span class="vditor-ir__marker vditor-ir__marker--info" data-type="code-block-info">\u200b?([A-Za-z0-9_.+#-]*)<\/span><pre class="vditor-ir__marker--pre vditor-ir__marker"><code(?: class="language-[A-Za-z0-9_.+#-]+")?>([^<&]*(?:(?:<wbr>|&(?:lt|gt|amp|quot|#39);)[^<&]*)*)<\/code><\/pre>(?:<pre class="vditor-ir__preview"[^>]*>[\s\S]*<\/pre>)?<span data-type="code-block-close-marker">(`{3,}|~{3,})<\/span><\/div>$/u
+
+/**
+ * Body text Lute does not write back as it is: a character reference once decoded (Lute decodes the
+ * text a second time), a carriage return, a C0 or C1 control other than tab, line feed, vertical tab
+ * and form feed, a no-break or zero-width space, a line or paragraph separator, a tab at a line end,
+ * and an unpaired surrogate. Checked on the raw HTML body, where `&amp;` stands for `&`.
+ */
+const BODY_REWRITTEN =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: the control characters Lute drops or rewrites are what this pattern detects
+  /&amp;(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);|[\0-\x08\x0d\x0e-\x1a\x1c-\x1f\x7f-\xa0\u200b\u2028\u2029]|\t(?:\n|$)|[\ud800-\udbff](?![\udc00-\udfff])|(?:^|[^\ud800-\udbff])[\udc00-\udfff]/iu
+
+const ENTITY = /&(lt|gt|amp|quot|#39);/gu
+const ENTITY_TEXT: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  amp: '&',
+  quot: '"',
+  '#39': "'",
+}
+
+/** True when the line of `body` from `start` is a closing fence: up to 3 spaces, a run of `fence` of at least `length`, then only spaces or tabs. */
+function lineClosesFence(
+  body: string,
+  start: number,
+  fence: number,
+  length: number,
+): boolean {
+  let at = start
+  while (at - start < 3 && body.charCodeAt(at) === 32) at++
+  const runStart = at
+  while (body.charCodeAt(at) === fence) at++
+  if (at - runStart < length) return false
+  // charCodeAt past the end is NaN, so the scans stop at the end of the body.
+  while (body.charCodeAt(at) === 32 || body.charCodeAt(at) === 9) at++
+  return at === body.length || body.charCodeAt(at) === 10
+}
+
+/** True when a line of `body` is a closing fence for the open marker `open`. */
+function closesFence(body: string, open: string): boolean {
+  const fence = open.charCodeAt(0)
+  for (let start = 0; start < body.length; ) {
+    if (lineClosesFence(body, start, fence, open.length)) return true
+    const end = body.indexOf('\n', start)
+    if (end === -1) return false
+    start = end + 1
+  }
+  return false
+}
+
+/** Lute's canon of one fenced code block from its outerHTML, or undefined when only Lute can say. */
+function codeBlockCanon(html: string): string | undefined {
+  const match = CODE_BLOCK.exec(html)
+  if (!match) return undefined
+  const [, open, info, raw, close] = match
+  if (close.charCodeAt(0) !== open.charCodeAt(0) || close.length < open.length)
+    return undefined
+  if (BODY_REWRITTEN.test(raw) || closesFence(raw, open)) return undefined
+  // Lute drops the caret marker and reads the DOM serializer's entities as text.
+  const text =
+    raw.indexOf('<') === -1 && raw.indexOf('&') === -1
+      ? raw
+      : raw
+          .replaceAll('<wbr>', '')
+          .replace(ENTITY, (_, name: string) => ENTITY_TEXT[name])
+  if (text === '') return `${open}${info}\n${close}`
+  return text.endsWith('\n')
+    ? `${open}${info}\n${text}${close}`
+    : `${open}${info}\n${text}\n${close}`
+}
+
 /** Canon of a block, or of the member elements of one source block, from their outerHTML strings. */
 export function serializeBlockHtml(
   lute: UnitLute,
   outerHtml: readonly string[],
 ): string {
+  // Task 733 / 012-5: a lone fenced code block takes the text path (no Lute call), see codeBlockCanon.
+  if (outerHtml.length === 1) {
+    const canon = codeBlockCanon(outerHtml[0])
+    if (canon !== undefined) return canon
+  }
   return trimNewlines(lute.VditorIRDOM2Md(outerHtml.join('')))
 }
 

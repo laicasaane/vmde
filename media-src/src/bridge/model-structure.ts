@@ -590,6 +590,8 @@ function rootStage<E>(
   const onlyHost = only && hostOf.get(window.newEls[0])
   // A block a history restore put back with remembered bytes (task 004) takes the general path, which
   // reads the saved index; the rebind below would derive the bytes again (a table row by row).
+  // Task 733 / 012-5: a fenced code block's serialize here takes the text path of
+  // `serializeBlockHtml` (no Lute call), so this check costs no whole-block Lute call.
   const remembered =
     only !== undefined &&
     onlyHost !== undefined &&

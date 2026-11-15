@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   type MovableKind,
   scanMovableBlocks,
@@ -1205,5 +1205,163 @@ describe('011 DR2 find-replace flush', () => {
     expect(syncChanges(session.model)).toEqual([])
     expect(session.model.text).toBe('1. a\n2. b\n3. c\n')
     expect(session.model.hasDirty()).toBe(false)
+  })
+})
+
+// ---- Task 733 / 012-5: code-block edits without a whole-block Lute call ----
+
+/** Runs `run` and counts the calls of both Lute entry points (the Lute spy). */
+function countLute<T>(run: () => T): { result: T; calls: number } {
+  const toMarkdown = vi.spyOn(lute, 'VditorIRDOM2Md')
+  const toDom = vi.spyOn(lute, 'Md2VditorIRDOM')
+  try {
+    const result = run()
+    return {
+      result,
+      calls: toMarkdown.mock.calls.length + toDom.mock.calls.length,
+    }
+  } finally {
+    toMarkdown.mockRestore()
+    toDom.mockRestore()
+  }
+}
+
+describe('012-5 code-block text path', () => {
+  const bodyLines = Array.from(
+    { length: 40 },
+    (_, k) => `  const value${k} = compute(${k}) // line ${k}`,
+  )
+  const fence = (lines: readonly string[]): string =>
+    `\`\`\`ts\n${lines.join('\n')}\n\`\`\``
+  const BEFORE = 'Intro paragraph.\n\n'
+  const AFTER = '\n\nAfter paragraph.\n'
+
+  /**
+   * Vditor's block spin of the code block (`ir/input.ts`): the element is replaced by the render of
+   * the new block source and the unit DOM marks the root (012-1 keeps the root notice for a spin).
+   */
+  function spin(session: Session, index: number, source: string): void {
+    const [spun] = render(source)
+    blockEl(session, index).replaceWith(spun)
+    session.model.markStructureDirty('root')
+  }
+
+  const edits: Array<[string, (lines: string[]) => string[]]> = [
+    [
+      'a letter typed',
+      (lines) => lines.map((line, k) => (k === 20 ? `${line}x` : line)),
+    ],
+    [
+      'a Backspace',
+      (lines) => lines.map((line, k) => (k === 20 ? line.slice(0, -1) : line)),
+    ],
+    ['an Enter', (lines) => [...lines.slice(0, 21), '', ...lines.slice(21)]],
+    [
+      'a paste of three lines',
+      (lines) => [
+        ...lines.slice(0, 21),
+        'pasted(1)',
+        'pasted(2)',
+        'pasted(3)',
+        ...lines.slice(21),
+      ],
+    ],
+  ]
+
+  it.each(edits)(
+    "%s in a 40-line code block publishes the bytes of today's path without a Lute call",
+    (_name, edit) => {
+      const session = open(BEFORE + fence(bodyLines) + AFTER)
+      proveAll(session.model)
+      const next = fence(edit(bodyLines))
+      // Today's path writes the canon of the block; the fixture is canonical, so the canon is the source.
+      expect(canonOfMarkdown(next)).toBe(next)
+      spin(session, 1, next)
+      const { result: changes, calls } = countLute(() =>
+        syncChecked(session.model),
+      )
+      expect(session.model.text).toBe(BEFORE + next + AFTER)
+      expect(changes).toHaveLength(1)
+      expectConsistent(session.model)
+      expect(calls).toBe(0)
+    },
+  )
+
+  it('a letter typed after a history restore (remembered bytes, the root-stage check) makes no Lute call', () => {
+    const session = open(BEFORE + fence(bodyLines) + AFTER)
+    proveAll(session.model)
+    session.model.rememberBytes('Restored paragraph.', 'Restored paragraph.')
+    const next = fence(edits[0][1](bodyLines))
+    spin(session, 1, next)
+    const { calls } = countLute(() => syncChecked(session.model))
+    expect(session.model.text).toBe(BEFORE + next + AFTER)
+    expect(calls).toBe(0)
+  })
+
+  it('a letter written into the code element in place (no spin) makes no Lute call', () => {
+    const session = open(BEFORE + fence(bodyLines) + AFTER)
+    proveAll(session.model)
+    const code = blockEl(session, 1).querySelector(
+      'pre.vditor-ir__marker--pre > code',
+    ) as HTMLElement
+    const text = code.firstChild as Text
+    const at = text.data.indexOf('// line 20') + '// line 20'.length
+    text.insertData(at, 'x')
+    session.model.markDirty(session.model.units[1])
+    const { calls } = countLute(() => syncChecked(session.model))
+    expect(session.model.text).toBe(
+      BEFORE + fence(edits[0][1](bodyLines)) + AFTER,
+    )
+    expect(calls).toBe(0)
+  })
+
+  it('a CRLF document keeps its other bytes: a letter typed makes one change and no Lute call', () => {
+    // The session normalizes the host text to LF before the model sees it; the DOM is Lute's render
+    // of the CRLF source.
+    const crlf = `${BEFORE + fence(bodyLines) + AFTER}`.replace(/\n/gu, '\r\n')
+    const root = document.createElement('div')
+    root.innerHTML = lute.Md2VditorIRDOM(crlf)
+    const lf = crlf.replace(/\r\n/gu, '\n')
+    const model = createTextModel(domHost(root), scanMovableBlocks)
+    model.build(lf)
+    expect(model.state, String(model.offReason)).toBe('live')
+    const session = { model, root }
+    proveAll(model)
+    const next = fence(edits[0][1](bodyLines))
+    spin(session, 1, next.replace(/\n/gu, '\r\n'))
+    const { result: changes, calls } = countLute(() => syncChecked(model))
+    expect(model.text).toBe(BEFORE + next + AFTER)
+    expect(model.text).not.toContain('\r')
+    expect(changes).toEqual([
+      {
+        from: lf.indexOf('// line 20') + '// line 20'.length,
+        to: lf.indexOf('// line 20') + '// line 20'.length,
+        insert: 'x',
+      },
+    ])
+    expect(calls).toBe(0)
+  })
+
+  it('body lines that start with the fence characters keep their bytes: a letter typed makes no Lute call', () => {
+    const lines = [
+      '```inner',
+      ' ``` text',
+      '~~~',
+      '````js',
+      ...bodyLines.slice(0, 10),
+    ]
+    const source = `\`\`\`\n${lines.join('\n')}\n\`\`\``
+    const session = open(BEFORE + source + AFTER)
+    proveAll(session.model)
+    const typed = lines.map((line, k) => (k === 8 ? `${line}x` : line))
+    const next = `\`\`\`\n${typed.join('\n')}\n\`\`\``
+    expect(canonOfMarkdown(next)).toBe(next)
+    spin(session, 1, next)
+    const { calls } = countLute(() => syncChecked(session.model))
+    expect(session.model.text).toBe(BEFORE + next + AFTER)
+    expect(session.model.text.split('\n').slice(3, 7)).toEqual(
+      lines.slice(0, 4),
+    )
+    expect(calls).toBe(0)
   })
 })

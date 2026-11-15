@@ -3,6 +3,8 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { splitRow } from '../../../src/shared/table-row-splice'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
+import { wrapHtmlInlineFormattingLute } from '../editing/html-subscript'
+import { wrapLiveLineBreakIdentity } from '../editing/live-line-breaks'
 import type { UnitSpinResult } from '../editing/unit-spin'
 import { createRealLute } from '../testing/real-lute'
 import {
@@ -24,6 +26,9 @@ import * as unitLute from './unit-lute'
 // `real.lute` (patched in production order: code pipes first, then gap repair; production also
 // wraps live line breaks and inline HTML formatting, which these string functions do not need).
 let lute: UnitLute
+// Task 733 / 012-5: a second real Lute with every serialize wrapper of the webview (`boot/preload.ts`
+// order: code pipes, gap repair, live line breaks, inline HTML formatting), today's code-block path.
+let production: UnitLute
 const trim = (text: string): string => text.replace(/\n+$/u, '')
 
 beforeAll(() => {
@@ -31,6 +36,12 @@ beforeAll(() => {
   patchLuteTableCodePipes(real.lute)
   patchLuteGapRepair(real.lute)
   lute = real.lute
+  const wrapped = createRealLute('ir')
+  patchLuteTableCodePipes(wrapped.lute)
+  patchLuteGapRepair(wrapped.lute)
+  wrapLiveLineBreakIdentity(wrapped.lute)
+  wrapHtmlInlineFormattingLute(wrapped.lute)
+  production = wrapped.lute
 })
 
 const root = (markdown: string): HTMLElement => {
@@ -561,4 +572,294 @@ describe('spinListItemsHtml (011)', () => {
       ]),
     ).toEqual({ kind: 'refused', reason: 'shape' })
   })
+})
+
+// ---- Task 733 / 012-5: the code-block text path of serializeBlockHtml ----
+
+/** Runs `run` and counts the calls of both Lute entry points on `target` (the Lute spy). */
+function countLute<T>(
+  target: UnitLute,
+  run: () => T,
+): { result: T; calls: number } {
+  const toMarkdown = vi.spyOn(target, 'VditorIRDOM2Md')
+  const toDom = vi.spyOn(target, 'Md2VditorIRDOM')
+  try {
+    const result = run()
+    return {
+      result,
+      calls: toMarkdown.mock.calls.length + toDom.mock.calls.length,
+    }
+  } finally {
+    toMarkdown.mockRestore()
+    toDom.mockRestore()
+  }
+}
+
+/** The single code-block element of the render of `markdown` through the production Lute. */
+const codeBlock = (markdown: string): HTMLElement => {
+  const div = document.createElement('div')
+  div.innerHTML = production.Md2VditorIRDOM(markdown)
+  const block = div.firstElementChild as HTMLElement
+  expect(block.getAttribute('data-type')).toBe('code-block')
+  return block
+}
+
+/** The editable body (`pre.vditor-ir__marker--pre > code`) of a code-block element. */
+const bodyOf = (block: HTMLElement): HTMLElement =>
+  block.querySelector('pre.vditor-ir__marker--pre > code') as HTMLElement
+
+/** Today's path: the whole element through every production serialize wrapper. */
+const todayBytes = (block: HTMLElement): string =>
+  trim(production.VditorIRDOM2Md(block.outerHTML))
+
+const fortyLines = Array.from(
+  { length: 40 },
+  (_, k) => `  const value${k} = compute(${k}) // line ${k}`,
+).join('\n')
+
+// Fenced code blocks the text path takes: the bytes equal today's path and Lute is not called.
+const TEXT_PATH_FIXTURES: Array<[string, string]> = [
+  ['a 40-line block', `\`\`\`ts\n${fortyLines}\n\`\`\``],
+  ['a CRLF source', '```js\r\nconst a = 1\r\n\r\nconst b = 2\r\n```\r\n'],
+  [
+    'body lines that start with the fence characters but cannot close it',
+    '```\n```inner\n~~~\n ``` text\n````js\n```',
+  ],
+  ['a tilde fence with backtick body lines', '~~~~py\n```\n~~~\nbody\n~~~~'],
+  ['an empty body', '```js\n```'],
+  ['a body of blank lines', '```\n\n\n\n```'],
+  [
+    'leading and inner indentation, trailing spaces',
+    '```\n\t\tx\n  y  \nz \n```',
+  ],
+  ['markup-like text and ampersands', '```html\n<b>a</b> && b & c; &amp\n```'],
+  ['wide characters', '```\n日本語 \u{1f600}\n```'],
+  ['an info string with plus signs', '```c++\nint a;\n```'],
+  ['an info string with a hash sign', '```c#\nint b;\n```'],
+  ['a pipe in the body', '```\n| a | b |\n`a|b`\n```'],
+]
+
+describe('serializeBlockHtml code-block text path (012-5)', () => {
+  it.each(TEXT_PATH_FIXTURES)(
+    '%s: the same bytes as every production wrapper, without a Lute call',
+    (_name, markdown) => {
+      const block = codeBlock(markdown)
+      const expected = todayBytes(block)
+      const { result, calls } = countLute(production, () =>
+        serializeBlockHtml(production, [block.outerHTML]),
+      )
+      expect(result).toBe(expected)
+      expect(result).not.toContain('\r')
+      expect(calls).toBe(0)
+    },
+  )
+
+  it("a letter typed in line 20 of a 40-line block: the bytes of today's path, without a Lute call", () => {
+    const block = codeBlock(`\`\`\`ts\n${fortyLines}\n\`\`\``)
+    const body = bodyOf(block)
+    const lines = (body.textContent as string).split('\n')
+    lines[20] = `${lines[20]}x`
+    body.textContent = lines.join('\n')
+    const expected = todayBytes(block)
+    expect(expected.split('\n')[21]).toBe(
+      '  const value20 = compute(20) // line 20x',
+    )
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBe(0)
+  })
+
+  it("a letter typed in a CRLF block keeps the LF bytes of today's path, without a Lute call", () => {
+    const block = codeBlock('```js\r\nconst a = 1\r\nconst b = 2\r\n```\r\n')
+    const body = bodyOf(block)
+    body.textContent = (body.textContent as string).replace('a = 1', 'ab = 1')
+    const expected = todayBytes(block)
+    expect(expected).toBe('```js\nconst ab = 1\nconst b = 2\n```')
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBe(0)
+  })
+
+  it('a letter typed after a body line that starts with the fence characters keeps that line, without a Lute call', () => {
+    const block = codeBlock('```\n```inner\nx\n```')
+    const body = bodyOf(block)
+    body.textContent = '```inner\nxy\n'
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe('```\n```inner\nxy\n```')
+    expect(result).toBe(todayBytes(block))
+    expect(calls).toBe(0)
+  })
+
+  // Shapes whose Lute bytes the text path cannot reproduce exactly keep today's path: the bytes are
+  // Lute's (these cases pass before and after the text path exists).
+  it.each<[string, (block: HTMLElement) => void]>([
+    [
+      'an entity reference in the body text (Lute decodes it)',
+      (block) => {
+        bodyOf(block).textContent = 'a &amp; b &#65;\n'
+      },
+    ],
+    [
+      'a body line that closes the fence',
+      (block) => {
+        bodyOf(block).textContent = 'a\n````\nb\n'
+      },
+    ],
+    [
+      'an indented body line that closes the fence',
+      (block) => {
+        bodyOf(block).textContent = 'a\n   ```  \nb\n'
+      },
+    ],
+    [
+      'a tab at a line end (Lute drops it)',
+      (block) => {
+        bodyOf(block).textContent = 'a\t\nb\n'
+      },
+    ],
+    [
+      'a carriage return in the body text',
+      (block) => {
+        bodyOf(block).textContent = 'a\rb\n'
+      },
+    ],
+    [
+      'a no-break space and a zero-width space in the body text',
+      (block) => {
+        bodyOf(block).textContent = 'a\u00a0b\u200bc\n'
+      },
+    ],
+    [
+      'an element inside the body',
+      (block) => {
+        bodyOf(block).innerHTML = '<span>a</span>b\n'
+      },
+    ],
+  ])("%s: today's path and its bytes", (_name, edit) => {
+    const block = codeBlock('```js\nseed\n```')
+    edit(block)
+    const expected = todayBytes(block)
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBeGreaterThan(0)
+  })
+
+  it("an indented code block (no fence markers) keeps today's path", () => {
+    const div = document.createElement('div')
+    div.innerHTML = production.Md2VditorIRDOM('para\n\n    indented\n')
+    const block = div.children[1] as HTMLElement
+    expect(block.getAttribute('data-type')).toBe('code-block')
+    // The production gap repair renders an indented block with fence markers; the raw Lute shape of
+    // an indented block has none.
+    for (const marker of Array.from(
+      block.querySelectorAll(
+        '[data-type="code-block-open-marker"], [data-type="code-block-info"], [data-type="code-block-close-marker"]',
+      ),
+    ))
+      marker.remove()
+    const expected = todayBytes(block)
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, [block.outerHTML]),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBeGreaterThan(0)
+  })
+
+  it("fence and info-string edits give the bytes of today's path", () => {
+    const edits: Array<(block: HTMLElement) => void> = [
+      (block) => {
+        const info = block.querySelector('[data-type="code-block-info"]')
+        if (info) info.textContent = '\u200bpython'
+      },
+      (block) => {
+        const info = block.querySelector('[data-type="code-block-info"]')
+        if (info) info.textContent = '\u200bjs title="a b"'
+      },
+      (block) => {
+        const open = block.querySelector('[data-type="code-block-open-marker"]')
+        const close = block.querySelector(
+          '[data-type="code-block-close-marker"]',
+        )
+        if (open) open.textContent = '~~~~'
+        if (close) close.textContent = '~~~~'
+      },
+      (block) => {
+        const close = block.querySelector(
+          '[data-type="code-block-close-marker"]',
+        )
+        if (close) close.textContent = '`````'
+      },
+    ]
+    for (const [k, edit] of edits.entries()) {
+      const block = codeBlock('```js\nseed\n```')
+      edit(block)
+      expect(
+        serializeBlockHtml(production, [block.outerHTML]),
+        `edit ${k}`,
+      ).toBe(todayBytes(block))
+    }
+  })
+
+  it("several members keep today's path", () => {
+    const div = document.createElement('div')
+    div.innerHTML = production.Md2VditorIRDOM('```\na\n```\n\n```\nb\n```')
+    const html = Array.from(div.children).map((el) => el.outerHTML)
+    expect(html).toHaveLength(2)
+    const expected = trim(production.VditorIRDOM2Md(html.join('')))
+    const { result, calls } = countLute(production, () =>
+      serializeBlockHtml(production, html),
+    )
+    expect(result).toBe(expected)
+    expect(calls).toBeGreaterThan(0)
+  })
+})
+
+describe('serializeBlockHtml text path scope (012-5 R1)', () => {
+  // The documents of the link-tooltip and persistent-wiki-key specs: no fenced code block, so every
+  // block keeps the Lute path and its bytes stay the same as before the text path existed.
+  const documents = [
+    [
+      '# Link tooltips',
+      'Plain paragraph.',
+      'Owner: [point 14](scoping-proposal.md#L674) end.',
+      'Titled: [L-titled](b.md "Link Title") end.',
+      'Ref: [L-ref][r1] end.',
+      'Auto: <https://example.com/L-auto> end.',
+      'Bare: https://example.com/L-bare end.',
+      'Wiki: [[Page#Heading]] end.',
+      'Image: ![Alt text](pic.svg "Image Title") end.',
+      'Alt only: ![Only alt](alt.svg) end.',
+      'Same: ![Same](same.svg "Same") end.',
+      'Linked: [![Inner alt](inner.svg) L-caption](https://example.com/outer) end.',
+      '[r1]: https://example.com/ref',
+    ].join('\n\n'),
+    '# Persistent wiki keys\n\nPages: [[home]] [[kept]] [[no-such-page]]\n\nTail paragraph.\n',
+  ]
+
+  it.each(documents.map((markdown, k) => [k, markdown]))(
+    'document %i: every block takes one Lute call and keeps its bytes',
+    (_k, markdown) => {
+      const div = document.createElement('div')
+      div.innerHTML = production.Md2VditorIRDOM(markdown)
+      const blocks = Array.from(div.children) as HTMLElement[]
+      expect(blocks.length).toBeGreaterThan(2)
+      for (const block of blocks) {
+        expect(block.getAttribute('data-type')).not.toBe('code-block')
+        const expected = trim(production.VditorIRDOM2Md(block.outerHTML))
+        const { result, calls } = countLute(production, () =>
+          serializeBlockHtml(production, [block.outerHTML]),
+        )
+        expect(result).toBe(expected)
+        expect(calls).toBe(1)
+      }
+    },
+  )
 })
