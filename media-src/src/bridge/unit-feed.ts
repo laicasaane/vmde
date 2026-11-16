@@ -70,7 +70,7 @@ function feedOf(
   }
 }
 
-/** The end-to-end counters of the feed (`window.__vmdeUnitFeedStats`): causes, whole changes, kinds of the last change only. */
+/** The end-to-end counters of the feed (`window.__vmdeUnitFeedStats`): causes, whole changes, kinds and scope count of the last change only. */
 interface UnitFeedStats {
   mutation: number
   sync: number
@@ -78,6 +78,8 @@ interface UnitFeedStats {
   rebind: number
   whole: number
   lastKinds: string[]
+  /** Task 733 / 012-12: how many scope elements the last change named (a count, never an element). */
+  lastScopes: number
 }
 
 /** Counts every change of the window's feed; only end-to-end runs call this. Returns the removal. */
@@ -90,6 +92,7 @@ export function installUnitFeedStats(win: Window): () => void {
     rebind: 0,
     whole: 0,
     lastKinds: [],
+    lastScopes: 0,
   }
   slot.__vmdeUnitFeedStats = stats
   const off = onUnitFeed(win, (change: UnitsChange) => {
@@ -97,6 +100,7 @@ export function installUnitFeedStats(win: Window): () => void {
     if (change.whole) stats.whole += 1
     // Kinds only: no element, text or offset is kept.
     stats.lastKinds = change.changed.map((unit) => unit.kind)
+    stats.lastScopes = change.scopes?.length ?? 0
   })
   return () => {
     off()

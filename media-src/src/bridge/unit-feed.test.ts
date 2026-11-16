@@ -125,7 +125,9 @@ describe('installUnitFeedStats', () => {
       whole: false,
       changed: [{ el: cell, members: [cell], kind: 'cell', top: cell }],
       structural: [],
+      scopes: [cell],
     })
+    // Task 733 / 012-12: the scope count of the last change, so a spec can tell a scoped change apart.
     expect(w.__vmdeUnitFeedStats).toEqual({
       mutation: 1,
       sync: 0,
@@ -133,6 +135,7 @@ describe('installUnitFeedStats', () => {
       rebind: 0,
       whole: 1,
       lastKinds: ['cell'],
+      lastScopes: 1,
     })
     stop()
     expect(w.__vmdeUnitFeedStats).toBeUndefined()

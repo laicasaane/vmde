@@ -29,6 +29,7 @@ interface FeedStats {
   rebind: number
   whole: number
   lastKinds: string[]
+  lastScopes: number
 }
 
 const readStats = (frame: Frame): Promise<FeedStats> =>
@@ -120,7 +121,9 @@ test.describe('unit feed', () => {
     expect(after.whole, 'no whole change for a cell edit').toBe(before.whole)
   })
 
-  test('Enter in a paragraph counts a whole change', async ({
+  // Task 733 / 012-12: since 012-1 (Q-92) a paragraph Enter is a block spin, reported as the spun blocks
+  // (in `structural`, and since 012-12 in `scopes`), not as a whole change.
+  test('Enter in a paragraph counts a scoped change, not a whole one', async ({
     workbox,
     evaluateInVSCode,
   }) => {
@@ -136,11 +139,21 @@ test.describe('unit feed', () => {
     const before = await readStats(frame)
     await workbox.keyboard.press('Enter')
     await expect
-      .poll(async () => (await readStats(frame)).whole, {
-        timeout: 30_000,
-        message: 'a whole change was counted',
-      })
-      .toBeGreaterThan(before.whole)
+      .poll(
+        async () => {
+          const stats = await readStats(frame)
+          return stats.mutation + stats.sync > before.mutation + before.sync
+        },
+        { timeout: 30_000, message: 'a change was counted for the Enter' },
+      )
+      .toBe(true)
+    const after = await readStats(frame)
+    expect(after.whole, 'no whole change for a paragraph Enter').toBe(
+      before.whole,
+    )
+    expect(after.lastScopes, 'the spun blocks are the scopes').toBeGreaterThan(
+      0,
+    )
   })
 
   test('typing in Source mode counts no change', async ({
