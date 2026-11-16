@@ -188,7 +188,7 @@ export function unitModeOf(
 
 /** Task 733 / 017 (D-13): link reference definitions, footnotes and a table of contents keep the IR model
  *  live as units of their own. false restores today's path (the model is off for such documents). */
-export const DEFINITION_UNITS: boolean = true
+export const DEFINITION_UNITS: boolean = false
 
 /** The model-only kinds of task 017 (shared rules 3.3). */
 export type DefinitionKind = Extract<

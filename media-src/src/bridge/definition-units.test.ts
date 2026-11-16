@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   type MovableBlock,
   scanMovableBlocks,
@@ -12,6 +12,13 @@ import { createRealLute } from '../testing/real-lute'
 import { createTextModel } from './text-model'
 import { createUnitDom } from './unit-dom'
 import type { UnitLute } from './unit-lute'
+
+// Task 733 / 017 (Q-130): DEFINITION_UNITS ships false until the definition path is proven in VS Code;
+// these tests prove that path, so they read the constant as true (the guard-off cases pass `false`).
+vi.mock('../util/unit-changes', async (original) => ({
+  ...(await original<typeof import('../util/unit-changes')>()),
+  DEFINITION_UNITS: true,
+}))
 
 // Task 733 / 017-T1 (task 017 sections 6.2, 6.8, 6.12): the model-only kinds `definition`, `footnote`
 // and `toc`. The first block pins the vendored Lute facts the design rests on (they pass today). The

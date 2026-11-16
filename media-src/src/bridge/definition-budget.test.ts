@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   type MovableBlock,
   scanMovableBlocks,
@@ -18,6 +18,13 @@ import { createModelSession, type ModelSession } from './model-session'
 import { createTextModel } from './text-model'
 import { createUnitDom } from './unit-dom'
 import type { UnitLute } from './unit-lute'
+
+// Task 733 / 017 (Q-130): DEFINITION_UNITS ships false until the definition path is proven in VS Code;
+// these tests prove that path, so they read the constant as true (the guard-off cases pass `false`).
+vi.mock('../util/unit-changes', async (original) => ({
+  ...(await original<typeof import('../util/unit-changes')>()),
+  DEFINITION_UNITS: true,
+}))
 
 // Task 733 / 017-T1 (task 017 section 6.8): the bridge rows of the counted budget tests (B-03, B-05,
 // B-09, B-16, B-17 of the D-13 design section 5.2) repeated on the definitions fixture with the real

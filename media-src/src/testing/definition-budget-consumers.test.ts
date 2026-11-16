@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { definitionHeavyMarkdown } from '../../../test/vscode-e2e/definition-heavy-markdown'
@@ -16,6 +16,13 @@ import { applyBareUrlsWithin } from '../links/bare-url-decorate'
 import type { LiveUnit, UnitFeed, UnitsChange } from '../util/unit-changes'
 import { countBudget, countedLute, type Factor } from './budget-harness'
 import { createRealLute } from './real-lute'
+
+// Task 733 / 017 (Q-130): DEFINITION_UNITS ships false until the definition path is proven in VS Code;
+// these tests prove that path, so they read the constant as true (the guard-off cases pass `false`).
+vi.mock('../util/unit-changes', async (original) => ({
+  ...(await original<typeof import('../util/unit-changes')>()),
+  DEFINITION_UNITS: true,
+}))
 
 // Task 733 / 017-T1 (task 017 sections 6.6, 6.8, 6.12 item 3): the consumer rows of the counted budget
 // tests (B-04, B-06, B-10, B-11, B-13, B-14) repeated on the definitions fixture. Each row drives the
