@@ -364,7 +364,8 @@ test.describe('block index on model units', () => {
       evaluateInVSCode,
       baseDir,
       'block-index-off.md',
-      '# Title\n\nalpha [a]\n\n[a]: b.md\n\nomega\n',
+      // Task 733 / 017: a definition keeps the model live; a multi-paragraph footnote is still declined.
+      '# Title\n\nalpha [^a]\n\n[^a]: First.\n\n    Second.\n\nomega\n',
     )
     await expect
       .poll(async () => (await readStats(frame))?.state, {

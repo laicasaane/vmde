@@ -6019,6 +6019,31 @@ describe('patchIrTrailingBlockLookups (task 733 / 009 — trailing block lookups
       expect(types).toEqual(['p', 'link-ref-defs-block', 'p'])
     })
 
+    // Run 1 R-3 (D-13 stage F): a paragraph the user turns into a definition spins to a definitions block.
+    // The spun HTML then holds one, so the trailing-lookup patch's `vmdeSpunTrailing` used to send the
+    // after-spin merge to the root query, which moved the typed definition to the end. With the context
+    // path taken, the definition stays where it was typed.
+    it('live, a definition typed into a paragraph stays where it was typed', () => {
+      const typedDef =
+        '<div data-block="0" data-type="link-ref-defs-block">[n]: https://n.example</div>'
+      const { lookups, types } = run({
+        html: P('a') + P('[n]: https://n.example') + P('b'),
+        caretBlock: 1,
+        hook: () => NONE,
+        spun: (html) =>
+          html.replace(
+            /<p data-block="0">(?:<wbr>)?\[n\]: https:\/\/n\.example<\/p>/u,
+            typedDef,
+          ),
+        win: {
+          __vmdeDefinitionContext: () => '',
+          __vmdeStripDefinitionContext: (html: string) => html,
+        },
+      })
+      expect(types).toEqual(['p', 'link-ref-defs-block', 'p'])
+      expect(lookups).toEqual([])
+    })
+
     it('with the context hook answering undefined the upstream path runs (definitions moved last)', () => {
       const { lookups, types } = run({
         html: P('a') + DEFS + P('b'),

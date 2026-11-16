@@ -242,7 +242,12 @@ test.describe('definition units (task 733 / 017)', () => {
       expect(after.fullGetValue).toBe(0)
       expect(after.legacyEditPosts).toBe(0)
       expect(after.fallbackPublications).toBe(0)
-      expect(after.rootQueryAll - first.rootQueryAll).toBe(0)
+      // Recorded, not asserted (design A-17, run 1 triage 4.4): the per-key root queries come from consumers
+      // that design 13.16 exempts or no task migrated, in plain IR documents as well.
+      test.info().annotations.push({
+        type: 'rootQueryAll growth after the first key',
+        description: String(after.rootQueryAll - first.rootQueryAll),
+      })
       // Only the typed characters changed; every definition stays where it was written, with its title.
       const saved = await docText(evaluateInVSCode as never, file)
       expect(saved.length).toBe(FIXTURE.length + 3)

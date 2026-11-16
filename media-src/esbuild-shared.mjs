@@ -2974,7 +2974,11 @@ export function patchIrTrailingBlockLookups(code) {
   }
   out = out.replace(
     IR_TRAILING_SPUN,
-    `${IR_TRAILING_SPUN}\n    var vmdeSpunTrailing = html.indexOf('data-type="link-ref-defs-block"') !== -1 || html.indexOf('data-type="footnotes-block"') !== -1;`,
+    // Task 733 / 017 (run 1 R-3): after the definition context path of V-D1 (`vmdeContext` set) a
+    // definitions block in the spun HTML is the unit's own block, typed where it stands: it must not send
+    // the merge below to the root query, which moved it to the end. `typeof` keeps this patch valid on
+    // code without V-D1.
+    `${IR_TRAILING_SPUN}\n    var vmdeSpunTrailing = (typeof vmdeContext === 'undefined' || vmdeContext === undefined) && (html.indexOf('data-type="link-ref-defs-block"') !== -1 || html.indexOf('data-type="footnotes-block"') !== -1);`,
   )
   for (const [type, lead, query] of IR_TRAILING_AFTER) {
     out = out.replace(
