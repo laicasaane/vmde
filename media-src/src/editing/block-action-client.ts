@@ -286,7 +286,10 @@ function planAndRequest(
   // Task 733 / 013 (Q-116): the model serves IR and, with WYSIWYG units, WYSIWYG.
   const model =
     unitModeOf(mode) !== undefined ? deps?.modelUnits?.() : undefined
-  const modelRoute = model?.exact === before
+  // Run 1 triage 2.1 and 4.8: after a mode switch the session can still serve the units of the hidden
+  // mode's DOM; those never plan an action in the visible editor, which takes today's route instead.
+  const modelRoute =
+    model?.exact === before && editor.contains(model.units[0]?.element ?? null)
   const renderedBefore = modelRoute ? before : outer.getValue()
   const units = modelRoute
     ? model?.units

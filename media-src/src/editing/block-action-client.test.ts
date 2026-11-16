@@ -698,3 +698,19 @@ describe('013 WYSIWYG block action on the model units', () => {
     await expect(done).resolves.toBe(false)
   })
 })
+
+// Run 1 triage 4.8: after a switch the session served the hidden mode's units, so the visible editor
+// planned and applied on another DOM. Units outside the active editor take today's route.
+it('plans on resolved units, not on model units of a hidden mode DOM', async () => {
+  const hidden = document.createElement('div')
+  document.body.append(hidden)
+  const units = largeModelUnits()
+  for (const unit of units) hidden.append(unit.element)
+  configureLarge(() => ({ exact: LARGE, units }))
+  const { done, whole } = await requestLarge()
+  expect(planning.scopes).toEqual([undefined])
+  expect(planning.plans).toEqual([whole])
+  expect(state.unitCalls).toEqual([LARGE])
+  cancelPendingBlockActions()
+  await expect(done).resolves.toBe(false)
+})

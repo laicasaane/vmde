@@ -1155,3 +1155,37 @@ describe('Task 733 / 012-17 scoped plans equal whole-scan plans on small fixture
       ).toEqual(planBlockAction(markdown, action))
   })
 })
+
+// Run 1 triage 4.8: the edge document of `block-handle.spec.ts` (Alt+Down at a table's last row, Alt+Up
+// at a code block's first line). The windowed plan equals the whole scan: one move, nothing inserted.
+describe('Task 733 / 012-17 windowed plan at table and fence edges', () => {
+  const TABLE = '| A | B |\n| --- | --- |\n| a | b |\n'
+  const FENCE = '```ts\nconst x = 1\n```\n'
+  const EDGES = `alpha\n\n${TABLE}\n${FENCE}\nomega\n`
+  const SWAPPED = `alpha\n\n${FENCE}\n${TABLE}\nomega\n`
+
+  it.each<[string, string, string, 'before' | 'after']>([
+    ['Alt+Down on the table', EDGES, '| A', 'after'],
+    ['Alt+Up on the code block', EDGES, '```', 'before'],
+  ])('%s moves once', (_name, markdown, needle, placement) => {
+    const blocks = scanMovableBlocks(markdown)
+    const source = blocks.findIndex(
+      (block) => block.start === startOf(markdown, needle),
+    )
+    const target = blocks[source + (placement === 'after' ? 1 : -1)]
+    const action: BlockActionIntent = {
+      kind: 'move',
+      sourceStart: blocks[source].start,
+      targetStart: target.start,
+      placement,
+    }
+    const scanned = { before: 0, after: 0 }
+    const plan = planBlockAction(markdown, action, {
+      units: unitsOf(blocks),
+      scanned,
+    })
+    expect(plan).toEqual(planBlockAction(markdown, action))
+    expect(plan).toMatchObject({ status: 'ok', markdown: SWAPPED })
+    expect(scanned.before).toBe(blocks.length)
+  })
+})
