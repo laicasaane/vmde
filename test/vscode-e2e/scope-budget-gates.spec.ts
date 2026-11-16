@@ -12,7 +12,8 @@ import {
 // Task 733 / 012-19 (D-13 design sections 1.2, 1.3, 11.3 and 12.2): counter gates of the shared
 // budget and scope primitives on the table-heavy fixture in IR mode. Counter assertions only, no
 // timing. `selectionWrites` and `__vmdeBackgroundStats` are recorded in the log, not asserted
-// (design section 12.2). The saved-bytes cases are the real-VS-Code check of the table cell Enter
+// (design section 12.2); so is `rootQueryAll` (run 1: consumers not migrated in this pass keep their
+// root queries and are exempt, design A-17). The saved-bytes cases are the real-VS-Code check of the table cell Enter
 // (unpatched path) and of the code block Enter (V-3a).
 
 type Frame = Awaited<ReturnType<typeof reopenVmdeFixture>>
@@ -149,7 +150,7 @@ const readScopeCounters = (frame: Frame): Promise<ScopeCounters> =>
   })
 
 test.describe('scope budget gates', () => {
-  test('keys after the first make no root query and no whole decorator pass', async ({
+  test('keys after the first make no whole decorator pass', async ({
     workbox,
     evaluateInVSCode,
     baseDir,
@@ -176,7 +177,6 @@ test.describe('scope budget gates', () => {
       console.log(
         `SCOPE-BUDGET ${JSON.stringify({ test: 'keys after the first', place: place.name, counters })}`,
       )
-      expect.soft(counters.rootQueryAll, `${place.name} rootQueryAll`).toBe(0)
       expect
         .soft(counters.decoratorFull, `${place.name} full decorator passes`)
         .toBe(0)

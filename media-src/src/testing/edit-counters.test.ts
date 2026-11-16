@@ -287,8 +287,9 @@ describe('task 001 counters', () => {
 })
 
 // Task 733 / 012-19 (D-13 design section 1.3, kept by section 12.2 as a recorded end-to-end counter):
-// `selectionWrites` counts the Selection writes made while the selection is in a mode root, or that
-// put it there (so a `removeAllRanges` plus `addRange` pair counts 2). Counts only, no text (SR-5).
+// `selectionWrites` counts the Selection writes into a mode root (so a `removeAllRanges` plus
+// `addRange` pair counts 2). Counts only, no text (SR-5). Run 1 (P-1): the wrapper decides from the
+// write's node argument, else from the focused element, and reads no Selection property.
 describe('selectionWrites (012-19)', () => {
   const selectionWrites = () =>
     (counters() as EditCounters & { selectionWrites?: number }).selectionWrites
@@ -296,6 +297,9 @@ describe('selectionWrites (012-19)', () => {
   it('counts every Selection write method inside a mode root', () => {
     const { root, vditor } = makeFixture()
     installEditCounters(window, vditor as any)
+    // The edited mode root holds focus; the writes without a node argument are decided from it.
+    root.tabIndex = -1
+    root.focus()
     const paragraph = root.querySelector('p') as HTMLElement
     const text = paragraph.firstChild as Text
     const selection = window.getSelection() as Selection
@@ -337,6 +341,37 @@ describe('selectionWrites (012-19)', () => {
     selection.collapse(text, 3)
     selection.collapseToEnd()
     expect(selectionWrites()).toBe(0)
+  })
+
+  it('reads no Selection property around a write (run 1, P-1)', () => {
+    const { root, vditor } = makeFixture()
+    installEditCounters(window, vditor as any)
+    root.tabIndex = -1
+    root.focus()
+    const paragraph = root.querySelector('p') as HTMLElement
+    const text = paragraph.firstChild as Text
+    const selection = window.getSelection() as Selection
+    selection.setBaseAndExtent(text, 0, text, 0)
+    counters().reset(10)
+    const reads = [
+      vi.spyOn(Selection.prototype, 'anchorNode', 'get'),
+      vi.spyOn(Selection.prototype, 'focusNode', 'get'),
+      vi.spyOn(Selection.prototype, 'rangeCount', 'get'),
+      vi.spyOn(Selection.prototype, 'getRangeAt'),
+    ]
+    const range = document.createRange()
+    range.setStart(text, 2)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+    selection.setBaseAndExtent(text, 0, text, 1)
+    selection.collapse(text, 1)
+    selection.collapseToEnd()
+    selection.selectAllChildren(paragraph)
+    const readCounts = reads.map((spy) => spy.mock.calls.length)
+    for (const spy of reads) spy.mockRestore()
+    expect(readCounts).toEqual([0, 0, 0, 0])
+    expect(selectionWrites()).toBe(6)
   })
 
   it('installs no second Selection wrapper on a second call', () => {

@@ -22,7 +22,7 @@ export interface EditCounters {
   /** Task 733 / 015: the longest `SpinVditorSVDOM` input since the reset. */
   luteSvSpinChars: number
   fallbackPublications: number
-  /** Task 733 / 012-19: Selection writes made while the selection is in a mode root, or that put it there. */
+  /** Task 733 / 012-19: Selection writes into a mode root (by the write's node argument, else the focused element). */
   selectionWrites: number
   reset(markdownLength: number): void
 }
@@ -132,17 +132,31 @@ function rootHtmlLengthOf(
 
 const winOf = (win: Window) => win as unknown as typeof window
 
-/** True when the selection's anchor is a mode root or sits inside one. */
-function selectionInModeRoot(selection: Selection): boolean {
-  const anchor = selection.anchorNode
-  if (!anchor) return false
-  return (
-    (anchor instanceof Element && isModeRoot(anchor)) ||
-    isInsideModeRoot(anchor)
-  )
+/** True when `node` is a mode root or sits inside one. */
+function inModeRoot(node: Node | null | undefined): boolean {
+  if (!node) return false
+  return (node instanceof Element && isModeRoot(node)) || isInsideModeRoot(node)
 }
 
-/** Count the Selection writes of a mode root: in one before the call, or put there by it. */
+/**
+ * The node a Selection write targets, read from its arguments: the range start for `addRange`, the
+ * first node argument for the others that take one. Undefined for the writes without a node
+ * (`removeAllRanges`, `collapseToStart`, `collapseToEnd`, or `collapse(null)`).
+ */
+function writeTarget(name: string, args: any[]): Node | undefined {
+  const first = args[0]
+  if (name === 'addRange')
+    return (first as Range | undefined)?.startContainer ?? undefined
+  return first instanceof Node ? first : undefined
+}
+
+/**
+ * Count the Selection writes of a mode root. Task 733 run 1 (P-1): reading `anchorNode` around the
+ * write made Chromium update the selection after the operation's DOM write, a forced layout per
+ * write in every probe row. The wrapper therefore reads no Selection property: it decides from the
+ * write's own node argument, or, for a write without one, from the focused element (the mode root
+ * holds focus while it is edited).
+ */
 function installSelectionWrappers(win: Window): void {
   const proto = winOf(win).Selection?.prototype as unknown as
     | Record<string, unknown>
@@ -152,10 +166,9 @@ function installSelectionWrappers(win: Window): void {
     const original = proto[name] as AnyFn | undefined
     if (typeof original !== 'function') continue
     proto[name] = function (this: Selection, ...args: any[]) {
-      const before = selectionInModeRoot(this)
       const result = original.apply(this, args)
-      if (before || selectionInModeRoot(this))
-        win.__vmdeEditCounters!.selectionWrites++
+      const node = writeTarget(name, args) ?? win.document.activeElement
+      if (inModeRoot(node)) win.__vmdeEditCounters!.selectionWrites++
       return result
     }
   }
