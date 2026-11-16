@@ -1070,6 +1070,40 @@ describe('fixResponsiveTables on the unit feed (Task 733 007)', () => {
   )
 })
 
+/** Task 733 / 027: the rect of the document scroller, `height` px high, or undefined for another element. */
+function documentScrollerRect(
+  element: Element,
+  height: number,
+): DOMRect | undefined {
+  if (
+    element !== document.documentElement &&
+    element !== document.scrollingElement
+  )
+    return undefined
+  return { top: 0, bottom: height, height, width: 416 } as DOMRect
+}
+
+/** Task 733 / 027: a box `height` px high whose top is at `top` px, 400 px wide. */
+function rowRect(top: number, height: number): DOMRect {
+  return { top, bottom: top + height, height, width: 400 } as DOMRect
+}
+
+/**
+ * Task 733 / 027: a cell laid out in the measurement host, 7 px per character plus 26 px of padding
+ * and border: the whole text at max-content, the longest word at min-content.
+ */
+function hostCellRect(
+  cell: HTMLTableCellElement,
+  layout: string | null,
+): DOMRect {
+  const text = (cell.textContent ?? '').trim()
+  if (layout === 'max') return { width: 7 * text.length + 26 } as DOMRect
+  let longest = 0
+  for (const word of text.split(/\s+/u))
+    longest = Math.max(longest, word.length)
+  return { width: 7 * longest + 26 } as DOMRect
+}
+
 // Measuring every cell of 2,000 rows alone takes seconds in jsdom (no real layout to amortize).
 describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
   timeout: 30_000,
@@ -1089,6 +1123,15 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
   let cellMeasures: number
   /** The largest row count of a table laid out in the measurement host. */
   let largestLayout: number
+  /** Task 733 / 027: the text of every cell laid out alone (one-row shell) in the measurement host. */
+  let aloneTexts: Set<string>
+  /** Task 733 / 027: the stubbed layout. Rows are `ROW_PX` high; `viewTop` is the `table.rows` index at the top. */
+  const ROW_PX = 24
+  const VIEWPORT_PX = 600
+  let viewTop: number
+  let viewport: number
+  /** Sends one IntersectionObserver entry for `target` to the observer of the surface. */
+  let intersect: (target: Element, isIntersecting: boolean) => void
 
   const textWidth = (text: string, layout: string | null) =>
     /^w{20,}$/.test(text) ? (layout === 'max' ? 300 : 60) : 50
@@ -1101,6 +1144,7 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
   function hostCellWidth(cell: HTMLTableCellElement, layout: string | null) {
     const owner = cell.closest('table') as HTMLTableElement
     largestLayout = Math.max(largestLayout, owner.rows.length)
+    if (owner.rows.length === 1) aloneTexts.add(cell.textContent ?? '')
     let width = 0
     for (const row of Array.from(owner.rows)) {
       const peer = row.cells[cell.cellIndex]
@@ -1164,10 +1208,54 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
     await vi.advanceTimersByTimeAsync(5000)
   }
 
+  /** The document scroller and the viewport are `height` px high (`innerHeight` and the root rect). */
+  function setViewport(height: number): void {
+    viewport = height
+    vi.stubGlobal('innerHeight', height)
+  }
+
+  /**
+   * Task 733 / 027: the view moves so `row` (a `table.rows` index) is at its top, and the document
+   * scroller reports a scroll (the document scroller's scroll events fire at the `Document`).
+   */
+  function scrollToRow(row: number): void {
+    viewTop = row
+    document.dispatchEvent(new Event('scroll'))
+  }
+
+  /** The text of the cell in `WIDE_ROW`. */
+  const WIDE_TEXT = 'w'.repeat(80)
+
+  /**
+   * Task 733 / 027: the document scroller spans the viewport; the rows of the live table sit `ROW_PX`
+   * apart from the row at the top of the view. Undefined for every other element.
+   */
+  function viewRect(element: Element): DOMRect | undefined {
+    const scroller = documentScrollerRect(element, viewport)
+    if (scroller) return scroller
+    if (
+      element instanceof HTMLTableRowElement &&
+      element.closest('table') === big
+    )
+      return rowRect(ROW_PX * (element.rowIndex - viewTop), ROW_PX)
+    if (element === big)
+      return rowRect(-ROW_PX * viewTop, ROW_PX * big.rows.length)
+    return undefined
+  }
+
   beforeEach(() => {
     vi.useFakeTimers()
+    viewTop = 0
+    setViewport(VIEWPORT_PX)
+    aloneTexts = new Set()
     class FakeIntersectionObserver {
-      constructor(private readonly cb: IntersectionObserverCallback) {}
+      constructor(private readonly cb: IntersectionObserverCallback) {
+        intersect = (target, isIntersecting) =>
+          this.cb(
+            [{ target, isIntersecting } as IntersectionObserverEntry],
+            this as unknown as IntersectionObserver,
+          )
+      }
       observe(target: Element) {
         this.cb(
           [{ target, isIntersecting: true } as IntersectionObserverEntry],
@@ -1201,7 +1289,10 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
           return {
             width: hostCellWidth(this, host.getAttribute('data-vmde-measure')),
           } as DOMRect
-        return { width: this.tagName === 'TABLE' ? 400 : 50 } as DOMRect
+        return (
+          viewRect(this) ??
+          ({ width: this.tagName === 'TABLE' ? 400 : 50 } as DOMRect)
+        )
       },
     )
     tableClones = 0
@@ -1227,19 +1318,31 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
     document.head.replaceChildren()
   })
 
-  it('first measures a bounded row count, clones the table at most once, and still finds the widest row', async () => {
+  it('first measures a bounded row count, clones the table at most once, and finds the widest row after a scroll to it', async () => {
     fixResponsiveTables()
     await settle()
 
     expect(largestLayout).toBeGreaterThan(0)
     expect(largestLayout).toBeLessThanOrEqual(CLONE_ROW_BOUND)
     expect(tableClones).toBeLessThanOrEqual(1)
-    // The widest cell sits far below the measured rows; the remaining rows are measured later.
+    // Task 733 / 027 (option (c)): the widest cell sits far below the view and its window, so it is
+    // not measured and does not widen its column before a scroll.
+    expect(aloneTexts.has(WIDE_TEXT)).toBe(false)
+    expect(storedWidth(1)).toBeLessThanOrEqual(storedWidth(2))
+
+    scrollToRow(WIDE_ROW)
+    await settle()
+
+    expect(aloneTexts.has(WIDE_TEXT)).toBe(true)
     expect(storedWidth(1)).toBeGreaterThan(storedWidth(2))
+    expect(tableClones).toBeLessThanOrEqual(1)
   })
 
   it('measures at most one cell when the cell that held the column maximum shrinks', async () => {
     fixResponsiveTables()
+    await settle()
+    // Task 733 / 027: the holder is inside the window, so the fill measured it.
+    scrollToRow(WIDE_ROW)
     await settle()
     const wide = storedWidth(1)
     cellMeasures = 0
@@ -1261,8 +1364,17 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
 
   /** The idle slice budget of the fill (`FILL_SLICE_MS`). */
   const SLICE_MS = 8
-  /** Store cells of the table: every row (head included) times two columns. */
-  const STORE_CELLS = (BODY_ROWS + 1) * 2
+  /**
+   * Task 733 / 027: the cells the fill measures with the view at the top. The planned rows are the
+   * header and the first 32 body rows (the sample) and the window: the rows whose boxes meet one
+   * viewport above and below the view, [-600, 1200) px, which are rows 0 to 49 of `table.rows`.
+   * Two columns.
+   */
+  const PLANNED_CELLS = ((2 * VIEWPORT_PX) / ROW_PX) * 2
+  /** One row that only touches a window edge may be planned too. */
+  const EDGE_CELLS = 2
+  /** The sample alone: the header and the first 32 body rows, two columns. */
+  const SAMPLE_CELLS = (1 + 32) * 2
 
   /** Cells mounted alone in each idle slice, in slice order. */
   let sliceMounts: number[]
@@ -1320,9 +1432,45 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
 
     expect(sliceMounts.length).toBeGreaterThan(1)
     expect(Math.max(...sliceMounts)).toBeLessThanOrEqual(SLICE_MS)
-    // The cells a slice left were measured by later slices, each once.
-    expect(cellCopies.size).toBe(STORE_CELLS)
+    // The cells a slice left were measured by later slices, each once; only the planned rows.
+    expect(cellCopies.size).toBeGreaterThanOrEqual(PLANNED_CELLS)
+    expect(cellCopies.size).toBeLessThanOrEqual(PLANNED_CELLS + EDGE_CELLS)
     expect(repeatedCells()).toBe(0)
+
+    // Task 733 / 027: the widest row is measured once a scroll plans it.
+    scrollToRow(WIDE_ROW)
+    await settle()
+
+    expect(Math.max(...sliceMounts)).toBeLessThanOrEqual(SLICE_MS)
+    expect(repeatedCells()).toBe(0)
+    expect(storedWidth(1)).toBeGreaterThan(storedWidth(2))
+  })
+
+  it('measures only the sample rows when the scroller has no height (027)', async () => {
+    setViewport(0)
+    useCostedSlices()
+    fixResponsiveTables()
+    await settle()
+
+    expect(cellCopies.size).toBeGreaterThan(0)
+    expect(cellCopies.size).toBeLessThanOrEqual(SAMPLE_CELLS)
+    expect(repeatedCells()).toBe(0)
+  })
+
+  it('measures the window of a table that becomes near without a scroll event (027-A2)', async () => {
+    fixResponsiveTables()
+    await settle()
+    expect(storedWidth(1)).toBeLessThanOrEqual(storedWidth(2))
+
+    // The table leaves the near margin, the view moves with no scroll event (a fold, a mode switch
+    // or an edit above it), and the table becomes near again at the widest row.
+    intersect(big, false)
+    await settle()
+    viewTop = WIDE_ROW
+    intersect(big, true)
+    await settle()
+
+    expect(aloneTexts.has(WIDE_TEXT)).toBe(true)
     expect(storedWidth(1)).toBeGreaterThan(storedWidth(2))
   })
 
@@ -1374,10 +1522,11 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
     async (form) => {
       useCostedSlices()
       fixResponsiveTables()
-      for (let step = 0; step < 1000 && cellCopies.size < 200; step++)
+      // Task 733 / 027: stop in the middle of the planned cells.
+      for (let step = 0; step < 1000 && cellCopies.size < 40; step++)
         await vi.advanceTimersByTimeAsync(1)
       expect(cellCopies.size).toBeGreaterThan(0)
-      expect(cellCopies.size).toBeLessThan(STORE_CELLS)
+      expect(cellCopies.size).toBeLessThan(PLANNED_CELLS)
       const clonesBefore = tableClones
       const para = document.getElementById('para') as HTMLElement
 
@@ -1395,11 +1544,143 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
       await settle()
 
       expect(tableClones).toBe(clonesBefore)
-      expect(cellCopies.size).toBe(STORE_CELLS)
+      expect(cellCopies.size).toBeGreaterThanOrEqual(PLANNED_CELLS)
+      expect(cellCopies.size).toBeLessThanOrEqual(PLANNED_CELLS + EDGE_CELLS)
       expect(repeatedCells()).toBe(0)
     },
   )
 })
+
+// Task 733 / 027 (option (c), Q-133, Q-145): the idle fill measures the planned rows of a near table
+// only: the header and the first 32 body rows, the known holders, and the rows within one scroller
+// height above and below the view. The count of cells measured alone is bounded by the window, not by
+// the table, so it is the same at factors 1, 4 and 16.
+/** Cells measured alone per factor, compared across the factors of the block below. */
+const fillWindowCells = new Map<Factor, number>()
+/** A separate fixture root for this block (the fixture cache is keyed by the prepare callback). */
+const fillWindowRoot = (_root: HTMLElement): void => {
+  // No preparation: the key alone keeps this root apart from the B-08 roots.
+}
+
+describe.each([1, 4, 16] as const)(
+  'fill window (027, option (c)) at factor %i',
+  { timeout: 60_000 },
+  (factor: Factor) => {
+    /** Stubbed layout: rows are `ROW_PX` high from the top of the view; the viewport is `VIEWPORT_PX` high. */
+    const ROW_PX = 24
+    const VIEWPORT_PX = 600
+    /** The first measurement's sample: the header and `MEASURE_CLONE_ROWS` (32) body rows. */
+    const SAMPLE_ROWS = 1 + 32
+    /** Rows whose boxes meet one viewport above and below the view, plus one row at an edge. */
+    const WINDOW_ROWS = (3 * VIEWPORT_PX) / ROW_PX + 1
+
+    let root: HTMLElement
+    /** Per live table, the live cells the fill mounted alone (`mountCellMeasurer` copies them). */
+    let measured: Map<HTMLTableElement, Set<Element>>
+
+    beforeEach(() => {
+      vi.useFakeTimers()
+      root = irFixture(tableHeavyMarkdown(factor), fillWindowRoot).root
+      const shell = document.createElement('div')
+      shell.className = 'vditor'
+      shell.append(root.parentElement as HTMLElement)
+      document.body.replaceChildren(shell)
+      Object.defineProperty(root, 'clientWidth', {
+        configurable: true,
+        value: 416,
+      })
+      vi.stubGlobal('innerHeight', VIEWPORT_PX)
+      vi.stubGlobal(
+        'IntersectionObserver',
+        class {
+          constructor(private readonly cb: IntersectionObserverCallback) {}
+          observe(target: Element) {
+            this.cb(
+              [{ target, isIntersecting: true } as IntersectionObserverEntry],
+              this as unknown as IntersectionObserver,
+            )
+          }
+          unobserve() {
+            // Nothing to release in the fake.
+          }
+          disconnect() {
+            // Nothing to release in the fake.
+          }
+        },
+      )
+      // jsdom has no idle callbacks: an idle period comes after a timer, with time to spare.
+      vi.stubGlobal(
+        'requestIdleCallback',
+        (callback: IdleRequestCallback) =>
+          setTimeout(
+            () => callback({ didTimeout: false, timeRemaining: () => 50 }),
+            1,
+          ) as unknown as number,
+      )
+      vi.stubGlobal('cancelIdleCallback', (handle: number) =>
+        clearTimeout(handle),
+      )
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+        function (this: Element) {
+          const host = this.closest('[data-vmde-measure]')
+          if (host && this instanceof HTMLTableCellElement)
+            return hostCellRect(this, host.getAttribute('data-vmde-measure'))
+          const scroller = documentScrollerRect(this, VIEWPORT_PX)
+          if (scroller) return scroller
+          // Every table starts at the top of the view, so each one has the same window.
+          if (this instanceof HTMLTableRowElement)
+            return rowRect(ROW_PX * this.rowIndex, ROW_PX)
+          if (this instanceof HTMLTableElement)
+            return rowRect(0, ROW_PX * this.rows.length)
+          return { width: 50 } as DOMRect
+        },
+      )
+      measured = new Map()
+      const clone = HTMLTableCellElement.prototype.cloneNode
+      vi.spyOn(HTMLTableCellElement.prototype, 'cloneNode').mockImplementation(
+        function (this: HTMLTableCellElement, deep?: boolean) {
+          const table = this.closest('table')
+          if (deep && table && !this.closest('[data-vmde-measure]')) {
+            const cells = measured.get(table) ?? new Set<Element>()
+            measured.set(table, cells)
+            cells.add(this)
+          }
+          return clone.call(this, deep)
+        },
+      )
+    })
+    afterEach(() => {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+      vi.useRealTimers()
+      document.body.replaceChildren()
+      document.head.replaceChildren()
+    })
+
+    it('measures alone at most (header + 32 + window rows) x columns per near table, the same at every factor', async () => {
+      const tables = Array.from(
+        root.querySelectorAll<HTMLTableElement>(':scope > table'),
+      )
+      expect(tables.length).toBe(2)
+
+      fixResponsiveTables()
+      await vi.advanceTimersByTimeAsync(700)
+      await vi.advanceTimersByTimeAsync(10_000)
+
+      let total = 0
+      for (const table of tables) {
+        const columns = table.rows[0].cells.length
+        const count = measured.get(table)?.size ?? 0
+        expect(count).toBeGreaterThan(0)
+        expect(count).toBeLessThanOrEqual((SAMPLE_ROWS + WINDOW_ROWS) * columns)
+        total += count
+      }
+      fillWindowCells.set(factor, total)
+      const first = fillWindowCells.get(1)
+      if (first !== undefined) expect(total).toBe(first)
+    })
+  },
+)
 
 // Task 733 (012-13, D-13 test B-08, job and normalize parts): the whole-document normalizer pass runs
 // as the idle job `table-normalize` in slices of at most min(timeRemaining, 8) + 2 ms on the cost

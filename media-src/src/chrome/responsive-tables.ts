@@ -74,6 +74,12 @@ const MEASURE_CLONE_ROWS = 32
 const FILL_SLICE_MS = 8
 /** Cells mounted per layout pair (max-content, then min-content) in the idle fill. */
 const FILL_BATCH = 32
+/** Task 733 / 027: the scroll listener of a surface scroller only marks state, so it is passive. */
+const SCROLL_OPTIONS: AddEventListenerOptions = { passive: true }
+/** Task 733 / 027: the document scroller's scroll events fire at the `Document`. */
+function scrollTarget(scroller: HTMLElement): EventTarget {
+  return isDocumentScroller(scroller) ? document : scroller
+}
 /** A cell measured alone differs from the stored column value only by more than this. */
 const CELL_EPS_PX = 0.5
 
@@ -107,6 +113,17 @@ interface AutoState {
   rowCount: number
   /** The next store position the idle fill looks at, row-major (row * columns + column). */
   fillAt: number
+  /**
+   * Task 733 / 027 (option (c), Q-145): per `table.rows` index, 1 when the fill measures the row: the
+   * first measurement's sample, the known holders, and the rows near the view (`rowWindow`). The other
+   * rows are estimated: they stay NaN in the store and add nothing to the column values. The plan only
+   * grows; a measured row is always planned. Allocated with the store, never per edit.
+   */
+  planned: Uint8Array
+  /** The count of 1 entries in `planned`; the store is complete when every planned row is known. */
+  plannedRows: number
+  /** The rows near the view must be read again before the next fill batch (scroll, width, near again). */
+  windowStale: boolean
   /** The last measurement laid out the whole table, so its column values are exact (kept by the fill). */
   whole: boolean
   /** A holder cell shrank before the store was complete: the fill folds the stored rows exactly. */
@@ -353,9 +370,23 @@ function markContentStale(state: AutoState): void {
   state.rowMax = []
   state.rowCount = 0
   state.fillAt = 0
+  state.planned = NO_PLAN
+  state.plannedRows = 0
 }
 
-function allocateStore(state: AutoState, rows: number, columns: number): void {
+/** The plan of a state without a store (shared, never written: it has no entries). */
+const NO_PLAN = new Uint8Array(0)
+
+/**
+ * Allocates the per-row store for `rows` rows and plans its first `sample` rows (the rows the first
+ * measurement sampled, Task 733 / 027); the rows near the view are planned by the first fill step.
+ */
+function allocateStore(
+  state: AutoState,
+  rows: number,
+  columns: number,
+  sample: number,
+): void {
   state.rowMin = []
   state.rowMax = []
   for (let column = 0; column < columns; column++) {
@@ -364,10 +395,79 @@ function allocateStore(state: AutoState, rows: number, columns: number): void {
   }
   state.rowCount = rows
   state.fillAt = 0
+  const planned = Math.min(rows, sample)
+  state.planned = new Uint8Array(rows)
+  state.planned.fill(1, 0, planned)
+  state.plannedRows = planned
+  state.windowStale = true
 }
 
 /**
- * Folds the stored rows of `column` into the column values, with no layout. With every row known the
+ * Task 733 / 027: plans `row`; true when it was not planned yet. A row planned before `fillAt` moves
+ * the fill back to it, so every unknown planned position stays at or after `fillAt`.
+ */
+function planRow(state: AutoState, row: number): boolean {
+  if (state.planned[row] === 1) return false
+  state.planned[row] = 1
+  state.plannedRows++
+  const slot = row * state.rowMax.length
+  if (slot < state.fillAt) state.fillAt = slot
+  return true
+}
+
+/** True when `scroller` is the document scroller (its scroll events fire at the `Document`). */
+function isDocumentScroller(scroller: HTMLElement): boolean {
+  return (
+    scroller === document.scrollingElement ||
+    scroller === document.documentElement
+  )
+}
+
+/**
+ * Task 733 / 027 (Q-145): the `table.rows` range within one scroller height of the visible rows, or
+ * undefined when the scroller or the table has no height (hidden, or no layout). Reads only: the
+ * scroller's rect (the viewport for the document scroller, whose rect spans the whole document), the
+ * table's rect, then a binary search over the row rects, O(log rows) reads with no write between them.
+ * `to < from` when no row is near.
+ */
+function rowWindow(
+  table: HTMLTableElement,
+  scroller: HTMLElement,
+): { from: number; to: number } | undefined {
+  const rows = table.rows
+  if (rows.length === 0) return undefined
+  let top = 0
+  let bottom = innerHeight
+  if (!isDocumentScroller(scroller)) {
+    const rect = scroller.getBoundingClientRect()
+    top = rect.top
+    bottom = rect.bottom
+  }
+  const height = bottom - top
+  if (!(height > 0) || !(table.getBoundingClientRect().height > 0))
+    return undefined
+  // One scroller height above and below the view: the margin of the table IntersectionObserver.
+  const above = top - height
+  const below = bottom + height
+  let low = 0
+  let high = rows.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (rows[middle].getBoundingClientRect().bottom > above) high = middle
+    else low = middle + 1
+  }
+  const from = low
+  high = rows.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (rows[middle].getBoundingClientRect().top >= below) high = middle
+    else low = middle + 1
+  }
+  return { from, to: low - 1 }
+}
+
+/**
+ * Folds the stored rows of `column` into the column values, with no layout. With every planned row known the
  * values and their holder rows are exact; otherwise the values never drop below `baseMin` and
  * `baseMax` and the holders stay unknown (-1) until the idle fill completes. True when complete.
  */
@@ -397,7 +497,8 @@ function foldColumn(
       minRow = row
     }
   }
-  const complete = known === maxes.length
+  // Task 733 / 027: complete once every planned row is known; the unplanned rows are estimated.
+  const complete = known === state.plannedRows
   state.min[column] = complete ? min : Math.max(baseMin, min)
   state.max[column] = complete ? max : Math.max(baseMax, max)
   state.minRow[column] = complete ? minRow : -1
@@ -528,15 +629,39 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
         // A table that scrolls back near (or reappears after a mode switch) may have a new width.
         const state = states.get(table)
         if (state?.stale === 'none') state.stale = 'width'
+        // Task 733 / 027-A2: shown by a fold, a mode switch or an edit above it, with no scroll.
+        markWindowStale(table)
       } else near.delete(table)
     }
     soon()
   }
 
+  /**
+   * Task 733 / 027: a near table with a store reads the rows near the view again at its next fill step.
+   * Allocates nothing (the scroll listener calls it per near table).
+   */
+  function markWindowStale(table: HTMLTableElement): void {
+    const state = states.get(table)
+    if (!state || state.stale === 'content' || !storeFits(state, table)) return
+    state.windowStale = true
+    scheduleFill(table)
+  }
+
+  /** Task 733 / 027: one passive listener per scroller target; no read in it. */
+  function onScroll(): void {
+    near.forEach(markWindowStale)
+  }
+
+  /** Removes the scroll listener of `scroller` unless another surface still uses its target. */
+  function releaseScroll(scroller: HTMLElement): void {
+    const target = scrollTarget(scroller)
+    for (const entry of surfaces.values())
+      if (scrollTarget(entry.scroller) === target) return
+    target.removeEventListener('scroll', onScroll)
+  }
+
   function createObserver(scroller: HTMLElement): IntersectionObserver {
-    const isDocument =
-      scroller === document.scrollingElement ||
-      scroller === document.documentElement
+    const isDocument = isDocumentScroller(scroller)
     // About one viewport of margin above and below: tables just outside the view are ready
     // before they scroll in, while far tables are never measured.
     return new IntersectionObserver(onIntersection, {
@@ -558,6 +683,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     existing?.observer.disconnect()
     const entry = { scroller, observer: createObserver(scroller) }
     surfaces.set(surface, entry)
+    if (existing) releaseScroll(existing.scroller)
+    scrollTarget(scroller).addEventListener('scroll', onScroll, SCROLL_OPTIONS)
     for (const [table, owner] of tracked)
       if (owner === surface) entry.observer.observe(table)
     return entry.observer
@@ -622,6 +749,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
         entry.observer.disconnect()
         surfaces.delete(surface)
         freshSurfaces.delete(surface)
+        releaseScroll(entry.scroller)
       }
   }
 
@@ -658,6 +786,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     ) {
       state.stale = 'none'
       syncTableFloor(table)
+      // Task 733 / 027: the width holds, but the scroller height may have changed.
+      markWindowStale(table)
       return null
     }
     // The collapsed table border adds to the cells: assign the cells only what is left of the
@@ -688,6 +818,9 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       rowMax: [],
       rowCount: 0,
       fillAt: 0,
+      planned: NO_PLAN,
+      plannedRows: 0,
+      windowStale: true,
       whole: false,
       refold: false,
     }
@@ -722,7 +855,11 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     state.max = measured.max
     state.minRow = measured.min.map(() => -1)
     state.maxRow = measured.max.map(() => -1)
-    allocateStore(state, table.rows.length, measured.max.length)
+    // The first measurement sampled the header and `MEASURE_CLONE_ROWS` body rows (`cloneRows`).
+    const sample = clonesWhole(table)
+      ? table.rows.length
+      : (table.tHead?.rows.length ?? 0) + MEASURE_CLONE_ROWS
+    allocateStore(state, table.rows.length, measured.max.length, sample)
   }
 
   /** Writes new widths for `table` unless every column moved by less than the hysteresis. */
@@ -792,7 +929,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     // A width-only re-fit keeps the per-row store: it folds into the new measurement, no new fill.
     const kept = keepsStore(previous, table, columns)
     const whole = clonesWhole(table)
-    const complete = kept && foldColumns(previous, measured, whole)
+    if (kept) foldColumns(previous, measured, whole)
     const values = kept ? previous : measured
     const widths = allocateColumnWidths({
       min: values.min,
@@ -806,7 +943,9 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     state.whole = whole
     state.refold = false
     if (!kept) remember(state, table, measured)
-    if (!complete) scheduleFill(table)
+    // Task 733 / 027: a width change moves the rows near the view; the fill reads them again.
+    state.windowStale = true
+    scheduleFill(table)
   }
 
   /**
@@ -1113,7 +1252,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     state: AutoState,
     end: number,
   ): void {
-    const total = state.rowCount * state.rowMax.length
+    const columns = state.rowMax.length
+    const total = state.rowCount * columns
     batchCopies.length = 0
     batchShells.length = 0
     batchTops.length = 0
@@ -1128,6 +1268,12 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
         (!fillCostKnown || sliceSpent(batchSlots.length, end))
       )
         break
+      // Task 733 / 027: an unplanned row is estimated; skip it whole, with no layout.
+      const row = Math.floor(state.fillAt / columns)
+      if (state.planned[row] !== 1) {
+        state.fillAt = (row + 1) * columns - 1
+        continue
+      }
       mountFillCell(host, table, state, state.fillAt)
     }
   }
@@ -1176,6 +1322,39 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     fillCostKnown = true
   }
 
+  /** Task 733 / 027: plans the rows near the view (`rowWindow`); the window is read once per stale mark. */
+  function planWindow(table: HTMLTableElement, state: AutoState): void {
+    state.windowStale = false
+    const surface = tracked.get(table)
+    const scroller = surface && surfaces.get(surface)?.scroller
+    if (!scroller) return
+    const range = rowWindow(table, scroller)
+    if (!range) return
+    const last = Math.min(range.to, state.rowCount - 1)
+    for (let row = Math.max(0, range.from); row <= last; row++)
+      planRow(state, row)
+  }
+
+  /**
+   * Task 733 / 027: reads the rows near the view before any mount (at idle the layout is clean) and
+   * returns whether a planned position is left to measure. Pending input defers the read to the next
+   * step; every planned row known (finished by an earlier step, no new window row) leaves nothing.
+   */
+  function planReady(
+    table: HTMLTableElement,
+    state: AutoState,
+    total: number,
+  ): boolean {
+    if (state.windowStale) {
+      if (inputPending()) {
+        scheduleFill(table)
+        return false
+      }
+      planWindow(table, state)
+    }
+    return state.fillAt < total
+  }
+
   /**
    * One idle slice of the per-row store fill. It yields at the deadline (at most `FILL_SLICE_MS`) or
    * to pending input, and queues the next slice; once every row is known the column values are folded
@@ -1192,6 +1371,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     )
       return
     const total = state.rowCount * state.rowMax.length
+    if (!planReady(table, state, total)) return
     // The shared idle budget ends the slice (`fillBudget`); `end` bounds the batch projection.
     const end = performance.now() + FILL_SLICE_MS
     const host = measureHostFor(root)
@@ -1247,6 +1427,8 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     }
     const column = cell.cellIndex
     const measured = measureCellAlone(host, table, cell)
+    // Task 733 / 027: a measured row is planned; the fill measures its other cells.
+    if (planRow(state, row.rowIndex)) scheduleFill(table)
     state.rowMin[column][row.rowIndex] = measured.min
     state.rowMax[column][row.rowIndex] = measured.max
     if (growColumn(state, column, row.rowIndex, measured)) {
@@ -1377,7 +1559,10 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       deferred.clear()
       mutationObserver.disconnect()
       document.fonts?.removeEventListener('loadingdone', onFontsLoaded)
-      for (const { observer } of surfaces.values()) observer.disconnect()
+      for (const { observer, scroller } of surfaces.values()) {
+        observer.disconnect()
+        scrollTarget(scroller).removeEventListener('scroll', onScroll)
+      }
       surfaces.clear()
       for (const table of [...owned]) clearAuto(table)
       tracked.clear()

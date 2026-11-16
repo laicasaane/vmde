@@ -447,6 +447,149 @@ test('automatic widths in IR, WYSIWYG and Preview, manual resize wins, source/di
   })
 })
 
+// Task 733 / 027 (option (c)): the idle fill measures the rows within one viewport of the view, not
+// the whole table. A table taller than three viewports whose widest cell is in its last row keeps
+// that column unwidened at open and widens it after a scroll to that row; a table inside the window
+// keeps its widths.
+const TALL_ROWS = 300
+const WINDOW_FIXTURE = [
+  '| Key | Value |',
+  '| --- | --- |',
+  '| alpha | one |',
+  '| beta | two |',
+  '',
+  '| Name | Note |',
+  '| --- | --- |',
+  ...Array.from({ length: TALL_ROWS }, (_, index) =>
+    index === TALL_ROWS - 1
+      ? `| ${'wide words '.repeat(16).trim()} | v${index} |`
+      : `| r${index} | v${index} |`,
+  ),
+  '',
+].join('\n')
+
+interface WindowState {
+  small: number[]
+  tall: number[]
+  tallHeight: number
+  viewport: number
+}
+
+/** Column widths of both tables (header cells), the tall table's height and the viewport height. */
+function readWindowState(frame: Frame): Promise<WindowState> {
+  return frame.locator('body').evaluate((_body, surface) => {
+    const tables = Array.from(
+      document.querySelectorAll<HTMLTableElement>(`${surface} table`),
+    )
+    const widths = (table: HTMLTableElement) =>
+      Array.from(
+        table.rows[0].cells,
+        (cell) => cell.getBoundingClientRect().width,
+      )
+    return {
+      small: widths(tables[0]),
+      tall: widths(tables[1]),
+      tallHeight: tables[1].getBoundingClientRect().height,
+      viewport: innerHeight,
+    }
+  }, SURFACE.ir)
+}
+
+test('a tall table widens a far column only after a scroll to its row (027)', async ({
+  workbox,
+  evaluateInVSCode,
+  baseDir,
+}, testInfo) => {
+  test.setTimeout(180_000)
+  const file = path.join(baseDir, 'table-auto-width-window.md')
+  writeFileSync(file, WINDOW_FIXTURE)
+  await evaluateInVSCode(
+    async (vscode: typeof import('vscode'), args: string[]) => {
+      await vscode.extensions.getExtension(args[0])?.activate()
+      await vscode.workspace
+        .getConfiguration('vmde')
+        .update('editor.defaultMode', 'ir', vscode.ConfigurationTarget.Global)
+    },
+    [ExtensionId] as [string],
+  )
+  const frame = (await reopenVmdeFixture(
+    evaluateInVSCode as never,
+    workbox,
+    file,
+    90_000,
+  )) as Frame
+  await waitForE2EReadiness(frame, (state) => state.routerReady, {
+    timeout: 90_000,
+    message: 'ir readiness',
+  })
+  await expect(frame.locator(`${SURFACE.ir} table`)).toHaveCount(2, {
+    timeout: 60_000,
+  })
+  await expect
+    .poll(
+      () =>
+        frame.locator('body').evaluate(
+          (_body, args) => {
+            const [surface, pattern] = args
+            const tables = Array.from(
+              document.querySelectorAll(`${surface} table`),
+            )
+            return (
+              tables.length === 2 &&
+              tables.every((table) =>
+                Array.from(table.classList).some((token) =>
+                  new RegExp(pattern).test(token),
+                ),
+              )
+            )
+          },
+          [SURFACE.ir, AUTO_CLASS] as const,
+        ),
+      { timeout: 30_000, message: 'both tables got automatic widths' },
+    )
+    .toBe(true)
+  // Several idle fill slices; a fill of every row would widen the column within this time.
+  await frame
+    .locator('body')
+    .evaluate(() => new Promise((resolve) => setTimeout(resolve, 3000)))
+  const atOpen = await readWindowState(frame)
+  const record: Record<string, unknown> = { atOpen }
+
+  expect(atOpen.tallHeight).toBeGreaterThan(3 * atOpen.viewport)
+  // The widest cell is far below the view and its window: its column is not widened.
+  expect(atOpen.tall[0] / atOpen.tall[1]).toBeLessThanOrEqual(1.15)
+
+  await frame
+    .locator(`${SURFACE.ir} table`)
+    .nth(1)
+    .locator('tr')
+    .last()
+    .evaluate((row) => row.scrollIntoView({ block: 'center' }))
+  await expect
+    .poll(
+      async () => {
+        const state = await readWindowState(frame)
+        return state.tall[0] / state.tall[1]
+      },
+      { timeout: 30_000, message: 'the far column widened after the scroll' },
+    )
+    .toBeGreaterThan(1.5)
+  const afterScroll = await readWindowState(frame)
+  record.afterScroll = afterScroll
+
+  // The table inside the window keeps its widths.
+  for (let column = 0; column < atOpen.small.length; column++)
+    expect(
+      Math.abs(afterScroll.small[column] - atOpen.small[column]),
+    ).toBeLessThanOrEqual(1)
+
+  console.log('[table-auto-width window]', JSON.stringify(record))
+  await testInfo.attach('table-auto-width-window.json', {
+    body: JSON.stringify(record, null, 2),
+    contentType: 'application/json',
+  })
+})
+
 test.describe('OS typing and history', () => {
   test.skip(
     process.env.VMDE_XTEST !== '1',
