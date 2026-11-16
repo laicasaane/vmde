@@ -25,6 +25,19 @@ import {
 import { installUnitHistory } from './unit-history'
 import type { HistoryCapture } from '../util/unit-changes'
 
+// Task 733 / 013 (Q-129): the 013 WYSIWYG cases prove the WYSIWYG path while the shipped
+// `WYSIWYG_UNITS` stays false. `wysiwygUnitsOn` turns the default of `unitModeOf` on for those
+// cases only (set in their describe block); every other case keeps the shipped default.
+const wysiwygUnitsOn = vi.hoisted(() => ({ value: false }))
+vi.mock('../util/unit-changes', async (original) => {
+  const actual = await original<typeof import('../util/unit-changes')>()
+  return {
+    ...actual,
+    unitModeOf: (mode: string | null | undefined, wysiwygUnits?: boolean) =>
+      actual.unitModeOf(mode, wysiwygUnits ?? wysiwygUnitsOn.value),
+  }
+})
+
 // Task 733 (task 004): the unit engine against a fake model port and a fake delta publisher. The
 // engine keeps entries (captures, caret intents, native-step counts), restores them through the port,
 // publishes one history delta per Undo or Redo, and answers the history store for a claimed inner
@@ -1314,6 +1327,12 @@ describe('B-14: one flush per Undo and Redo', () => {
 // The rig's paragraphs live in the WYSIWYG root; the patched Vditor `Undo` asks `claims` first and
 // delegates only when it holds (`patchUndoUnitEngine`), so these cases call the hook the same way.
 describe('013 WYSIWYG unit history', () => {
+  beforeEach(() => {
+    wysiwygUnitsOn.value = true
+  })
+  afterEach(() => {
+    wysiwygUnitsOn.value = false
+  })
   type R = ReturnType<typeof rig>
   /** One call of the patched `Undo` method: the engine runs only while it claims the editor. */
   const viaPatch = (r: R, method: 'undo' | 'redo' | 'record'): boolean => {

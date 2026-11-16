@@ -14,6 +14,19 @@ import {
   requestBlockAction,
 } from './block-action-client'
 
+// Task 733 / 013 (Q-129): the 013 WYSIWYG cases prove the WYSIWYG path while the shipped
+// `WYSIWYG_UNITS` stays false. `wysiwygUnitsOn` turns the default of `unitModeOf` on for those
+// cases only (set in their describe block); every other case keeps the shipped default.
+const wysiwygUnitsOn = vi.hoisted(() => ({ value: false }))
+vi.mock('../util/unit-changes', async (original) => {
+  const actual = await original<typeof import('../util/unit-changes')>()
+  return {
+    ...actual,
+    unitModeOf: (mode: string | null | undefined, wysiwygUnits?: boolean) =>
+      actual.unitModeOf(mode, wysiwygUnits ?? wysiwygUnitsOn.value),
+  }
+})
+
 // Task 607: Move Block pulls the host's bytes (never a rebased pair) before it plans, recomputes
 // the block units on them, and keeps its two-phase rollback.
 const state = vi.hoisted(() => ({
@@ -672,6 +685,12 @@ it('passes no units when the model units are of other text (B-15)', async () => 
 // With WYSIWYG units the model owns the text in WYSIWYG too: a block action plans on the confirmed
 // model units and reads no whole document, as in IR. `planAndRequest` reads the model only in IR today.
 describe('013 WYSIWYG block action on the model units', () => {
+  beforeEach(() => {
+    wysiwygUnitsOn.value = true
+  })
+  afterEach(() => {
+    wysiwygUnitsOn.value = false
+  })
   const inWysiwyg = (): void => {
     const inner = state.inner as {
       currentMode: string

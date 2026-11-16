@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import {
   type HistoryEntryToken,
   IR_HISTORY_ENGINE,
@@ -7,6 +7,19 @@ import {
   provideUnitHistoryDelegate,
   type RecordedEntry,
 } from './history-store'
+
+// Task 733 / 013 (Q-129): the 013 WYSIWYG cases prove the WYSIWYG path while the shipped
+// `WYSIWYG_UNITS` stays false. `wysiwygUnitsOn` turns the default of `unitModeOf` on for those
+// cases only (set in their describe block); every other case keeps the shipped default.
+const wysiwygUnitsOn = vi.hoisted(() => ({ value: false }))
+vi.mock('../util/unit-changes', async (original) => {
+  const actual = await original<typeof import('../util/unit-changes')>()
+  return {
+    ...actual,
+    unitModeOf: (mode: string | null | undefined, wysiwygUnits?: boolean) =>
+      actual.unitModeOf(mode, wysiwygUnits ?? wysiwygUnitsOn.value),
+  }
+})
 
 // Task 003 — the old-engine adapter over a fake inner Vditor. The fake `undo` object has the
 // fields of Vditor's `Undo` (per-mode slots with `undoStack`, `redoStack`, `lastText`, `hasUndo`;
@@ -516,6 +529,12 @@ describe('review repairs (Task 003)', () => {
 
 // ---- Task 733 / 013-T2: the unit engine answers the WYSIWYG history it claims (shared rules 3.12) ----
 describe('013 WYSIWYG delegation', () => {
+  beforeEach(() => {
+    wysiwygUnitsOn.value = true
+  })
+  afterEach(() => {
+    wysiwygUnitsOn.value = false
+  })
   function fakeDelegate(claimed: boolean) {
     const entry = { id: 'unit-top' } as unknown as HistoryEntryToken
     return {
