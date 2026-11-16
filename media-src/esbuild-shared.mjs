@@ -2808,6 +2808,26 @@ export function patchSvInputCaretBlock(code) {
     .replace(SV_LOCAL_SPIN_AFTER, after)
 }
 
+// Task 733 / 015 (run-1 repair R-1), V-S3b: Vditor splits a Source spin into `data-block` divs with a
+// regex that matches the two newline spans only as Lute writes them, `<br />` (`sv/process.ts:23` in
+// `processPaste`, `:58` in `processSpinVditorSVDOM`). VMDE's Source spin wrapper
+// (`editing/live-line-breaks.ts` `renderSvIdentityDom`) re-serializes the spin through `innerHTML`, which
+// writes `<br>`, so no split happened: every Source DOM was one div, and each key spun the whole
+// document. Both regexes now accept either form of the break.
+const SV_SPLIT_REGEX =
+  '/<span data-type="newline"><br \\/><span style="display: none">\\n<\\/span><\\/span><span data-type="newline"><br \\/><span style="display: none">\\n<\\/span><\\/span></g'
+const SV_SPLIT_REGEX_ANY_BREAK =
+  '/<span data-type="newline"><br(?: \\/)?><span style="display: none">\\n<\\/span><\\/span><span data-type="newline"><br(?: \\/)?><span style="display: none">\\n<\\/span><\\/span></g'
+export function patchSvSplitAnyBreak(code) {
+  const count = code.split(SV_SPLIT_REGEX).length - 1
+  if (count !== 2) {
+    throw new Error(
+      `patchSvSplitAnyBreak: expected 2 split regexes in vditor sv/process.ts, found ${count} (version drift or applied twice?)`,
+    )
+  }
+  return code.split(SV_SPLIT_REGEX).join(SV_SPLIT_REGEX_ANY_BREAK)
+}
+
 // Task 733 / 015-I2, V-S2 (task 015 section 6.2 D-5): a switch into or out of Source takes the model
 // text from `window.__vmdeModeSwitchText` (editing/sv-input-spin.ts) when the model owns it, instead of
 // Lute's whole-document serialization of the old mode (`toolbar/EditMode.ts:28`); undefined keeps
@@ -4765,8 +4785,14 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]sv[/\\]process\.ts$/,
+    // Task 733 / 015 (R-1): then V-S3b, the Source split that also matches a re-serialized `<br>`.
     transform: (code) =>
-      patchModeAfterRender(patchDeferGetMarkdown(code, 'sv/process.ts'), 'sv'),
+      patchSvSplitAnyBreak(
+        patchModeAfterRender(
+          patchDeferGetMarkdown(code, 'sv/process.ts'),
+          'sv',
+        ),
+      ),
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]toolbar[/\\]Info\.ts$/,

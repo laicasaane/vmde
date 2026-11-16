@@ -291,6 +291,50 @@ describe('createEditSync', () => {
     expect(turnOff).toHaveBeenCalledWith('sync-error')
   })
 
+  // Task 733 / 015, run-1 repair R-1: Vditor renders a new edit mode without an input event, so a
+  // toolbar switch reaches the text model only through `noteModeSwitch`.
+  it('tells the text model of a mode switch that fired no input (task 733 / 015)', () => {
+    const onModeChange = vi.fn()
+    const modeSwitchText = vi.fn(() => 'MD')
+    const { es, edits } = boot({
+      getValue: () => 'MD',
+      modelSession: {
+        beforeWholeTextPost: () => undefined,
+        onModeChange,
+        turnOff: vi.fn(),
+        modeSwitchText,
+      },
+    })
+    es.schedule()
+    vi.advanceTimersByTime(250)
+    const posts = edits().length
+    const vd = (window as unknown as { vditor: { getCurrentMode(): string } })
+      .vditor
+    vd.getCurrentMode = () => 'sv'
+    es.noteModeSwitch()
+    expect(onModeChange).toHaveBeenCalledWith('sv')
+    // The model kept the text: no whole serialization of the new mode, and nothing is posted.
+    expect(modeSwitchText).toHaveBeenCalledOnce()
+    expect(edits()).toHaveLength(posts)
+    // The same mode again is no switch.
+    es.noteModeSwitch()
+    expect(onModeChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('tells the text model of the mode before anything was serialized (task 733 / 015)', () => {
+    const onModeChange = vi.fn()
+    const { es } = boot({
+      mode: 'sv',
+      modelSession: {
+        beforeWholeTextPost: () => undefined,
+        onModeChange,
+        turnOff: vi.fn(),
+      },
+    })
+    es.noteModeSwitch()
+    expect(onModeChange).toHaveBeenCalledWith('sv')
+  })
+
   it('coalesces rapid schedule() calls into a single edit post', () => {
     const { es, edits } = boot()
     es.schedule()

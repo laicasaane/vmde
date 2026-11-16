@@ -333,6 +333,21 @@ function installUnitFeed(): () => void {
   }
 }
 
+/** Task 733 / 015 (R-1): tells edit-sync of every edit-mode button click (see `EditSync.noteModeSwitch`). */
+function installModeSwitchNotice(): () => void {
+  const onClick = (event: Event): void => {
+    const target = event.target
+    if (
+      !(target instanceof Element) ||
+      !target.closest('.vditor-toolbar [data-mode]')
+    )
+      return
+    setTimeout(() => sessionState.editSync?.noteModeSwitch(), 0)
+  }
+  document.addEventListener('click', onClick, true)
+  return () => document.removeEventListener('click', onClick, true)
+}
+
 /**
  * Task 004: installs the IR unit history engine (`window.__vmdeUnitHistory`, consumed by the patched
  * Vditor `Undo` class and by the history store). The model session and the delta publisher are read at
@@ -804,6 +819,10 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('unit-feed', installUnitFeed())
   // Task 733 / 015: the Source input and mode-switch hooks of patches V-S1 and V-S2. The session is read at
   // call time, so a re-init's session counts.
+  // Task 733 / 015 (run-1 repair R-1): Vditor renders a new edit mode without an input event, so the
+  // text model hears of a toolbar or chord switch here. Capture phase: Vditor's mode buttons stop
+  // propagation; the notification runs after `setEditMode` has applied (next task) and re-reads the mode.
+  observers.set('mode-switch-notice', installModeSwitchNotice())
   observers.set(
     'source-input-hooks',
     installSourceInputHooks(window, {

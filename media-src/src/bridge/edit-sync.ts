@@ -50,6 +50,12 @@ export interface EditSync {
   readonly deltaSync: DeltaSync | null
   /** Schedule a debounced edit→host post (called from Vditor's input()). */
   schedule(): void
+  /**
+   * Task 733 / 015 (run-1 repair R-1): an edit-mode switch was requested (a toolbar or chord click). Vditor
+   * renders the new mode without an input event, so this tells the text model of the switch; typing that
+   * is still unpublished leaves it to the next post, as before.
+   */
+  noteModeSwitch(): void
   /** Resume an ordinary typing post held for an automatic exact-source attempt. */
   resumeDeferredInput(): void
   /** Mark that the pending schedule came from a real DOM input. */
@@ -1440,6 +1446,43 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     return true
   }
 
+  /**
+   * Vditor's render-mode switch: rebaseline the IR authority during the transition, but never post
+   * mode-canonicalized bytes for a document the user did not edit. Task 733 / 015 (D-5): into or out of
+   * Source, a model that owns the text keeps it with its epoch (read before the mode change tears the
+   * old model down), so the whole serialization of the new mode is skipped; only the serialize mode is
+   * recorded. Otherwise it rebaselines as before.
+   */
+  const rebaselineModeSwitch = (
+    previousMode: string | null,
+    currentMode: string | null,
+  ): void => {
+    const keptText =
+      previousMode === 'sv' || currentMode === 'sv'
+        ? deps.modelSession?.modeSwitchText?.()
+        : undefined
+    shadowCall(() => deps.modelSession?.onModeChange(currentMode))
+    if (keptText === undefined) serializeForHost()
+    else lastSerializeMode = currentMode
+    reportDocMode()
+    syncUndoDelay()
+  }
+
+  /** Task 733 / 015 (R-1): see `EditSync.noteModeSwitch`. Re-reads the modes at call time. */
+  const noteModeSwitch = (): void => {
+    if (userInputPending) return
+    const currentMode = window.vditor.getCurrentMode?.() ?? null
+    const previousMode =
+      lastSerializeMode === 'ir-incremental' ? 'ir' : lastSerializeMode
+    if (previousMode === null) {
+      // Nothing serialized yet: no baseline to move; the model alone hears of the mode.
+      shadowCall(() => deps.modelSession?.onModeChange(currentMode))
+      return
+    }
+    if (currentMode !== previousMode)
+      rebaselineModeSwitch(previousMode, currentMode)
+  }
+
   const postEdit = (
     perf?: RendererEditPerf,
     cause: 'idle' | 'overdue' = 'idle',
@@ -1448,29 +1491,18 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     const currentMode = window.vditor.getCurrentMode?.() ?? null
     const previousMode =
       lastSerializeMode === 'ir-incremental' ? 'ir' : lastSerializeMode
-    if (!userInputPending && exactSeedOwned) {
-      cancelTakenRendererPerf(perf)
-      return
-    }
+    // Task 733 / 015 (run-1 repair R-1): a mode switch is handled before the seed-owned return, so the
+    // text model hears of every switch (it was skipped while an exact seed owned the post).
     if (
       !userInputPending &&
       previousMode !== null &&
       currentMode !== previousMode
     ) {
-      // Vditor fires input while switching render modes. Rebaseline the IR authority during the
-      // transition, but never post mode-canonicalized bytes for a document the user did not edit.
-      // Task 733 / 015 (D-5): into or out of Source, a model that owns the text keeps it with its epoch
-      // (read before the mode change tears the old model down), so the whole serialization of the new
-      // mode is skipped; only the serialize mode is recorded. Otherwise it rebaselines as before.
-      const keptText =
-        previousMode === 'sv' || currentMode === 'sv'
-          ? deps.modelSession?.modeSwitchText?.()
-          : undefined
-      shadowCall(() => deps.modelSession?.onModeChange(currentMode))
-      if (keptText === undefined) serializeForHost()
-      else lastSerializeMode = currentMode
-      reportDocMode()
-      syncUndoDelay()
+      rebaselineModeSwitch(previousMode, currentMode)
+      cancelTakenRendererPerf(perf)
+      return
+    }
+    if (!userInputPending && exactSeedOwned) {
       cancelTakenRendererPerf(perf)
       return
     }
@@ -2225,6 +2257,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       replaceIncrementalSeed(seed)
     },
     reportDocMode,
+    noteModeSwitch,
     startIncrementalSeed,
     receiveDeferredSeed,
     dispose: () => {

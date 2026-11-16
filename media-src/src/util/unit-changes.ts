@@ -172,7 +172,7 @@ export const SOURCE_UNITS: boolean = true
 
 /** Task 733 / 013 (D-13): the text model, unit spin, unit history and the unit feed serve WYSIWYG. false
  *  restores today's WYSIWYG path (model off with reason 'mode', hooks refuse, old history engine). */
-export const WYSIWYG_UNITS: boolean = true
+export const WYSIWYG_UNITS: boolean = false
 
 export type UnitMode = 'ir' | 'wysiwyg'
 
