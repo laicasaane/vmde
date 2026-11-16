@@ -606,6 +606,25 @@ describe.each([1, 4, 16] as const)(
       expect(total.layoutReads).toBeLessThanOrEqual(1 + handleCells)
     })
 
+    // Run 1 P-2: an outline or toolbar update outside the IR root re-ran the whole membership job.
+    it('posts no membership job for a cell change after a record outside the editor root', async () => {
+      const shell = root.closest('.vditor') as HTMLElement
+      const outline = document.createElement('div')
+      outline.className = 'vditor-outline'
+      shell.append(outline)
+      outline.append(document.createElement('ul'))
+      const table = tables()[0]
+      const cell = table.tBodies[0].rows[2].cells[2] as HTMLElement
+      cell.firstChild!.textContent = `outside ${factor}`
+      await flushRecords()
+      emit(editChange({ changed: [unitOf(cell, 'cell', table)] }))
+      const total = sumCounts(drainFrames(root, lanes))
+      outline.remove()
+
+      expect(total.tableQueries).toBe(0)
+      expect(total.rootQueries).toBe(0)
+    }, 60_000)
+
     it('reconciles only the table of an inserted row', async () => {
       const table = tables()[1]
       const body = table.tBodies[0]

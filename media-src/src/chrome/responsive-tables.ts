@@ -1089,6 +1089,13 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
    * batch stops mounting when the cells it holds would spend the rest of the slice on their layouts.
    */
   let fillCellCost = 0
+  /**
+   * Task 733 (012-13, run 1 P-6): false until one batch has been laid out. With no measured cost the
+   * projection in `sliceSpent` is 0, so the first batch mounted all `FILL_BATCH` cells and its one
+   * forced layout ran far past the slice (68 ms at factor 1). The first batch now holds one cell;
+   * later batches are bounded by the measured cost per cell.
+   */
+  let fillCostKnown = false
 
   /** True when a batch holding `mounted` cells has spent the slice that ends at `end`. */
   function sliceSpent(mounted: number, end: number): boolean {
@@ -1116,7 +1123,11 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
       state.fillAt < total && batchSlots.length < FILL_BATCH;
       state.fillAt++
     ) {
-      if (batchSlots.length > 0 && sliceSpent(batchSlots.length, end)) break
+      if (
+        batchSlots.length > 0 &&
+        (!fillCostKnown || sliceSpent(batchSlots.length, end))
+      )
+        break
       mountFillCell(host, table, state, state.fillAt)
     }
   }
@@ -1162,6 +1173,7 @@ function createAutoTableWidths(root: HTMLElement): AutoTableWidths {
     }
     for (const top of batchTops) top.remove()
     fillCellCost = (performance.now() - laidOut) / batchSlots.length
+    fillCostKnown = true
   }
 
   /**

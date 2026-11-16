@@ -1016,15 +1016,52 @@ export function installTableColumnResize(): () => void {
     return !owner || owner.parentElement === activeRoot
   }
 
+  /** True when the editor's current mode root is no longer the active root (a mode switch, a re-init). */
+  function surfaceMoved(): boolean {
+    const editor = window.vditor
+    const mode = editor?.getCurrentMode()
+    const root =
+      mode === 'ir' || mode === 'wysiwyg'
+        ? ((editor.vditor[mode]?.element as HTMLElement | undefined) ?? null)
+        : null
+    return root !== activeRoot || (mode ?? null) !== activeMode
+  }
+
+  /**
+   * Task 733 (012-13, run 1 P-2): a record outside the active root (the outline, the toolbar, a hidden
+   * mode root, Preview) cannot change the membership of the active root's tables. It used to fall
+   * through to `mutationEffect`, whose child-list default is 'membership', so every outline or
+   * toolbar update re-ran the whole membership job and dropped the header cache. Such a record now
+   * moves the geometry only when it is an ancestor of the root (its layout may shift), runs the
+   * membership pass only when the surface itself moved, and is ignored otherwise.
+   */
+  function outsideRecordEffect(
+    record: MutationRecord,
+    root: HTMLElement,
+    moved: () => boolean,
+  ): 'membership' | 'geometry' | 'ignore' {
+    if (moved()) return 'membership'
+    return record.target.contains(root) ? 'geometry' : 'ignore'
+  }
+
   function onMutations(records: MutationRecord[]): void {
     const feed = liveFeed()
+    const root = activeRoot
+    // Read once per batch, and only when a record lies outside the active root.
+    let movedSurface: boolean | undefined
+    const moved = () => (movedSurface ??= surfaceMoved())
     const effects = new Set<'membership' | 'geometry' | 'ignore'>()
-    for (const record of records)
+    for (const record of records) {
+      if (root && !root.contains(record.target)) {
+        effects.add(outsideRecordEffect(record, root, moved))
+        continue
+      }
       effects.add(
         feed && feedDescribesRecord(record)
           ? feedRecordEffect(record)
           : mutationEffect(record),
       )
+    }
     if (effects.has('membership')) {
       // Without the feed nothing says which table changed shape: every header is read again.
       headerCache = new WeakMap()

@@ -909,6 +909,43 @@ describe('fixResponsiveTables on the unit feed (Task 733 007)', () => {
     expect(cloneCount).toBe(1)
   })
 
+  // Run 1 `table-chrome-units` "a row insert recomputes the widths as before": the persistent host
+  // (M4) is mounted once, so the measurement shows as a multi-row table clone mounted inside it.
+  it('measures the table again inside the measurement host after a row insert', async () => {
+    const tableA = document.getElementById('ta') as HTMLTableElement
+    // The host stays mounted after the open fill; its clones come and go within one task.
+    const host = document.querySelector('[data-vmde-measure]') as HTMLElement
+    expect(host).not.toBeNull()
+    let measured = 0
+    const watcher = new MutationObserver((records) => {
+      for (const record of records)
+        for (const node of record.addedNodes)
+          if (
+            node instanceof HTMLElement &&
+            (node.matches('table') || node.querySelector('table')) &&
+            node.querySelector('tr + tr')
+          )
+            measured++
+    })
+    watcher.observe(host, { childList: true, subtree: true })
+    const row = tableA.tBodies[0].rows[0].cloneNode(true) as HTMLTableRowElement
+    tableA.tBodies[0].append(row)
+    await Promise.resolve()
+    emit({
+      ...change({
+        cause: 'sync',
+        changed: Array.from(row.cells, (cell) => cellUnit(cell as HTMLElement)),
+        structural: [tableA],
+      }),
+      scopes: [row],
+    } as UnitsChange)
+    await vi.advanceTimersByTimeAsync(700)
+    await Promise.resolve()
+    watcher.disconnect()
+
+    expect(measured).toBeGreaterThanOrEqual(1)
+  })
+
   it('runs the content observer path as before when no feed is provided', async () => {
     provideUnitFeed(window, undefined)
     const cell = document.querySelector('#ta td') as HTMLElement
@@ -1287,6 +1324,47 @@ describe('fixResponsiveTables on a 2,000-row table (Task 733 012-4)', {
     expect(cellCopies.size).toBe(STORE_CELLS)
     expect(repeatedCells()).toBe(0)
     expect(storedWidth(1)).toBeGreaterThan(storedWidth(2))
+  })
+
+  // Run 1 P-6: the layout of a batch is paid at its first read, not when its cells are mounted. With
+  // no measured cost yet, the first batch mounted all its cells and its layout ran far past the slice.
+  it('keeps every fill slice within 8 + 2 ms when the layout reads carry the cost', async () => {
+    let charged = 0
+    const now = () => Date.now() + charged
+    vi.spyOn(performance, 'now').mockImplementation(now)
+    // Each read of a cell laid out in the host costs 1 ms of the slice (two reads per cell per batch).
+    // The layout this describe's setup installed (the spy exists already; keep its widths).
+    const measure = vi
+      .mocked(Element.prototype.getBoundingClientRect)
+      .getMockImplementation() as (this: Element) => DOMRect
+    vi.mocked(Element.prototype.getBoundingClientRect).mockImplementation(
+      function (this: Element) {
+        if (
+          this instanceof HTMLTableCellElement &&
+          this.closest('[data-vmde-measure]')
+        )
+          charged += 1
+        return measure.call(this)
+      },
+    )
+    const slices: number[] = []
+    vi.stubGlobal(
+      'requestIdleCallback',
+      (callback: IdleRequestCallback) =>
+        setTimeout(() => {
+          const start = now()
+          callback({
+            didTimeout: false,
+            timeRemaining: () => Math.max(0, start + SLICE_MS - now()),
+          })
+          slices.push(now() - start)
+        }, 1) as unknown as number,
+    )
+    fixResponsiveTables()
+    await settle()
+
+    expect(slices.length).toBeGreaterThan(1)
+    expect(Math.max(...slices)).toBeLessThanOrEqual(SLICE_MS + 2)
   })
 
   // Research question 1 of the 012-M2 re-measurement: a paragraph edit outside the table, reported
