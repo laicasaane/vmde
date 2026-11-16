@@ -1688,6 +1688,65 @@ describe('section fold on unit feed changes (Task 733, B-11)', {
     )
   })
 
+  // Run 1 (R-2): `__vmdeMutationImpactStats` is an observable end-to-end contract; the feed path
+  // records the `section-fold-surface` passes the observer path recorded.
+  it('records the section-fold-surface passes of feed changes', async () => {
+    const win = window as unknown as {
+      __vmdeE2EReadiness?: unknown
+      __vmdeMutationImpactStats?: {
+        helpers: Record<
+          string,
+          { callbacks: number; records: number; full: number; local: number }
+        >
+      }
+    }
+    win.__vmdeE2EReadiness = {}
+    win.__vmdeMutationImpactStats = undefined
+    try {
+      const { ir, emit, runFrames, list } = setup(1)
+      const paragraph = Array.from(ir.children).find((block) =>
+        block.textContent?.startsWith('Fourth paragraph'),
+      ) as HTMLElement
+      paragraph.firstChild!.textContent = 'Fourth paragraph, edited.'
+      paragraph.append(document.createElement('wbr'))
+      emit({
+        whole: false,
+        changed: [unit(paragraph, 'paragraph')],
+        scopes: [paragraph],
+      })
+      await settle()
+      runFrames()
+      const typed =
+        win.__vmdeMutationImpactStats?.helpers['section-fold-surface']
+      expect(typed?.callbacks).toBeGreaterThan(0)
+      expect(typed?.records).toBeGreaterThan(0)
+      expect(typed?.full).toBe(0)
+      const item = list.children[2] as HTMLElement
+      emit({
+        whole: false,
+        changed: [unit(item, 'list-item', list)],
+        structural: [list],
+        scopes: [item],
+      })
+      const heading = Array.from(ir.children).find(
+        (block) => block.textContent === '## Code',
+      ) as HTMLElement
+      emit({
+        whole: false,
+        changed: [unit(heading, 'heading')],
+        scopes: [heading],
+      })
+      runFrames()
+      const stats =
+        win.__vmdeMutationImpactStats?.helpers['section-fold-surface']
+      expect(stats?.local).toBeGreaterThan(0)
+      expect(stats?.full).toBeGreaterThan(0)
+    } finally {
+      win.__vmdeE2EReadiness = undefined
+      win.__vmdeMutationImpactStats = undefined
+    }
+  })
+
   it('a whole change runs the whole fold pass', async () => {
     const { ir, emit, runFrames, list } = setup(1)
     const stale = list.children[0] as HTMLElement

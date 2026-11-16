@@ -1,6 +1,7 @@
 import {
   classifyAndRecordEditorSurfaceMutations,
   forEachChangeScope,
+  liveFeedOf,
   onLiveChange,
   recordHelperMutationPass,
   recordsOutsideFeed,
@@ -117,6 +118,8 @@ function touchesHeadingOrToc(element: Element): boolean {
  * or not); it never reads the root. A whole change always refreshes. */
 function changeRequiresRefresh(change: UnitsChange): boolean {
   if (change.whole) return true
+  // A unit's kind decides without the DOM, also when its element was replaced since.
+  for (const unit of change.changed) if (unit.kind === 'heading') return true
   for (const top of change.structural) if (touchesHeadingOrToc(top)) return true
   let found = false
   forEachChangeScope(change, (element) => {
@@ -226,9 +229,25 @@ export function installTocInvalidation(
     if (!impact) return
     decide(tocImpactRequiresRefresh(impact))
   })
-  const offFeed = onLiveChange(root, (change) =>
-    decide(changeRequiresRefresh(change)),
-  )
+  // The top-level block count of the feed root at the last feed change: a change of it is the feed's
+  // form of the observer's `topLevelChanged` (an Enter split or a merge moves the heading ids).
+  let topCount = -1
+  const offFeed = onLiveChange(root, (change) => {
+    const count = liveFeedOf(root)?.root.childElementCount ?? -1
+    const moved = topCount >= 0 && count !== topCount
+    topCount = count
+    if (!changeRequiresRefresh(change) && !moved) {
+      decide(false)
+      return
+    }
+    // Task 733 (run 1, R-2): a feed change can arrive with no input request of its own. Undo and Redo
+    // restore units without Vditor's input, and the settle that follows them re-spins nothing the
+    // feed reports, so the impact was dropped as already attempted. The observer never saw that
+    // order: its records came after the request of the same task. A semantic impact of the feed
+    // therefore renews the last request, so the settle-deferred refresh still runs once.
+    if (latestRequest && requestRevision <= attemptedRevision) requestRevision++
+    decide(true)
+  })
   observer.observe(root, {
     characterData: true,
     childList: true,

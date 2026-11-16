@@ -163,6 +163,48 @@ describe('TOC invalidation on unit feed changes (Task 733, B-11)', {
     expect(defer).not.toHaveBeenCalled()
   })
 
+  // Run 1 (R-2): the heading-rich edit sequence of the real-VS-Code spec, as feed changes.
+  it('refreshes for the Undo and Redo of a heading edit, which come with no input request', () => {
+    const { emit, renderToc, input, heading } = setup(1)
+    const headingChange = {
+      whole: false,
+      cause: 'sync' as const,
+      changed: [blockUnit(heading, 'heading')],
+      scopes: [heading],
+    }
+    input()
+    emit!(headingChange)
+    expect(renderToc).toHaveBeenCalledTimes(1)
+    // Undo, then Redo: the unit restore emits the heading change and calls no input hook.
+    emit!(headingChange)
+    expect(renderToc).toHaveBeenCalledTimes(2)
+    emit!(headingChange)
+    expect(renderToc).toHaveBeenCalledTimes(3)
+  })
+
+  it('refreshes for an Enter split that adds a top-level block, and not for typing after it', () => {
+    const { ir, emit, renderToc, input, paragraph } = setup(1)
+    input()
+    emit!({ whole: false, changed: [blockUnit(paragraph, 'paragraph')] })
+    expect(renderToc).not.toHaveBeenCalled()
+    const added = document.createElement('p')
+    added.setAttribute('data-block', '0')
+    added.textContent = 'inserted block'
+    paragraph.after(added)
+    input()
+    emit!({
+      whole: false,
+      structural: [paragraph, added],
+      scopes: [paragraph, added],
+    })
+    expect(renderToc).toHaveBeenCalledTimes(1)
+    input()
+    added.textContent = 'inserted block, typed'
+    emit!({ whole: false, structural: [added], scopes: [added] })
+    expect(renderToc).toHaveBeenCalledTimes(1)
+    expect(ir.contains(added)).toBe(true)
+  })
+
   it('keeps its own observer without a feed', async () => {
     const { renderToc, input, heading } = setup(1, false)
     input()

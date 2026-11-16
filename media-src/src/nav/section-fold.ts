@@ -889,6 +889,8 @@ function topUnder(root: HTMLElement, element: Element): HTMLElement | null {
   return el as HTMLElement | null
 }
 
+const NO_RECORDS: readonly MutationRecord[] = []
+
 const FOLD_SELECTOR = `[${FOLD_HIDDEN_ATTR}], [${FOLDED_ATTR}], [${FOLDABLE_ATTR}], [${LIST_FOLDED_ATTR}], [${LIST_FOLDABLE_ATTR}]`
 
 /** Removes every fold attribute of one element (callers write quietly). */
@@ -1426,7 +1428,11 @@ export function createSectionFoldController(
     // Task 733 (D-13 binding rule 6): the live feed delivers the changes inside its root.
     const observed = surface()
     const records = observed ? recordsOutsideFeed(observed, batch) : batch
-    if (records.length === 0) return
+    if (records.length === 0) {
+      // The feed delivers these records; its change records the pass (`recordFeedPass`).
+      recordHelperMutationPass('section-fold-surface', batch, 'skipped', 0)
+      return
+    }
     const impact = classifyEditorMutations(records)
     const decision = foldMutationDecision(impact)
     recordHelperMutationPass(
@@ -1457,27 +1463,51 @@ export function createSectionFoldController(
   // the sliced whole pass; a list scope or a structural list reconciles that list; a heading (or a
   // spun block, which can start or end a section) refolds the top-level blocks. Nothing else in a
   // non-whole change can move a fold, and nothing reads the root.
-  const noteTop = (top: HTMLElement, structural: boolean) => {
+  const noteTop = (top: HTMLElement) => {
     if (top.tagName === 'UL' || top.tagName === 'OL') pendingListBlocks.add(top)
-    else if (top.tagName !== 'TABLE' && (structural || foldLevel(top) !== null))
-      pendingHeadings = true
+    else if (foldLevel(top) !== null) pendingHeadings = true
   }
+  const noteScoped = (change: UnitsChange, editor: HTMLElement) => {
+    for (const top of change.structural)
+      if (top.parentElement === editor) noteTop(top)
+    forEachChangeScope(change, (element) => {
+      const top = topUnder(editor, element)
+      if (top) noteTop(top)
+    })
+  }
+  // The top-level block count at the last feed change. A spun block of the same count (a paragraph
+  // respun by typing) moves no section; a changed count (an Enter split, a merge) can.
+  let topCount = -1
   const onFeedChange = (change: UnitsChange, editor: HTMLElement) => {
+    const count = editor.childElementCount
+    const moved = topCount >= 0 && count !== topCount
+    topCount = count
     if (change.whole) {
       pendingWhole = true
       pendingHeadings = false
       pendingListBlocks.clear()
     } else if (!pendingWhole && !pendingFull) {
-      for (const top of change.structural)
-        if (top.parentElement === editor) noteTop(top, true)
-      forEachChangeScope(change, (element) => {
-        const top = topUnder(editor, element)
-        if (top) noteTop(top, false)
-      })
+      if (moved) pendingHeadings = true
+      noteScoped(change, editor)
     }
+    recordFeedPass()
     if (pendingWhole || pendingHeadings || pendingListBlocks.size > 0)
       scheduleFlush()
   }
+  // Task 733 (run 1, R-2): the feed path keeps the observable pass statistics of the observer path
+  // (`section-fold-surface`, end-to-end runs only): a whole change or a heading refold is a full
+  // pass over the surface's sections, a list reconcile is local, anything else is skipped.
+  const recordFeedPass = () =>
+    recordHelperMutationPass(
+      'section-fold-surface',
+      NO_RECORDS,
+      pendingWhole || pendingHeadings
+        ? 'full'
+        : pendingListBlocks.size > 0
+          ? 'local'
+          : 'skipped',
+      pendingListBlocks.size,
+    )
   const offFeed = onUnitFeed(window, (change, feed) => {
     const editor = surface()
     if (
