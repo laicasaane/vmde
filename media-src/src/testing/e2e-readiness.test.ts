@@ -6,6 +6,7 @@ import {
   markEditorReady,
   markModeReady,
   markRouterReady,
+  recordE2ESwitches,
   snapshotE2EReadiness,
 } from './e2e-readiness'
 
@@ -76,5 +77,61 @@ describe('E2E readiness ledger', () => {
       (window as unknown as { __vmdeE2EReadiness?: unknown })
         .__vmdeE2EReadiness,
     ).toBeUndefined()
+  })
+})
+
+// Task 733 / 024: the shipped switches, recorded once per editor init so a real-VS-Code spec can
+// skip the tests of a feature that ships off.
+describe('E2E readiness switches', () => {
+  const SWITCHES = {
+    wysiwygUnits: false,
+    sourceUnits: true,
+    definitionUnits: false,
+    singleSelectionWrite: true,
+  }
+
+  afterEach(() => {
+    configureE2EReadiness(false)
+  })
+
+  it('leaves the switches absent until they are recorded', () => {
+    configureE2EReadiness(true)
+
+    const snapshot = snapshotE2EReadiness()
+    expect(snapshot).not.toBeNull()
+    expect(snapshot).not.toHaveProperty('switches')
+  })
+
+  it('records the switches in the ledger', () => {
+    configureE2EReadiness(true)
+    recordE2ESwitches(SWITCHES)
+
+    expect(snapshotE2EReadiness()?.switches).toEqual(SWITCHES)
+    expect(
+      (window as unknown as { __vmdeE2EReadiness?: { switches?: unknown } })
+        .__vmdeE2EReadiness?.switches,
+    ).toEqual(SWITCHES)
+  })
+
+  it('copies the switches into the snapshot', () => {
+    configureE2EReadiness(true)
+    recordE2ESwitches(SWITCHES)
+    const snapshot = snapshotE2EReadiness()
+    if (snapshot?.switches) snapshot.switches.sourceUnits = false
+
+    expect(snapshotE2EReadiness()?.switches).toEqual(SWITCHES)
+  })
+
+  it('is a no-op without a ledger', () => {
+    configureE2EReadiness(false)
+    recordE2ESwitches(SWITCHES)
+
+    expect(snapshotE2EReadiness()).toBeNull()
+    expect(
+      (window as unknown as { __vmdeE2EReadiness?: unknown })
+        .__vmdeE2EReadiness,
+    ).toBeUndefined()
+    configureE2EReadiness(true)
+    expect(snapshotE2EReadiness()).not.toHaveProperty('switches')
   })
 })

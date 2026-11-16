@@ -3,6 +3,7 @@ import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
 import {
+  shippedSwitches,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
   wf,
@@ -729,6 +730,7 @@ async function placeInSource(frame: Frame, prefix: string): Promise<number> {
 
 const SOURCE_PARAGRAPH = 'Second paragraph'
 
+// Task 733 / 024: every test of this block needs Source units; each skips while they ship off.
 test.describe('Source counter gates', () => {
   test('keys in Source spin one unit', async ({
     workbox,
@@ -736,6 +738,10 @@ test.describe('Source counter gates', () => {
     baseDir,
   }) => {
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    test.skip(
+      !(await shippedSwitches(frame)).sourceUnits,
+      'Source units ship off',
+    )
     await switchMode(frame, 'sv', false)
     const unitLength = await placeInSource(frame, SOURCE_PARAGRAPH)
     await settleForPublication(workbox)
@@ -760,6 +766,10 @@ test.describe('Source counter gates', () => {
     baseDir,
   }) => {
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    test.skip(
+      !(await shippedSwitches(frame)).sourceUnits,
+      'Source units ship off',
+    )
     await switchMode(frame, 'sv', false)
     await placeInSource(frame, SOURCE_PARAGRAPH)
     await settleForPublication(workbox)
@@ -782,6 +792,10 @@ test.describe('Source counter gates', () => {
     baseDir,
   }) => {
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    test.skip(
+      !(await shippedSwitches(frame)).sourceUnits,
+      'Source units ship off',
+    )
     await switchMode(frame, 'sv', true)
     await placeInSource(frame, SOURCE_PARAGRAPH)
     await settleForPublication(workbox)
@@ -804,6 +818,10 @@ test.describe('Source counter gates', () => {
     baseDir,
   }) => {
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    test.skip(
+      !(await shippedSwitches(frame)).sourceUnits,
+      'Source units ship off',
+    )
     await expect.poll(() => modelState(frame), { timeout: 30_000 }).toBe('live')
     // Hide the Source preview pane first, so the measured switch renders no Split pane.
     await switchMode(frame, 'sv', false)
@@ -828,6 +846,10 @@ test.describe('Source counter gates', () => {
     baseDir,
   }) => {
     const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    test.skip(
+      !(await shippedSwitches(frame)).sourceUnits,
+      'Source units ship off',
+    )
     await switchMode(frame, 'sv', false)
     await placeInSource(frame, SOURCE_PARAGRAPH)
     await typeLetters(workbox, 150)

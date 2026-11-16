@@ -2,7 +2,12 @@ import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
-import { docText, waitForE2EReadiness, wf } from './webview-helpers'
+import {
+  docText,
+  shippedSwitches,
+  waitForE2EReadiness,
+  wf,
+} from './webview-helpers'
 
 // Task 733 / 015-T2 (task 015 sections 6.2 D-1 to D-4 and 6.6): Source mode publishes by units. The
 // saved bytes after typing in each place equal the document outside the edited block; a block the
@@ -128,6 +133,10 @@ test.describe('Source units', () => {
     }) => {
       const file = path.join(baseDir, 'source-units.md')
       const frame = await openSource(workbox, evaluateInVSCode, file, FIXTURE)
+      test.skip(
+        !(await shippedSwitches(frame)).sourceUnits,
+        'Source units ship off',
+      )
       await caretInSource(frame, place.prefix, place.line)
       await workbox.keyboard.type('xy', { delay: 150 })
       await workbox.waitForTimeout(2000)

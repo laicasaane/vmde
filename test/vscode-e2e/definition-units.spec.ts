@@ -9,6 +9,7 @@ import {
   docText,
   reopenVmdeFixture,
   settle,
+  shippedSwitches,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
   type wf,
@@ -81,6 +82,13 @@ async function open(
     { message: 'the definition-units editor installed its router' },
   )
   await waitForInitialUndoSnapshot(frame)
+  // Task 733 / 024: a live open needs definition units; the test skips while they ship off. The
+  // whole-text case (live = false) holds in both states and keeps no guard.
+  if (live)
+    test.skip(
+      !(await shippedSwitches(frame)).definitionUnits,
+      'definition units ship off',
+    )
   if (live)
     await expect
       .poll(async () => (await modelStats(frame))?.state, {

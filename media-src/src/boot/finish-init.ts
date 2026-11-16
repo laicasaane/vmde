@@ -122,7 +122,8 @@ import { placeInitialCaret } from '../editing/initial-caret'
 import { installDblclickWordSelectFix } from '../editing/dblclick-word-select'
 import { installIrWholeDocumentEdit } from '../editing/ir-whole-document-edit'
 import { installSvSelectionEdit } from '../editing/sv-selection-edit-dom'
-import { markEditorReady } from '../testing/e2e-readiness'
+import { markEditorReady, recordE2ESwitches } from '../testing/e2e-readiness'
+import { VDITOR_SINGLE_SELECTION_WRITE } from '../util/selection-write'
 import { isCompositionActive } from '../util/caret-gesture'
 import { installMutationRecordProbe } from '../util/mutation-impact'
 import { installVditorHistoryCoupling } from '../editing/undo-keybind'
@@ -138,8 +139,10 @@ import { loadScript } from '../util/load-script'
 import {
   DEFINITION_UNITS,
   provideUnitFeed,
+  SOURCE_UNITS,
   unitFeedOf,
   unitModeOf,
+  WYSIWYG_UNITS,
 } from '../util/unit-changes'
 import {
   currentBlockProjection,
@@ -972,6 +975,14 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   // Task 733: edit-path counters, only in real-VS-Code end-to-end runs (the readiness ledger exists).
   if (window.__vmdeE2EReadiness)
     installEditCounters(window, window.vditor as any)
+  // Task 733 / 024: the shipped switches, read by the real-VS-Code spec guards (`shippedSwitches`).
+  if (window.__vmdeE2EReadiness)
+    recordE2ESwitches({
+      wysiwygUnits: WYSIWYG_UNITS,
+      sourceUnits: SOURCE_UNITS,
+      definitionUnits: DEFINITION_UNITS,
+      singleSelectionWrite: VDITOR_SINGLE_SELECTION_WRITE,
+    })
   // Task 640: wrap hints (empty zero-width-break spans) in inline code too wide for its line, in
   // IR, WYSIWYG and Preview. View-only: the WYSIWYG strip just above keeps them out of Lute, and
   // util/wrap-hint-mark.ts keeps them out of the observers, Undo and the incremental IR cache.

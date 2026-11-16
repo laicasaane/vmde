@@ -78,7 +78,11 @@ vi.mock('../editing/undo-keybind', async (importOriginal) => ({
 vi.mock('../diagrams/diagram-runtime', () => ({ installDiagramRuntime }))
 vi.mock('./toolbar-flow-install', () => ({ installToolbarFlow }))
 vi.mock('../editing/initial-caret', () => ({ placeInitialCaret }))
-vi.mock('../testing/e2e-readiness', () => ({ markEditorReady }))
+const recordE2ESwitches = vi.fn()
+vi.mock('../testing/e2e-readiness', () => ({
+  markEditorReady,
+  recordE2ESwitches,
+}))
 // Task 412 — finish-init.ts registers this directly (not through installDiagramRuntime's per-lang
 // adapter table, mocked above), so it needs its own mock here.
 vi.mock('../diagrams/diagram-retheme', () => ({
@@ -846,6 +850,51 @@ it('unit spin: no stats object and no counting without the end-to-end readiness 
   expect(t.hook({}, t.range, t.table, undefined)).toBe(true)
   expect(t.stats()).toBeUndefined()
   endUnitSpinTest(t.observers)
+})
+
+// Task 733 / 024: real-VS-Code specs read the shipped switches from the readiness ledger.
+it('records the four shipped switches once when the end-to-end readiness ledger exists', async () => {
+  const { DEFINITION_UNITS, SOURCE_UNITS, WYSIWYG_UNITS } = await import(
+    '../util/unit-changes'
+  )
+  const { VDITOR_SINGLE_SELECTION_WRITE } = await import(
+    '../util/selection-write'
+  )
+  recordE2ESwitches.mockClear()
+  const win = window as unknown as Record<string, unknown>
+  win.__vmdeE2EReadiness = {}
+  const observers = new Disposables()
+  runFinishInit(
+    { content: '', options: {} } as Parameters<typeof runFinishInit>[0],
+    {
+      observers,
+      cdn: 'test',
+      reportDocMode: vi.fn(),
+      snapshotExactMarkdown: vi.fn(() => ''),
+      snapshotPair: vi.fn(() => ({ exact: '', rendered: '' })),
+      snapshotRevision: () => ({}),
+      setApplying: vi.fn(),
+      postExact: vi.fn(),
+    },
+  )
+
+  // Read before the cleanup, so a failing expectation still disposes the observers.
+  const calls = recordE2ESwitches.mock.calls.slice()
+  observers.disposeAll()
+  delete win.__vmdeE2EReadiness
+  delete win.__vmdeUnitSpinStats
+  delete win.__vmdeSpinUnit
+
+  expect(calls).toEqual([
+    [
+      {
+        wysiwygUnits: WYSIWYG_UNITS,
+        sourceUnits: SOURCE_UNITS,
+        definitionUnits: DEFINITION_UNITS,
+        singleSelectionWrite: VDITOR_SINGLE_SELECTION_WRITE,
+      },
+    ],
+  ])
 })
 
 afterEach(async () => {

@@ -5,7 +5,9 @@ import { splitTableRowCells } from '../../src/shared/table-code-pipes'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
 import {
   docText,
+  type E2ESwitches,
   reopenVmdeFixture,
+  shippedSwitches,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
   type wf,
@@ -53,7 +55,9 @@ async function open(
   baseDir: string,
   name: string,
   text: string,
-  options: { live: boolean } = { live: true },
+  options: { live: boolean; requires?: [keyof E2ESwitches, string] } = {
+    live: true,
+  },
 ): Promise<{ frame: Frame; file: string }> {
   const file = path.join(baseDir, name)
   writeFileSync(file, text)
@@ -68,6 +72,12 @@ async function open(
     { message: 'the delta-protocol editor installed its router' },
   )
   await waitForInitialUndoSnapshot(frame)
+  // Task 733 / 024: a test of a switch that ships off skips before it waits for the live model.
+  if (options.requires)
+    test.skip(
+      !(await shippedSwitches(frame))[options.requires[0]],
+      options.requires[1],
+    )
   if (options.live) {
     // The model builds on the animation frame after the host text arrives.
     await expect.poll(() => modelState(frame), { timeout: 30_000 }).toBe('live')
@@ -450,6 +460,39 @@ test.describe('delta protocol', () => {
       .toBe(HEAVY)
   })
 
+  // Task 733 / 024: the off-state test, restored from before task 017; it skips while definition
+  // units ship on.
+  test('a document with a reference definition keeps the whole-text path', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const { frame, file } = await open(
+      workbox,
+      evaluateInVSCode,
+      baseDir,
+      'delta-refdef.md',
+      REFDEF,
+      { live: false },
+    )
+    test.skip(
+      (await shippedSwitches(frame)).definitionUnits,
+      'definition units ship on',
+    )
+    await frame.locator('.vditor-ir .vditor-reset > p').first().click()
+    await workbox.keyboard.press('Home')
+    for (let i = 0; i < 3; i++) await workbox.keyboard.press('ArrowRight')
+    await resetCounters(frame, REFDEF.length)
+    await workbox.keyboard.type('q', { delay: 80 })
+    await settle(workbox)
+    await expect
+      .poll(() => docText(evaluateInVSCode as never, file))
+      .toContain('Seeq')
+    const counters = await readCounters(frame)
+    expect(counters.legacyEditPosts).toBeGreaterThanOrEqual(1)
+    expect(counters.fallbackPublications).toBe(0)
+  })
+
   // Task 733 / 017 (task 017 section 6.8): with DEFINITION_UNITS on, a document with a reference
   // definition keeps the model live, so typing publishes a delta instead of the whole text.
   test('a document with a reference definition publishes deltas', async ({
@@ -463,6 +506,10 @@ test.describe('delta protocol', () => {
       baseDir,
       'delta-refdef.md',
       REFDEF,
+      {
+        live: true,
+        requires: ['definitionUnits', 'definition units ship off'],
+      },
     )
     await frame.locator('.vditor-ir .vditor-reset > p').first().click()
     await workbox.keyboard.press('Home')

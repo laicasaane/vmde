@@ -119,6 +119,33 @@ export interface E2EReadinessSnapshot {
   mode: 'ir' | 'wysiwyg' | 'sv' | null
   pending: Record<string, number>
   completed: Record<string, number>
+  /** Task 733 / 024: absent until the editor init records the shipped switches. */
+  switches?: E2ESwitches
+}
+
+/** Copy of `media-src/src/testing/e2e-readiness.ts` `E2ESwitches`. */
+export interface E2ESwitches {
+  wysiwygUnits: boolean
+  sourceUnits: boolean
+  definitionUnits: boolean
+  singleSelectionWrite: boolean
+}
+
+/**
+ * Task 733 / 024: the switches the webview build ships, read after the editor opens. A guarded test
+ * skips with `test.skip(!(await shippedSwitches(frame)).sourceUnits, 'Source units ship off')`. A
+ * missing field fails the test; it never skips silently.
+ */
+export async function shippedSwitches(
+  frame: ReturnType<typeof wf>,
+): Promise<E2ESwitches> {
+  const snapshot = await waitForE2EReadiness(
+    frame,
+    (s) => s.switches !== undefined,
+    { message: 'the readiness ledger records the shipped switches' },
+  )
+  if (!snapshot.switches) throw new Error('no shipped switches recorded')
+  return snapshot.switches
 }
 
 export async function waitForE2EReadiness(

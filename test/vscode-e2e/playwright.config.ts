@@ -176,9 +176,13 @@ pinXtestInputMethod(process.env)
 // tag flipped on/off by its OWN env var needs its own OR branch, not a second ternary that would
 // silently stop excluding `@probe` whenever `VMDE_VISUAL=1` was set (and vice versa). Verify all
 // four on/off combinations with `npx playwright test --list` (± VMDE_VISUAL, ± VMDE_PROBES).
+// Task 733 / 024: `VMDE_GREP_EXCLUDE` adds one more pattern (the known-baseline failures, one
+// `<file>\.spec\.ts .*<title>(?= @|$)` entry each), so `@probe` and `@visual` stay excluded with it.
 const grepExcludePatterns: string[] = []
 if (!process.env.VMDE_VISUAL) grepExcludePatterns.push('@visual')
 if (!process.env.VMDE_PROBES) grepExcludePatterns.push('@probe')
+if (process.env.VMDE_GREP_EXCLUDE)
+  grepExcludePatterns.push(`(?:${process.env.VMDE_GREP_EXCLUDE})`)
 const grepInvert = grepExcludePatterns.length
   ? new RegExp(grepExcludePatterns.join('|'))
   : undefined

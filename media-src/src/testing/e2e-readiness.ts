@@ -1,5 +1,13 @@
 export type E2EMode = 'ir' | 'wysiwyg' | 'sv'
 
+/** Task 733 / 024: the shipped unit switches, so a real-VS-Code spec can skip a feature that ships off. */
+export interface E2ESwitches {
+  wysiwygUnits: boolean
+  sourceUnits: boolean
+  definitionUnits: boolean
+  singleSelectionWrite: boolean
+}
+
 export interface E2EReadinessSnapshot {
   routerReady: boolean
   editorEpoch: number
@@ -7,6 +15,8 @@ export interface E2EReadinessSnapshot {
   mode: E2EMode | null
   pending: Record<string, number>
   completed: Record<string, number>
+  /** Absent until `recordE2ESwitches` runs. */
+  switches?: E2ESwitches
 }
 
 declare global {
@@ -56,6 +66,12 @@ export function markModeReady(mode: E2EMode): void {
   ledger.mode = mode
 }
 
+/** Task 733 / 024: records the shipped switches once per editor init (end-to-end runs only). */
+export function recordE2ESwitches(switches: E2ESwitches): void {
+  if (!ledger) return
+  ledger.switches = { ...switches }
+}
+
 export function beginE2EActivity(kind: string): () => void {
   const target = ledger
   if (!target)
@@ -81,9 +97,11 @@ export function markE2EError(kind: string, error: unknown): void {
 
 export function snapshotE2EReadiness(): E2EReadinessSnapshot | null {
   if (!ledger) return null
-  return {
+  const snapshot: E2EReadinessSnapshot = {
     ...ledger,
     pending: { ...ledger.pending },
     completed: { ...ledger.completed },
   }
+  if (ledger.switches) snapshot.switches = { ...ledger.switches }
+  return snapshot
 }

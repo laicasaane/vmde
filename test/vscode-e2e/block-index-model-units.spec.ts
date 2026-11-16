@@ -10,6 +10,7 @@ import { tableHeavyMarkdown } from './table-heavy-markdown'
 import {
   docText,
   settle,
+  shippedSwitches,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
   wf,
@@ -366,6 +367,11 @@ test.describe('block index on model units', () => {
       'block-index-off.md',
       // Task 733 / 017: a definition keeps the model live; a multi-paragraph footnote is still declined.
       '# Title\n\nalpha [^a]\n\n[^a]: First.\n\n    Second.\n\nomega\n',
+    )
+    // Task 733 / 024: this test asserts the off state; its on counterpart belongs to task 021.
+    test.skip(
+      (await shippedSwitches(frame)).definitionUnits,
+      'definition units ship on',
     )
     await expect
       .poll(async () => (await readStats(frame))?.state, {

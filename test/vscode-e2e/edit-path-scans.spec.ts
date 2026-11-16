@@ -5,6 +5,7 @@ import { tableHeavyMarkdown } from './table-heavy-markdown'
 import {
   docText,
   settle,
+  shippedSwitches,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
   wf,
@@ -241,6 +242,75 @@ test.describe('edit path without whole-document scans', () => {
     expect((await counters(frame)).fullGetValue).toBe(0)
   })
 
+  // Task 733 / 024: the off-state test, restored from before task 017; it skips while definition
+  // units ship on.
+  test('a reference typed mid-document still moves its definitions block to the end', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    // A diagram far above the edit: a spin of the whole root (the caret in the definitions block)
+    // re-creates its preview, which must render again.
+    const text = FIXTURE.replace(
+      '# Overview\n',
+      '# Overview\n\n```mermaid\ngraph TD\n  A --> B\n```\n',
+    )
+    const { frame, file } = await open(
+      workbox,
+      evaluateInVSCode,
+      baseDir,
+      'eps-reference.md',
+      text,
+    )
+    test.skip(
+      (await shippedSwitches(frame)).definitionUnits,
+      'definition units ship on',
+    )
+    const diagram = frame.locator(
+      '.vditor-ir [data-type="code-block"] .vditor-ir__preview svg',
+    )
+    await expect(diagram.first()).toBeAttached({ timeout: 30_000 })
+    await caretAtEnd(workbox, frame, PARAGRAPH, 2)
+    await resetCounters(frame, text.length)
+    await workbox.keyboard.press('Enter')
+    await workbox.waitForTimeout(300)
+    await workbox.keyboard.type('[r]: https://example.com', { delay: 60 })
+    await workbox.keyboard.press('Enter')
+    await settle(frame, 2500)
+    // The last content child of the IR root (view-only paragraphs skipped) is the definitions block.
+    const lastType = await frame.locator('body').evaluate(() => {
+      const root = document.querySelector('.vditor-ir .vditor-reset')
+      let el = root?.lastElementChild ?? null
+      while (
+        el &&
+        (el.hasAttribute('data-vmde-trailing') ||
+          el.hasAttribute('data-vmde-gap') ||
+          el.hasAttribute('data-vmde-leading'))
+      )
+        el = el.previousElementSibling
+      return el?.getAttribute('data-type') ?? null
+    })
+    expect(lastType).toBe('link-ref-defs-block')
+    const defsBlocks = await frame
+      .locator('.vditor-ir .vditor-reset > [data-type="link-ref-defs-block"]')
+      .count()
+    expect(defsBlocks).toBe(1)
+    expect(await docText(evaluateInVSCode, file)).toContain(
+      '[r]: https://example.com',
+    )
+    // A definitions block is not a unit kind: the model turns off and publishes the whole text.
+    expect((await counters(frame)).fallbackPublications).toBeGreaterThanOrEqual(
+      1,
+    )
+    expect((await modelStats(frame))?.offReason).toBe('unit-without-kind')
+    await expect(diagram.first()).toBeAttached({ timeout: 10_000 })
+    expect(
+      await frame
+        .locator('.vditor-ir .vditor-ir__preview[data-render="2"]')
+        .count(),
+    ).toBe(0)
+  })
+
   // Task 733 / 017 (Q-110, task 017 section 6.4): with DEFINITION_UNITS on, the model stays live and a
   // definition typed mid-document stays where it was typed, in the DOM and in the saved text.
   test('a definition typed mid-document stays where it was typed', async ({
@@ -260,6 +330,10 @@ test.describe('edit path without whole-document scans', () => {
       baseDir,
       'eps-reference.md',
       text,
+    )
+    test.skip(
+      !(await shippedSwitches(frame)).definitionUnits,
+      'definition units ship off',
     )
     const diagram = frame.locator(
       '.vditor-ir [data-type="code-block"] .vditor-ir__preview svg',

@@ -5,6 +5,7 @@ import { tableHeavyMarkdown } from './table-heavy-markdown'
 import {
   docText,
   settle,
+  shippedSwitches,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
   wf,
@@ -338,6 +339,11 @@ test.describe('history delta (task 004)', () => {
       baseDir,
       'hd-source.md',
       FIXTURE,
+    )
+    // Task 733 / 024: this test asserts the off state; its on counterpart belongs to task 019.
+    test.skip(
+      (await shippedSwitches(frame)).sourceUnits,
+      'Source units ship on',
     )
     await frame.locator('.vditor-toolbar [data-type="edit-mode"]').click()
     await frame.locator('button[data-mode="sv"]').click()

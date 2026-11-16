@@ -2,7 +2,13 @@ import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
-import { docText, settle, waitForE2EReadiness, wf } from './webview-helpers'
+import {
+  docText,
+  settle,
+  shippedSwitches,
+  waitForE2EReadiness,
+  wf,
+} from './webview-helpers'
 
 // Task 733 / 013 (D-13): the text model, the unit spin, the unit history and the unit feed serve
 // WYSIWYG. Open in IR, switch to WYSIWYG, then:
@@ -64,6 +70,11 @@ async function openInIr(
     frame,
     (snapshot) => snapshot.routerReady && snapshot.editorEpoch > 0,
     { message: 'the WYSIWYG units editor installed its router' },
+  )
+  // Task 733 / 024: every test of this file needs WYSIWYG units; it skips while they ship off.
+  test.skip(
+    !(await shippedSwitches(frame)).wysiwygUnits,
+    'WYSIWYG units ship off',
   )
   return frame
 }

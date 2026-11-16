@@ -2,7 +2,12 @@ import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
-import { docText, waitForE2EReadiness, wf } from './webview-helpers'
+import {
+  docText,
+  shippedSwitches,
+  waitForE2EReadiness,
+  wf,
+} from './webview-helpers'
 
 // Task 733 / 015-T2 (task 015 sections 6.2 D-5 and 6.6): the text model survives IR, Source and IR
 // with its epoch. Without typing, no post follows the switches, so today the model stays off in
@@ -92,6 +97,10 @@ test.describe('mode switch keeps the model epoch', () => {
   }) => {
     const file = path.join(baseDir, 'mode-switch-epoch.md')
     const frame = await open(workbox, evaluateInVSCode, file)
+    test.skip(
+      !(await shippedSwitches(frame)).sourceUnits,
+      'Source units ship off',
+    )
     const opened = await modelDigest(frame)
     expect(opened).toBeTruthy()
     await switchMode(frame, 'sv')

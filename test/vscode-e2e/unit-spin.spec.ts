@@ -7,6 +7,7 @@ import { createXtestInput, type XtestInput } from './helpers/xtest-input'
 import { tableHeavyMarkdown } from './table-heavy-markdown'
 import {
   docText,
+  shippedSwitches,
   waitForE2EReadiness,
   waitForInitialUndoSnapshot,
   wf,
@@ -328,6 +329,27 @@ test.describe('unit spin', () => {
     expect(hooked.counters.luteList, JSON.stringify(hooked.stats)).toBe(0)
   })
 
+  // Task 733 / 024: the off-state test, restored from before task 017 (`MODEL_OFF_DOC` is now
+  // `DEFINITION_DOC`, the same text); it skips while definition units ship on.
+  test('model off', async ({ workbox, evaluateInVSCode, electronApp }) => {
+    const { hooked } = await both(
+      { workbox, evaluateInVSCode: evaluateInVSCode as never, electronApp },
+      'model-off',
+      DEFINITION_DOC,
+      SMALL_CELL,
+      async ({ workbox: page, frame }) => {
+        test.skip(
+          (await shippedSwitches(frame)).definitionUnits,
+          'definition units ship on',
+        )
+        await page.keyboard.type('q')
+        await page.waitForTimeout(500)
+      },
+    )
+    // A document with a definition has no live model: the hook refuses and the block spin runs.
+    expect(hooked.stats?.['model-off'] ?? 0).toBeGreaterThanOrEqual(1)
+  })
+
   test('a document with a definition spins the cell alone', async ({
     workbox,
     evaluateInVSCode,
@@ -338,7 +360,11 @@ test.describe('unit spin', () => {
       'definition-doc',
       DEFINITION_DOC,
       SMALL_CELL,
-      async ({ workbox: page }) => {
+      async ({ workbox: page, frame }) => {
+        test.skip(
+          !(await shippedSwitches(frame)).definitionUnits,
+          'definition units ship off',
+        )
         await page.keyboard.type('q')
         await page.waitForTimeout(500)
       },

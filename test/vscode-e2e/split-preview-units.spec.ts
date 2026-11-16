@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from 'vscode-test-playwright'
-import { waitForE2EReadiness, wf } from './webview-helpers'
+import { shippedSwitches, waitForE2EReadiness, wf } from './webview-helpers'
 
 // Task 733 / 015-T2 (task 015 sections 6.2 D-6 and 6.6): the Split pane renders the Source units that
 // changed. After each operation the pane's text equals one whole `Md2HTML` of the Source text (rendered
@@ -136,6 +136,10 @@ test('the Split pane follows each operation by units and keeps other diagrams', 
     workbox,
     evaluateInVSCode,
     path.join(baseDir, 'split-units.md'),
+  )
+  test.skip(
+    !(await shippedSwitches(frame)).sourceUnits,
+    'Source units ship off',
   )
   // Mark the rendered diagram; a whole re-render of the pane would replace this element.
   await frame

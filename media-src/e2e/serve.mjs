@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { vditorSourceConfig } from '../esbuild-shared.mjs'
 import { HARNESS_ENTRIES } from './harness-entries.mjs'
+import { harnessSwitchPlugin, parseSwitchSet } from './harness-switches.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const mediaVditor = path.resolve(__dirname, '../../media/vditor')
@@ -42,6 +43,67 @@ for (const e of HARNESS_ENTRIES) {
   for (const route of e.routes) htmlByRoute[route] = body
 }
 
+// Task 733 / 024: the smoke stage's harness pages, `/smoke/<set>.html` and `/smoke/<set>.js`, where
+// <set> is 'none' or a '+'-joined subset of wysiwyg, source and definition (harness-switches.mjs).
+// Each set's bundle is built lazily, once: the cache holds the build promise, so concurrent first
+// requests share one build. These bundles are not coverage entries (harness-entries.mjs is unchanged).
+const SMOKE_ROUTE = /^\/smoke\/([a-z+]+)\.(html|js)$/
+const SMOKE_SCRIPT = '<script src="/shortcut-negative.js"></script>'
+const smokeBundles = new Map()
+function smokeBundle(set, constants) {
+  let pending = smokeBundles.get(set)
+  if (!pending) {
+    pending = esbuild
+      .build({
+        ...vditorSourceConfig,
+        // The switch plugin comes first; the shared plugins load only Vditor files.
+        plugins: [harnessSwitchPlugin(constants), ...vditorSourceConfig.plugins],
+        entryPoints: [path.join(__dirname, 'shortcut-negative-harness.ts')],
+        bundle: true,
+        format: 'iife',
+        sourcemap: 'inline',
+        write: false,
+        outdir: __dirname,
+      })
+      .then((result) => {
+        const script = result.outputFiles.find((f) => f.path.endsWith('.js'))
+        if (!script) throw new Error(`no script in the smoke bundle ${set}`)
+        return script.text
+      })
+    // A failed build is not cached, so the next request retries it.
+    pending.catch(() => smokeBundles.delete(set))
+    smokeBundles.set(set, pending)
+  }
+  return pending
+}
+function smokeHtml(set) {
+  const html = fs.readFileSync(path.join(__dirname, 'shortcut-negative.html'), 'utf8')
+  if (html.split(SMOKE_SCRIPT).length !== 2)
+    throw new Error('shortcut-negative.html: expected one /shortcut-negative.js script')
+  return html.replace(SMOKE_SCRIPT, `<script src="/smoke/${set}.js"></script>`)
+}
+function serveSmoke(res, set, kind) {
+  const constants = parseSwitchSet(set)
+  if (!constants) {
+    res.statusCode = 404
+    return res.end('not found')
+  }
+  if (kind === 'html') {
+    res.setHeader('content-type', 'text/html')
+    return res.end(smokeHtml(set))
+  }
+  smokeBundle(set, constants).then(
+    (text) => {
+      res.setHeader('content-type', 'text/javascript')
+      res.end(text)
+    },
+    (error) => {
+      res.statusCode = 500
+      res.end(String(error?.message ?? error))
+    },
+  )
+}
+
 const types = {
   '.js': 'text/javascript',
   '.css': 'text/css',
@@ -64,6 +126,8 @@ const server = http.createServer((req, res) => {
     res.setHeader('content-type', 'text/html')
     return res.end(html)
   }
+  const smoke = SMOKE_ROUTE.exec(url)
+  if (smoke) return serveSmoke(res, smoke[1], smoke[2])
   if (bundles[url]) {
     res.setHeader('content-type', 'text/javascript')
     return res.end(bundles[url])
