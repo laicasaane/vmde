@@ -10,6 +10,19 @@ import {
   type SourceBlockIndexDeps,
 } from './source-block-index'
 
+// Task 733 / 013 (Q-129): the WYSIWYG part of the Q-122 case proves the WYSIWYG path while the
+// shipped `WYSIWYG_UNITS` stays false. `wysiwygUnitsOn` turns the default of `unitModeOf` on for
+// that part only; every other case keeps the shipped default.
+const wysiwygUnitsOn = vi.hoisted(() => ({ value: false }))
+vi.mock('../util/unit-changes', async (original) => {
+  const actual = await original<typeof import('../util/unit-changes')>()
+  return {
+    ...actual,
+    unitModeOf: (mode: string | null | undefined, wysiwygUnits?: boolean) =>
+      actual.unitModeOf(mode, wysiwygUnits ?? wysiwygUnitsOn.value),
+  }
+})
+
 afterEach(() => {
   provideUnitFeed(window, undefined)
   document.body.replaceChildren()
@@ -819,7 +832,12 @@ it('uses the existing path when the model has no value or is absent, and the mod
 
   const wys = modelSetup()
   wys.state.projection = { owner: wys.state.projection.owner, mode: 'wysiwyg' }
-  wys.index.read()
+  wysiwygUnitsOn.value = true
+  try {
+    wys.index.read()
+  } finally {
+    wysiwygUnitsOn.value = false
+  }
   // Task 733 / 013 (Q-122): with WYSIWYG units the model serves WYSIWYG, so the index reads it there.
   expect(wys.modelUnitsFn).toHaveBeenCalled()
   expect(wys.resolveUnits).not.toHaveBeenCalled()
