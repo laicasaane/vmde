@@ -21,6 +21,9 @@ export type BackgroundJobName =
   | 'diagram-decorate'
   | 'fold-apply'
   | 'fold-glyphs'
+  // Task 733 / 017: the definition index's reference build (idle) and dependent re-render (frame).
+  | 'definition-references'
+  | 'definition-dependents'
 export interface SliceBudget {
   /** True when the slice is spent (clock at or past the deadline) or input is pending. O(1), no allocation.
    *  A job calls it before each unit of work in every loop, collection loops included. */

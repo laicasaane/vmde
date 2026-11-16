@@ -1,5 +1,5 @@
 import { writeQuietly } from '../util/mutation-impact'
-import type { LiveUnit } from '../util/unit-changes'
+import type { DefinitionContext, LiveUnit } from '../util/unit-changes'
 
 // Unit spin (Task 733 / 002): a key inside one table cell or one top-level list item re-spins that
 // unit alone instead of the whole table or list. Vditor's `ir/input.ts` and the IR paste handler
@@ -34,7 +34,36 @@ export interface UnitSpinDeps {
   isModelLive?(): boolean
   /** End-to-end runs only: count the outcome (reasons and counts, no content). */
   count?(result: 'spun' | UnitSpinRefusal): void
+  /** Task 733 / 017: spins one definitions div alone (absent: definitions keep Vditor's whole-root spin). */
+  spinDefinition?(defOuterHtml: string): UnitSpinResult
+  /** Task 733 / 017: spins one footnote definition in its block shell (absent: the footnotes block spin). */
+  spinFootnote?(shellOpenTag: string, defOuterHtml: string): UnitSpinResult
+  /** Task 733 / 017: the referenced definitions of a spin source, for the spin functions of these deps. */
+  contextFor?(source: string): DefinitionContext | undefined
 }
+
+/**
+ * Task 733 / 017 (patch V-D1): the model side of the IR block spin's definition context, set by `boot`
+ * for the live IR session (editing never imports `bridge`) and read by the window hooks of
+ * `edit-activity.ts`. Absent: those hooks answer `undefined` and Vditor's code runs.
+ */
+export interface DefinitionContextProvider {
+  /** The definition units are live for `root`. O(1). */
+  isLive(root: HTMLElement): boolean
+  contextFor(source: string): DefinitionContext | undefined
+  strip(html: string, context: DefinitionContext): string | undefined
+}
+let definitionProvider: DefinitionContextProvider | undefined
+
+export function setDefinitionContextProvider(
+  provider: DefinitionContextProvider | undefined,
+): void {
+  definitionProvider = provider
+}
+
+export const definitionContextProvider = ():
+  | DefinitionContextProvider
+  | undefined => definitionProvider
 
 const ITEM_ATTRIBUTES = ['class', 'data-marker'] as const
 const SPUN = 'spun'
@@ -238,8 +267,10 @@ export function spinUnit(
   before.multiUnit = false
   before.itemStart = false
   // Rule 1: the link-ref-defs widening of upstream made the IR root the block. Every top-level IR
-  // block carries `data-block`; the root does not.
-  if (!blockElement.hasAttribute('data-block')) return refuse(deps, NOT_A_UNIT)
+  // block carries `data-block`; the root does not. Task 733 / 017: a caret in a definition unit spins
+  // that definition alone instead of the whole root.
+  if (!blockElement.hasAttribute('data-block'))
+    return spinRootDefinition(deps, range)
   // Task 733 / 011 (shared rules 3.8): Enter in a top-level item of a tight list spins the split pair.
   if (event?.inputType === 'insertParagraph' && !deps.isSettleRespin()) {
     const decided = spinSplitPair(deps, range, blockElement, multiUnit)
@@ -256,12 +287,55 @@ export function spinUnit(
       multiUnit,
       itemStart,
     )
+  // Rule 3b (task 733 / 017): a footnote definition, whose block is its inner paragraph or the block.
+  if (
+    unit.kind === 'footnote' &&
+    (unit.el.contains(blockElement) || unit.top === blockElement)
+  )
+    return spinFootnoteUnit(deps, unit)
   if (unit.top !== blockElement) return refuse(deps, NOT_A_UNIT)
   if (unit.kind === 'cell') return spinCellUnit(deps, unit.el, multiUnit)
   if (unit.kind === 'list-item')
     return spinItemUnit(deps, unit.el, event, multiUnit, itemStart)
   // Rule 5: every other unit keeps Vditor's block spin.
   return refuse(deps, NOT_A_UNIT)
+}
+
+/** The inner HTML of a spun element's outer HTML (`<tag …>inner</tag>`). */
+const innerOf = (outerHtml: string, tag: string): string =>
+  outerHtml.slice(
+    outerHtml.indexOf('>') + 1,
+    outerHtml.lastIndexOf(`</${tag}>`),
+  )
+
+/** Rule 1 branch (task 733 / 017): the caret's definition unit is spun alone; its element stays. */
+function spinRootDefinition(deps: UnitSpinDeps, range: Range): boolean {
+  if (!deps.spinDefinition) return refuse(deps, NOT_A_UNIT)
+  const unit = deps.liveUnitOf(range.startContainer)
+  if (unit?.kind !== 'definition') return refuse(deps, NOT_A_UNIT)
+  const result = deps.spinDefinition(unit.el.outerHTML)
+  if (result.kind !== 'spun') return refuse(deps, result.reason)
+  const inner = innerOf(result.html, 'div')
+  if (inner !== unit.el.innerHTML) unit.el.innerHTML = inner
+  deps.count?.(SPUN)
+  return true
+}
+
+/** Rule 3b (task 733 / 017): one footnote definition spun in its block shell; its element stays. */
+function spinFootnoteUnit(deps: UnitSpinDeps, unit: LiveUnit): boolean {
+  if (!deps.spinFootnote) return refuse(deps, NOT_A_UNIT)
+  const def = unit.el
+  if (!def.querySelector('wbr')) return refuse(deps, SHAPE)
+  const shell = (unit.top.cloneNode(false) as HTMLElement).outerHTML.replace(
+    /<\/div>$/u,
+    '',
+  )
+  const result = deps.spinFootnote(shell, def.outerHTML)
+  if (result.kind !== 'spun') return refuse(deps, result.reason)
+  const inner = innerOf(result.html, 'div')
+  if (inner !== def.innerHTML) def.innerHTML = inner
+  deps.count?.(SPUN)
+  return true
 }
 
 /** The li of `node` that is a direct child of `list`, or null. */

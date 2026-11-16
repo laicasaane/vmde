@@ -450,7 +450,9 @@ test.describe('delta protocol', () => {
       .toBe(HEAVY)
   })
 
-  test('a document with a reference definition keeps the whole-text path', async ({
+  // Task 733 / 017 (task 017 section 6.8): with DEFINITION_UNITS on, a document with a reference
+  // definition keeps the model live, so typing publishes a delta instead of the whole text.
+  test('a document with a reference definition publishes deltas', async ({
     workbox,
     evaluateInVSCode,
     baseDir,
@@ -461,7 +463,6 @@ test.describe('delta protocol', () => {
       baseDir,
       'delta-refdef.md',
       REFDEF,
-      { live: false },
     )
     await frame.locator('.vditor-ir .vditor-reset > p').first().click()
     await workbox.keyboard.press('Home')
@@ -473,7 +474,9 @@ test.describe('delta protocol', () => {
       .poll(() => docText(evaluateInVSCode as never, file))
       .toContain('Seeq')
     const counters = await readCounters(frame)
-    expect(counters.legacyEditPosts).toBeGreaterThanOrEqual(1)
+    expect(counters.deltaPosts).toBeGreaterThanOrEqual(1)
+    expect(counters.legacyEditPosts).toBe(0)
+    expect(counters.fullGetValue).toBe(0)
     expect(counters.fallbackPublications).toBe(0)
   })
 

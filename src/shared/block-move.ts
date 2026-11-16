@@ -17,6 +17,12 @@ export type MovableKind =
   | 'thematic'
   | 'html'
   | 'html-group'
+  // Task 733 / 017: model-only kinds (a link reference definition line, one footnote definition, a
+  // table of contents). `scanMovableBlocks` and `domKind` never produce them, so block actions and
+  // block handles keep today's behaviour; the text model's scan and listing add them.
+  | 'definition'
+  | 'footnote'
+  | 'toc'
 
 export interface MovableBlock extends SourceRange {
   kind: MovableKind

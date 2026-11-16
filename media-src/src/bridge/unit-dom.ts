@@ -6,6 +6,8 @@ import {
 } from '../../../src/shared/block-move'
 import { isHelper } from '../editing/trailing-paragraph'
 import { domKind } from '../nav/unit-pairing'
+import { DEFINITION_UNITS } from '../util/unit-changes'
+import { serializeFootnoteHtml, unitKindOf } from './definition-units'
 import { registerQuietObserver } from '../util/mutation-impact'
 import type { UnitMode } from '../util/unit-changes'
 import { isOwnHintRecord, stripWrapHints } from '../util/wrap-hint-mark'
@@ -138,24 +140,51 @@ const isForeignNode = (node: Node): boolean =>
 /** The units of one top-level element: none for a view-only one, undefined when it has no unit shape. */
 function unitsOfElement(
   element: HTMLElement,
+  definitions: boolean,
 ): HostUnit<HTMLElement>[] | undefined {
   if (isViewOnlyChild(element)) return []
   if (!element.hasAttribute('data-block')) return undefined
   if (element.tagName === 'UL' || element.tagName === 'OL')
     return listItemUnits(element)
-  const kind = domKind(element)
+  // Task 733 / 017: one unit per footnote definition of a footnotes block, as items of a list.
+  if (definitions && element.getAttribute('data-type') === 'footnotes-block')
+    return footnoteUnits(element)
+  const kind = kindFor(element, definitions)
   if (!kind) return undefined
   return [kind === 'table' ? tableUnit(element) : { kind, members: [element] }]
 }
 
-function listUnitsOf(root: HTMLElement): HostUnit<HTMLElement>[] | undefined {
+/** The unit kind of a top-level element; the definition kinds of task 017 only when `definitions`. */
+const kindFor = (element: HTMLElement, definitions: boolean) =>
+  definitions ? unitKindOf(element) : domKind(element)
+
+/** The footnote definition units of a footnotes block; undefined when it holds anything else. */
+function footnoteUnits(
+  block: HTMLElement,
+): HostUnit<HTMLElement>[] | undefined {
+  const units: HostUnit<HTMLElement>[] = []
+  for (let def = block.firstElementChild; def; def = def.nextElementSibling) {
+    if (def.getAttribute('data-type') !== 'footnotes-def') return undefined
+    units.push({ kind: 'footnote', members: [def as HTMLElement] })
+  }
+  return units.length ? units : undefined
+}
+
+/** The opening tag of a footnotes block, the shell one definition is serialized in. */
+const footnoteShellOf = (block: HTMLElement): string =>
+  (block.cloneNode(false) as HTMLElement).outerHTML.replace(/<\/div>$/u, '')
+
+function listUnitsOf(
+  root: HTMLElement,
+  definitions: boolean,
+): HostUnit<HTMLElement>[] | undefined {
   const units: HostUnit<HTMLElement>[] = []
   for (const node of Array.from(root.childNodes)) {
     if (!(node instanceof HTMLElement)) {
       if (isForeignNode(node)) return undefined
       continue
     }
-    const own = unitsOfElement(node)
+    const own = unitsOfElement(node, definitions)
     if (!own) return undefined
     units.push(...own)
   }
@@ -350,6 +379,8 @@ export function createUnitDom(
   lute: UnitLute,
   options?: UnitDomOptions,
 ): UnitHost<HTMLElement> & UnitDomControl {
+  // Task 733 / 017: the definition kinds exist in IR only (WYSIWYG renders definitions differently).
+  const definitions = DEFINITION_UNITS && options?.mode !== 'wysiwyg'
   let model: TextModel<HTMLElement> | undefined
   // Created on the first mark of a batch, so a batch that marks nothing allocates nothing (R-2).
   let batchChanged: Set<Unit<HTMLElement>> | undefined
@@ -410,7 +441,7 @@ export function createUnitDom(
   const isUnitShaped = (el: HTMLElement): boolean => {
     if (!el.hasAttribute('data-block') || isViewOnlyChild(el)) return false
     if (el.tagName !== 'UL' && el.tagName !== 'OL')
-      return domKind(el) !== undefined
+      return kindFor(el, definitions) !== undefined
     if (!el.firstElementChild) return false
     for (let item = el.firstElementChild; item; item = item.nextElementSibling)
       if (item.tagName !== 'LI') return false
@@ -532,6 +563,19 @@ export function createUnitDom(
       }
     }
     if (element.closest('[data-render]')) return
+    if (definitions) {
+      // Task 733 / 017: a TOC's content is rewritten by renderToc (its bytes stay `[toc]`), and a
+      // footnote definition is its own unit inside the footnotes block.
+      if (element.closest('[data-type="toc-block"]')) return
+      const def = element.closest('[data-type="footnotes-def"]')
+      if (def && root.contains(def)) {
+        const unit = model.unitOf(def as HTMLElement)
+        if (unit) {
+          markDirty(unit)
+          return
+        }
+      }
+    }
     if (record.type === 'childList' && onlyRenderNodes(record)) return
     noteInserted(record, element)
     if (element === root) {
@@ -722,12 +766,20 @@ export function createUnitDom(
 
   return {
     render,
-    listUnits: () => listUnitsOf(root),
+    listUnits: () => listUnitsOf(root, definitions),
     html: (kind: UnitKind, el: HTMLElement) =>
       stripWrapHints(kind === 'cell' ? el.innerHTML : el.outerHTML),
     serialize(kind, members) {
       if (kind === 'cell')
         return serializeCellHtml(lute, stripWrapHints(members[0].innerHTML))
+      if (kind === 'footnote') {
+        const def = members[0]
+        return serializeFootnoteHtml(
+          lute,
+          footnoteShellOf(def.parentElement as HTMLElement),
+          stripWrapHints(def.outerHTML),
+        )
+      }
       if (kind === 'list-item') {
         const item = members[0]
         return serializeListItemHtml(

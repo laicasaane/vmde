@@ -420,14 +420,15 @@ test.describe('history delta (task 004)', () => {
 
   // Review repair cases (task 004-R): paths where the unit engine must hand over or restore a structure.
 
-  // The model is off for this document (a reference definition), so the old engine holds the history.
+  // The model is off for this document (a multi-paragraph footnote, which the model still declines
+  // after task 733 / 017 lets definitions keep it live), so the old engine holds the history.
   test('a document the model declines keeps a working Undo (old engine takes over)', async ({
     workbox,
     evaluateInVSCode,
     baseDir,
   }) => {
     const text =
-      '[toc]\n\n# Head\n\nSee [d].\n\n[d]: https://example.com\n\nTail paragraph.\n'
+      '# Head\n\nSee [^1].\n\n[^1]: First paragraph of the note.\n\n    Second paragraph of the note.\n\nTail paragraph.\n'
     const { frame, file } = await open(
       workbox,
       evaluateInVSCode,

@@ -38,6 +38,22 @@ const TABLE_OF_CONTENTS = /^ {0,3}\[toc\][ \t]*$/imu
 // offset 0 of the document may hold front matter).
 const DASH_LINE = /^---[ \t]*(?:\r?\n|$)/u
 
+const dependsOnDefinitions = (slice: string): boolean =>
+  REFERENCE_DEFINITION.test(slice) ||
+  FOOTNOTE_DEFINITION.test(slice) ||
+  TABLE_OF_CONTENTS.test(slice)
+
+/** The slice may reference a label and the document holds a definition or footnote unit. */
+function referencesDefinitions(
+  slice: string,
+  units: readonly { readonly kind: string }[],
+): boolean {
+  if (!slice.includes('[')) return false
+  for (const unit of units)
+    if (unit.kind === 'definition' || unit.kind === 'footnote') return true
+  return false
+}
+
 type Fallback = Extract<ApplyPlanResult<never>, { kind: 'fallback' }>
 const fallback = (reason: Fallback['reason']): Fallback => ({
   kind: 'fallback',
@@ -245,10 +261,13 @@ function planApply<E>(
     const oldEnd = lookAhead ? lookAhead.end : text.length
     if (oldEnd - ws > APPLY_SCAN_LIMIT) return OVERSIZE
     const newSlice = applyWithin(text, ws, oldEnd, changes)
+    // Task 733 / 017 (OQ-3): a window whose old or new text holds a definition, a footnote definition or
+    // a TOC, or whose new text references labels of a document with definitions, keeps the fallback (its
+    // blocks would render without the definitions they depend on).
     if (
-      REFERENCE_DEFINITION.test(newSlice) ||
-      FOOTNOTE_DEFINITION.test(newSlice) ||
-      TABLE_OF_CONTENTS.test(newSlice)
+      dependsOnDefinitions(newSlice) ||
+      dependsOnDefinitions(text.slice(ws, oldEnd)) ||
+      referencesDefinitions(newSlice, units)
     )
       return DEPENDENT
     const scanned = internals.scan(newSlice)

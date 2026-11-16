@@ -1,4 +1,5 @@
 import type { BlockHandleUnit } from '../nav/source-block-index'
+import { isDefinitionKind, type LiveUnit } from '../util/unit-changes'
 import type { ModelSession } from './model-session'
 
 // Task 733 / 005: maps the confirmed top-level model units to the source-block index's units, so
@@ -22,6 +23,9 @@ export function modelBlockUnits(
   for (const unit of modelUnits) {
     const element = unit.members[0]
     if (unit.proof === 'opaque' || !element?.isConnected) return undefined
+    // Task 733 / 017 (OQ-4): a document with definition units keeps the index's existing path (no
+    // block handles in such documents, as before definitions kept the model live).
+    if (isDefinitionKind(unit.kind as LiveUnit['kind'])) return undefined
     // An empty unit (an empty paragraph) has no bytes and gets no handle.
     if (unit.start === unit.end) continue
     units.push({

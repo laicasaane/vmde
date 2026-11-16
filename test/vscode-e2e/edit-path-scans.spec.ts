@@ -241,7 +241,9 @@ test.describe('edit path without whole-document scans', () => {
     expect((await counters(frame)).fullGetValue).toBe(0)
   })
 
-  test('a reference typed mid-document still moves its definitions block to the end', async ({
+  // Task 733 / 017 (Q-110, task 017 section 6.4): with DEFINITION_UNITS on, the model stays live and a
+  // definition typed mid-document stays where it was typed, in the DOM and in the saved text.
+  test('a definition typed mid-document stays where it was typed', async ({
     workbox,
     evaluateInVSCode,
     baseDir,
@@ -270,32 +272,37 @@ test.describe('edit path without whole-document scans', () => {
     await workbox.keyboard.type('[r]: https://example.com', { delay: 60 })
     await workbox.keyboard.press('Enter')
     await settle(frame, 2500)
-    // The last content child of the IR root (view-only paragraphs skipped) is the definitions block.
-    const lastType = await frame.locator('body').evaluate(() => {
+    // The definitions block follows the paragraph it was typed after; nothing moved it to the end.
+    const placement = await frame.locator('body').evaluate((_body, third) => {
       const root = document.querySelector('.vditor-ir .vditor-reset')
-      let el = root?.lastElementChild ?? null
-      while (
-        el &&
-        (el.hasAttribute('data-vmde-trailing') ||
-          el.hasAttribute('data-vmde-gap') ||
-          el.hasAttribute('data-vmde-leading'))
+      const children = Array.from(root?.children ?? [])
+      const defs = children.findIndex(
+        (el) => el.getAttribute('data-type') === 'link-ref-defs-block',
       )
-        el = el.previousElementSibling
-      return el?.getAttribute('data-type') ?? null
-    })
-    expect(lastType).toBe('link-ref-defs-block')
+      const after = children.findIndex((el) =>
+        (el.textContent ?? '').includes(third as string),
+      )
+      return { defs, after, count: children.length }
+    }, THIRD)
+    expect(placement.defs).toBeGreaterThan(placement.after)
+    expect(placement.defs).toBeLessThan(placement.after + 3)
     const defsBlocks = await frame
       .locator('.vditor-ir .vditor-reset > [data-type="link-ref-defs-block"]')
       .count()
     expect(defsBlocks).toBe(1)
-    expect(await docText(evaluateInVSCode, file)).toContain(
-      '[r]: https://example.com',
+    const saved = await docText(evaluateInVSCode, file)
+    expect(saved.indexOf('[r]: https://example.com')).toBeGreaterThan(
+      saved.indexOf(THIRD),
     )
-    // A definitions block is not a unit kind: the model turns off and publishes the whole text.
-    expect((await counters(frame)).fallbackPublications).toBeGreaterThanOrEqual(
-      1,
+    expect(saved.indexOf('[r]: https://example.com')).toBeLessThan(
+      saved.indexOf('- list item 1'),
     )
-    expect((await modelStats(frame))?.offReason).toBe('unit-without-kind')
+    // The definition is a unit kind: the model stays live and publishes deltas.
+    expect((await counters(frame)).fallbackPublications).toBe(0)
+    expect((await counters(frame)).deltaPosts).toBeGreaterThanOrEqual(1)
+    const stats = await modelStats(frame)
+    expect(stats?.state).toBe('live')
+    expect(stats?.offReason).toBeUndefined()
     await expect(diagram.first()).toBeAttached({ timeout: 10_000 })
     expect(
       await frame

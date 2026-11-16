@@ -854,7 +854,8 @@ describe('claimable (F1)', () => {
   })
 
   it('a document the model declines (a reference definition) is not claimable', () => {
-    const r = open('See [d].\n\n[d]: https://e.com\n')
+    // Task 733 / 017: a multi-paragraph footnote is a construct the model still declines.
+    const r = open('See [^1].\n\n[^1]: First.\n\n    Second.\n')
     expect(r.session.isLive()).toBe(false)
     expect(r.port.claimable()).toBe(false)
   })

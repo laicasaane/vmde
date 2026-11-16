@@ -140,7 +140,8 @@ describe('createUnitDom listUnits', () => {
 
   it('gives undefined for a link reference definitions block', () => {
     const root = rootOf(
-      '<p data-block="0">a</p><div data-block="0" data-type="link-ref-defs-block">[x]: https://example.test</div>',
+      // Task 733 / 017: one definition line is a unit; a definitions div merged by Vditor (two lines) is not.
+      '<p data-block="0">a</p><div data-block="0" data-type="link-ref-defs-block">[x]: https://example.test\n[y]: https://example.test/y\n</div>',
     )
     expect(createUnitDom(root, lute).listUnits()).toBeUndefined()
   })

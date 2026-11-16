@@ -32,9 +32,25 @@ import {
   type UnitsChange,
   unitModeOf,
   WYSIWYG_UNITS,
+  DEFINITION_UNITS,
+  type DefinitionContext,
 } from '../util/unit-changes'
+import { backgroundSchedulerOf } from '../util/background-budget'
+import { writeQuietly } from '../util/mutation-impact'
+import { createDefinitionIndex, type DefinitionIndex } from './definition-index'
+import {
+  type FootnoteInfo,
+  normalizeLabel,
+  scanModelBlocks,
+  stripDefinitionContext,
+} from './definition-units'
 import { createUnitCapture } from './unit-capture'
-import { type ModeLute, type UnitLute, unitLuteOf } from './unit-lute'
+import {
+  type ModeLute,
+  type SpinLute,
+  type UnitLute,
+  unitLuteOf,
+} from './unit-lute'
 
 // Task 733 (004-C): one text model per Vditor instance, kept beside the edit-sync controller. It
 // builds the model from the host text once the complete IR edit DOM exists, tracks the DOM through
@@ -128,6 +144,11 @@ export interface ModelSessionDeps {
   setTimeout(callback: () => void, ms: number): number
   clearTimeout(handle: number): void
   inViewport(el: HTMLElement): boolean
+  /**
+   * Task 733 / 017: the ToC option is on (a `[toc]` line renders as a table of contents). Absent: read at
+   * build from the IR root (a top-level TOC block present).
+   */
+  tocEnabled?(): boolean
 }
 
 export interface ModelSession {
@@ -221,6 +242,10 @@ export interface ModelSession {
   isLive(): boolean
   /** Top-level units (lists expanded to items) of the live model, dirty ones included; `undefined` when not live. */
   liveUnits(): readonly LiveUnit[] | undefined
+  /** Task 733 / 017: the referenced definitions of `source`; undefined when not live or none is referenced. */
+  definitionContextFor(source: string): DefinitionContext | undefined
+  /** Task 733 / 017: number and tooltip of a footnote label; undefined when not live or not defined. */
+  footnoteOf(label: string): FootnoteInfo | undefined
   /** Line ranges of the top-level confirmed units; `undefined` when `confirmedUnits()` is. No Lute call. */
   confirmedLines(): readonly UnitLines[] | undefined
   dispose(): void
@@ -330,7 +355,10 @@ function toLiveUnit(
   root: HTMLElement | null,
 ): LiveUnit {
   const first = (unit.el ?? unit.members[0]) as HTMLElement
-  const nested = unit.kind === 'cell' || unit.kind === 'list-item'
+  const nested =
+    unit.kind === 'cell' ||
+    unit.kind === 'list-item' ||
+    unit.kind === 'footnote'
   const top = nested ? rootChild(first, root) : first
   return {
     el: first,
@@ -338,6 +366,14 @@ function toLiveUnit(
     kind: unit.kind as LiveUnit['kind'],
     top,
   }
+}
+
+/** Task 733 / 017: the ToC option from the deps, else from the root (a top-level TOC block). */
+function tocEnabledFor(deps: ModelSessionDeps, root: HTMLElement): boolean {
+  if (deps.tocEnabled) return deps.tocEnabled()
+  for (const child of Array.from(root.children))
+    if (child.getAttribute('data-type') === 'toc-block') return true
+  return false
 }
 
 /** Newlines in `text` between `from` and `to`, without copying the range. */
@@ -567,6 +603,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let dom: ReturnType<typeof createUnitDom> | undefined
   let modelLute: UnitLute | undefined
   let schedule: UnitSchedule | undefined
+  let definitionIndex: DefinitionIndex | undefined
   let removeListeners: (() => void) | undefined
   let offReason: OffReason = 'not-mounted'
   /** The model text was confirmed by the last `update` or `rebind` (an exact answer does not). */
@@ -633,6 +670,9 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   }
 
   const emit = (change: UnitsChange): void => {
+    // Task 733 / 017: the index follows synced text (a mutation change precedes the sync of its bytes).
+    if (definitionIndex && change.cause !== 'mutation')
+      definitionIndex.onUnitsChange(change)
     for (const listener of Array.from(listeners)) listener(change)
   }
 
@@ -804,6 +844,82 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     feedFrame = deps.requestAnimationFrame(feedFrameDone)
   }
 
+  /**
+   * Task 733 / 017: re-renders a dependent of a definition change in place (its element keeps its
+   * identity) as a quiet write: no unit turns dirty, nothing is published. false when the unit is gone,
+   * dirty, or the spin does not give back one element of the same tag.
+   */
+  const rerenderUnit = (
+    built: TextModel<HTMLElement>,
+    unitDom: ReturnType<typeof createUnitDom>,
+    root: HTMLElement,
+    el: HTMLElement,
+    context: DefinitionContext | undefined,
+  ): boolean => {
+    if (model !== built || !el.isConnected) return false
+    const unit = built.unitOf(el)
+    const lute = deps.getLute() as unknown as SpinLute | null
+    if (!unit || unit.dirty || !lute) return false
+    let html: string | undefined = lute.SpinVditorIRDOM(
+      el.outerHTML + (context?.html ?? ''),
+    )
+    if (context)
+      html = stripDefinitionContext(html, context, (label) =>
+        definitionIndex?.footnoteOf(label),
+      )
+    if (html === undefined) return false
+    const template = root.ownerDocument.createElement('template')
+    template.innerHTML = html
+    const fresh = template.content.firstElementChild
+    if (
+      !fresh ||
+      template.content.children.length !== 1 ||
+      fresh.tagName !== el.tagName
+    )
+      return false
+    writeQuietly(() => {
+      el.innerHTML = fresh.innerHTML
+    })
+    unit.html = unitDom.html(unit.kind, el)
+    emit({
+      cause: 'sync',
+      whole: false,
+      changed: [toLiveUnit(unit, root)],
+      structural: [],
+      scopes: [el],
+    })
+    return true
+  }
+
+  /** Task 733 / 017: the definition index of a live IR model (task 017 section 6.3). */
+  const createIndex = (
+    built: TextModel<HTMLElement>,
+    unitDom: ReturnType<typeof createUnitDom>,
+    root: HTMLElement,
+  ): DefinitionIndex =>
+    createDefinitionIndex({
+      units: () => session.liveUnits(),
+      bytesOf: (el) => {
+        const unit = built.unitOf(el)
+        return unit ? built.text.slice(unit.start, unit.end) : undefined
+      },
+      rerender: (el, context) =>
+        rerenderUnit(built, unitDom, root, el, context),
+      setFootnoteTooltip: (el, label, tooltip) => {
+        for (const sup of el.querySelectorAll(
+          'sup[data-type="footnotes-ref"]',
+        )) {
+          const own = (sup.getAttribute('data-footnotes-label') ?? '').replace(
+            /^\^/u,
+            '',
+          )
+          if (normalizeLabel(own) === label)
+            sup.setAttribute('aria-label', tooltip)
+        }
+      },
+      scheduler: backgroundSchedulerOf(win),
+    })
+
   const teardown = (): void => {
     if (restartTimer !== undefined) deps.clearTimeout(restartTimer)
     restartTimer = undefined
@@ -811,6 +927,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     removeListeners = undefined
     schedule?.stop()
     schedule = undefined
+    definitionIndex?.dispose()
+    definitionIndex = undefined
     dom?.detach()
     dom = undefined
     model = undefined
@@ -858,7 +976,15 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       vditor: () =>
         (win as unknown as { vditor?: { vditor?: unknown } }).vditor?.vditor,
     })
-    const built = createTextModel(unitDom, scanMovableBlocks)
+    // Task 733 / 017: in IR the scan adds the definition kinds; the ToC option decides what `[toc]` is.
+    const definitions = mode === 'ir' && DEFINITION_UNITS
+    const toc = definitions && tocEnabledFor(deps, root)
+    const built = createTextModel(
+      unitDom,
+      definitions
+        ? (text: string) => scanModelBlocks(text, { toc })
+        : scanMovableBlocks,
+    )
     built.build(host.text)
     model = built
     if (built.state !== 'live') {
@@ -902,6 +1028,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     }
     confirmed = true
     unitSchedule.start()
+    if (definitions) definitionIndex = createIndex(built, unitDom, root)
     emitWhole('build')
   }
 
@@ -1437,6 +1564,12 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         })
       }
       return lines
+    },
+    definitionContextFor(source) {
+      return model && live() ? definitionIndex?.contextFor(source) : undefined
+    },
+    footnoteOf(label) {
+      return model && live() ? definitionIndex?.footnoteOf(label) : undefined
     },
     liveUnitOf(node) {
       if (!model || !live()) return undefined

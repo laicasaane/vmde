@@ -137,3 +137,24 @@ export function unitModeOf(
   if (mode === 'ir') return 'ir'
   return mode === 'wysiwyg' && wysiwygUnits ? 'wysiwyg' : undefined
 }
+
+/** Task 733 / 017 (D-13): link reference definitions, footnotes and a table of contents keep the IR model
+ *  live as units of their own. false restores today's path (the model is off for such documents). */
+export const DEFINITION_UNITS: boolean = true
+
+/** The model-only kinds of task 017 (shared rules 3.3). */
+export type DefinitionKind = Extract<
+  MovableKind,
+  'definition' | 'footnote' | 'toc'
+>
+
+/** A unit of one of the model-only kinds of task 017. O(1), no allocation. */
+export function isDefinitionKind(kind: LiveUnitKind): kind is DefinitionKind {
+  return kind === 'definition' || kind === 'footnote' || kind === 'toc'
+}
+
+/** Referenced definitions appended to a spin input: HTML after a sentinel paragraph, and its block count. */
+export interface DefinitionContext {
+  readonly html: string
+  readonly blocks: number
+}

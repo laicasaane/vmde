@@ -20,7 +20,8 @@ import {
 
 const DIR = path.join(tmpdir(), 'vmde-t733-unit-spin')
 const TABLE_HEAVY = tableHeavyMarkdown(1)
-const MODEL_OFF_DOC =
+// Task 733 / 017: a reference definition keeps the model live (DEFINITION_UNITS on).
+const DEFINITION_DOC =
   'See [x][r].\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n[r]: https://example.com\n'
 
 type EvaluateInVSCode = (fn: unknown, args: unknown[]) => Promise<unknown>
@@ -327,19 +328,27 @@ test.describe('unit spin', () => {
     expect(hooked.counters.luteList, JSON.stringify(hooked.stats)).toBe(0)
   })
 
-  test('model off', async ({ workbox, evaluateInVSCode, electronApp }) => {
+  test('a document with a definition spins the cell alone', async ({
+    workbox,
+    evaluateInVSCode,
+    electronApp,
+  }) => {
     const { hooked } = await both(
       { workbox, evaluateInVSCode: evaluateInVSCode as never, electronApp },
-      'model-off',
-      MODEL_OFF_DOC,
+      'definition-doc',
+      DEFINITION_DOC,
       SMALL_CELL,
       async ({ workbox: page }) => {
         await page.keyboard.type('q')
         await page.waitForTimeout(500)
       },
     )
-    // A document with a definition has no live model: the hook refuses and the block spin runs.
-    expect(hooked.stats?.['model-off'] ?? 0).toBeGreaterThanOrEqual(1)
+    // Task 733 / 017: the definition is a unit, so the model is live and the hook spins the cell.
+    expect(
+      hooked.stats?.spun ?? 0,
+      JSON.stringify(hooked.stats),
+    ).toBeGreaterThanOrEqual(1)
+    expect(hooked.stats?.['model-off'] ?? 0).toBe(0)
   })
 
   test('caret stays in the cell after the settle spin', async ({

@@ -2793,6 +2793,38 @@ const IR_TRAILING_AFTER = [
 ]
 const IR_TRAILING_SPUN =
   'log("SpinVditorIRDOM", html, "result", vditor.options.debugger);'
+// Task 733 / 017 (task 017 section 6.4, patch V-D1) — definition context for the IR block spin. Vditor's
+// IR input appends every definitions and footnotes block to the spin input and removes the live ones
+// (so a spun block resolves its references), then merges them and moves them to the end. While the
+// definition units are live, `window.__vmdeDefinitionContext` (editing/edit-activity.ts) answers the
+// referenced definitions as a context string (possibly empty) instead: the live definition elements
+// stay where they are. Before the result log, `window.__vmdeStripDefinitionContext` removes the
+// context from the spin result; when it refuses, the original input is spun again without one.
+// `undefined` from the context hook keeps Vditor's code. Both anchors are asserted once; the result-log
+// anchor is shared with patchIrTrailingBlockLookups, which runs after this patch and appends after it.
+const IR_DEFINITION_CONTEXT_ANCHOR =
+  'if (!blockElement.innerText.startsWith("```")) {'
+const IR_DEFINITION_STRIP_ANCHOR =
+  'log("SpinVditorIRDOM", html, "result", vditor.options.debugger);'
+export function patchIrDefinitionContext(code) {
+  const name = 'patchIrDefinitionContext'
+  assertOneAnchor(code, IR_DEFINITION_CONTEXT_ANCHOR, name, 'ir/input.ts')
+  assertOneAnchor(code, IR_DEFINITION_STRIP_ANCHOR, name, 'ir/input.ts')
+  return code
+    .replace(
+      IR_DEFINITION_CONTEXT_ANCHOR,
+      'var vmdeContext = (window as any).__vmdeDefinitionContext ? (window as any).__vmdeDefinitionContext(vditor.ir.element, blockElement, html) : undefined;\n' +
+        '        var vmdeOriginalHtml = html;\n' +
+        `        if (vmdeContext !== undefined) {\n            html += vmdeContext;\n        } else ${IR_DEFINITION_CONTEXT_ANCHOR}`,
+    )
+    .replace(
+      IR_DEFINITION_STRIP_ANCHOR,
+      'if (vmdeContext !== undefined) {\n' +
+        '        html = ((window as any).__vmdeStripDefinitionContext && (window as any).__vmdeStripDefinitionContext(html)) ?? vditor.lute.SpinVditorIRDOM(vmdeOriginalHtml);\n' +
+        `    }\n    ${IR_DEFINITION_STRIP_ANCHOR}`,
+    )
+}
+
 export function patchIrTrailingBlockLookups(code) {
   const name = 'patchIrTrailingBlockLookups'
   for (const [, anchor] of IR_TRAILING_BEFORE)
@@ -4539,12 +4571,14 @@ export const VDITOR_TS_PATCHES = [
     transform: (code) =>
       patchIrUnitSpin(
         patchIrTrailingBlockLookups(
-          patchIrLocalMarkerReconcile(
-            patchIrListMarkerOnSpace(
-              patchIrFenceSpinSkip(
-                patchIrStripPreviewSpin(
-                  patchDeferRenderToc(
-                    patchIrSpaceSerialize(patchIrDeferDiagramRender(code)),
+          patchIrDefinitionContext(
+            patchIrLocalMarkerReconcile(
+              patchIrListMarkerOnSpace(
+                patchIrFenceSpinSkip(
+                  patchIrStripPreviewSpin(
+                    patchDeferRenderToc(
+                      patchIrSpaceSerialize(patchIrDeferDiagramRender(code)),
+                    ),
                   ),
                 ),
               ),

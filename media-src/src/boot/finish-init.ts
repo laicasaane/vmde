@@ -113,6 +113,7 @@ import {
 } from '../editing/edit-activity'
 import {
   installUnitSpin,
+  setDefinitionContextProvider,
   type UnitSpinDeps,
   type UnitSpinResult,
 } from '../editing/unit-spin'
@@ -134,13 +135,23 @@ import { installSelectionBubble } from '../editing/selection-bubble'
 import { installLinkPopover } from '../editing/link-popover'
 import { reportError } from '../util/webview-log'
 import { loadScript } from '../util/load-script'
-import { provideUnitFeed, unitFeedOf, unitModeOf } from '../util/unit-changes'
+import {
+  DEFINITION_UNITS,
+  provideUnitFeed,
+  unitFeedOf,
+  unitModeOf,
+} from '../util/unit-changes'
 import {
   currentBlockProjection,
   installBlockHandleLayer,
   resolveBlockHandleUnits,
 } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
+import {
+  spinDefinitionHtml,
+  spinFootnoteHtml,
+  stripDefinitionContext,
+} from '../bridge/definition-units'
 import { modelBlockUnits } from '../bridge/model-block-units'
 import { createUnitFeed, installUnitFeedStats } from '../bridge/unit-feed'
 import {
@@ -361,18 +372,37 @@ function installUnitSpinHook(): () => void {
       ? session
       : undefined
   }
+  // Task 733 / 017: the referenced definitions of a spin source; sessions without the index answer none.
+  const definitionContextOf = (source: string) =>
+    liveSession()?.definitionContextFor?.(source)
   const deps: UnitSpinDeps = {
     liveUnitOf: (node) => liveSession()?.liveUnitOf(node),
     isModelLive: () => liveSession()?.isLive() ?? false,
     // The live wrapped Lute is read at call time (it is replaced on a theme or option change).
+    // Task 733 / 017: cells and items spin with the definitions they reference (IR only).
     spinCell: (html) => {
       const lute = liveSpinLute()
-      return lute ? spinCellHtml(lute, html) : NO_LUTE
+      return lute
+        ? spinCellHtml(lute, html, definitionContextOf(html))
+        : NO_LUTE
     },
     spinListItem: (open, outer) => {
       const lute = liveSpinLute()
-      return lute ? spinListItemHtml(lute, open, outer) : NO_LUTE
+      return lute
+        ? spinListItemHtml(lute, open, outer, definitionContextOf(outer))
+        : NO_LUTE
     },
+    spinDefinition: (outer) => {
+      const lute = liveSpinLute()
+      return lute ? spinDefinitionHtml(lute, outer) : NO_LUTE
+    },
+    spinFootnote: (open, outer) => {
+      const lute = liveSpinLute()
+      return lute
+        ? spinFootnoteHtml(lute, open, outer, definitionContextOf(outer))
+        : NO_LUTE
+    },
+    contextFor: (source) => definitionContextOf(source),
     spinListItems: (open, items) => {
       const lute = liveSpinLute()
       return lute ? spinListItemsHtml(lute, open, items) : NO_LUTE
@@ -387,8 +417,22 @@ function installUnitSpinHook(): () => void {
       : undefined,
   }
   const uninstall = installUnitSpin(window, deps)
+  // Task 733 / 017 (patch V-D1): the IR block spin's definition context comes from the same session.
+  setDefinitionContextProvider({
+    isLive: (root) =>
+      DEFINITION_UNITS &&
+      innerVditor()?.currentMode === 'ir' &&
+      liveSession()?.isLive() === true &&
+      root.isConnected,
+    contextFor: (source) => definitionContextOf(source),
+    strip: (html, context) =>
+      stripDefinitionContext(html, context, (label) =>
+        liveSession()?.footnoteOf?.(label),
+      ),
+  })
   return () => {
     uninstall()
+    setDefinitionContextProvider(undefined)
     delete slot.__vmdeUnitSpinStats
   }
 }

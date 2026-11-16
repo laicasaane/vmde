@@ -1,6 +1,7 @@
 import type { MovableKind } from '../../../src/shared/block-move'
 import type { UnitSpinResult } from '../editing/unit-spin'
-import type { UnitMode } from '../util/unit-changes'
+import type { DefinitionContext, UnitMode } from '../util/unit-changes'
+import { stripDefinitionContext } from './definition-units'
 
 // Per-unit Lute calls on HTML or Markdown strings (Task 733). Pure string functions: the Lute
 // object is a parameter, so the webview passes the live wrapped `vditor.lute` and tests pass the
@@ -306,6 +307,25 @@ const isLoose = (itemHtml: string): boolean =>
   /^<li\b[^>]*>\s*<p\b/u.test(itemHtml)
 
 /**
+ * Task 733 / 017 (task 017 section 6.4): a spin whose references resolve against `context` (the referenced
+ * definitions after a sentinel paragraph), with the context removed again. A result whose context part does
+ * not strip exactly is spun once more without the context (the references then render unresolved).
+ */
+function spinWithContext(
+  lute: SpinLute,
+  html: string,
+  context: DefinitionContext | undefined,
+): string {
+  if (!context) return lute.SpinVditorIRDOM(html)
+  const stripped = stripDefinitionContext(
+    lute.SpinVditorIRDOM(html + context.html),
+    context,
+    () => undefined,
+  )
+  return stripped ?? lute.SpinVditorIRDOM(html)
+}
+
+/**
  * Spins one table cell alone, in a one-cell table (the shape `serializeCellHtml` serializes in).
  * `spun.html` is the new innerHTML of the cell, caret marker included. Any other shape of output
  * (a typed pipe splits the cell, for example) is refused so the block spin runs.
@@ -313,11 +333,14 @@ const isLoose = (itemHtml: string): boolean =>
 export function spinCellHtml(
   lute: SpinLute,
   cellInnerHtml: string,
+  context?: DefinitionContext,
 ): UnitSpinResult {
   try {
     const out = trimNewlines(
-      lute.SpinVditorIRDOM(
+      spinWithContext(
+        lute,
         `<table data-block="0"><thead><tr><th>${cellInnerHtml}</th></tr></thead></table>`,
+        context,
       ),
     )
     const match = ONE_CELL_TABLE.exec(out)
@@ -337,13 +360,18 @@ export function spinListItemHtml(
   lute: SpinLute,
   listShellOpenTag: string,
   itemOuterHtml: string,
+  context?: DefinitionContext,
 ): UnitSpinResult {
   if (BLOCK_IN_ITEM.test(itemOuterHtml)) return NESTED
   try {
     const tag =
       /^<(ul|ol)\b/iu.exec(listShellOpenTag)?.[1].toLowerCase() ?? 'ul'
     const out = trimNewlines(
-      lute.SpinVditorIRDOM(`${listShellOpenTag}${itemOuterHtml}</${tag}>`),
+      spinWithContext(
+        lute,
+        `${listShellOpenTag}${itemOuterHtml}</${tag}>`,
+        context,
+      ),
     )
     const match = LIST_ITEM_OUTPUT.exec(out)
     if (!match || match[2] !== tag) return SHAPE

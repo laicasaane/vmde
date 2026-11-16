@@ -5778,6 +5778,8 @@ describe('patchIrTrailingBlockLookups (task 733 / 009 — trailing block lookups
     spun?: (html: string) => string
     hook?: (root: HTMLElement, type: string) => HTMLElement[] | undefined
     unitSpin?: boolean
+    /** Further window hooks (task 733 / 017 V-D1). */
+    win?: Record<string, unknown>
   }) => {
     const dom = new JSDOM(`<!doctype html><div id="root">${options.html}</div>`)
     const { document } = dom.window
@@ -5805,6 +5807,7 @@ describe('patchIrTrailingBlockLookups (task 733 / 009 — trailing block lookups
       __vmdeDeferRenderToc: () => undefined,
       ...(hook ? { __vmdeTrailingBlocks: hook } : {}),
       ...(options.unitSpin ? { __vmdeSpinUnit: () => true } : {}),
+      ...options.win,
     }
     const topBlock = (node: Node | null): HTMLElement | false => {
       let el =
@@ -5944,6 +5947,91 @@ describe('patchIrTrailingBlockLookups (task 733 / 009 — trailing block lookups
     })
     expect(lookups).toEqual([DEFS_SELECTOR, NOTES_SELECTOR])
     expect(types).toEqual(['p', 'p', 'link-ref-defs-block'])
+  })
+
+  // Task 733 / 017 (task 017 section 6.4, patch V-D1): a block spin takes the referenced definitions
+  // as a context string from `window.__vmdeDefinitionContext` instead of removing the live definition
+  // elements, and `window.__vmdeStripDefinitionContext` removes that context from the spin result, so
+  // no definition moves to the end. Fails before 017-I2 on the missing patch.
+  describe('patchIrDefinitionContext (task 733 / 017 V-D1)', () => {
+    const CONTEXT_ANCHOR = 'if (!blockElement.innerText.startsWith("```")) {'
+    const SPUN_ANCHOR =
+      'log("SpinVditorIRDOM", html, "result", vditor.options.debugger);'
+    const SENTINEL = '<p data-block="0">context</p>'
+    const CONTEXT = `${SENTINEL}<div data-block="0" data-type="link-ref-defs-block">[c]: https://c.example</div>`
+    const strip = (html: string) =>
+      html.includes(SENTINEL)
+        ? html.slice(0, html.indexOf(SENTINEL))
+        : undefined
+    const spinInputs = (inputs: string[]) => (html: string) => {
+      inputs.push(html)
+      return html
+    }
+
+    it('each anchor occurs once in the shipped IR input (pre-patch)', () => {
+      expect(countOf(irInputSource, CONTEXT_ANCHOR)).toBe(1)
+      expect(countOf(irInputSource, SPUN_ANCHOR)).toBe(1)
+    })
+
+    it('is exported, throws a named error on a missing anchor and is part of the chain', () => {
+      const patch = namedPatch('patchIrDefinitionContext')
+      expect(() => patch('// unrelated source')).toThrow(
+        /patchIrDefinitionContext/,
+      )
+      expect(irInputChain()).toContain('__vmdeDefinitionContext')
+      expect(irInputChain()).toContain('__vmdeStripDefinitionContext')
+    })
+
+    it('live, a paragraph spin takes the context, keeps the mid-document definition in place and makes no root lookup', () => {
+      const inputs: string[] = []
+      const { lookups, types } = run({
+        html: P('a') + DEFS + P('b'),
+        caretBlock: 0,
+        hook: () => NONE,
+        spun: spinInputs(inputs),
+        win: {
+          __vmdeDefinitionContext: () => CONTEXT,
+          __vmdeStripDefinitionContext: strip,
+        },
+      })
+      expect(inputs).toHaveLength(1)
+      expect(inputs[0]).toContain(CONTEXT)
+      expect(inputs[0]).not.toContain('[r]: https://example.com')
+      expect(types).toEqual(['p', 'link-ref-defs-block', 'p'])
+      expect(lookups).toEqual([])
+    })
+
+    it('a strip that refuses spins the original input again without the context (B-D3)', () => {
+      const inputs: string[] = []
+      const { types } = run({
+        html: P('a') + DEFS + P('b'),
+        caretBlock: 0,
+        hook: () => NONE,
+        spun: spinInputs(inputs),
+        win: {
+          __vmdeDefinitionContext: () => CONTEXT,
+          __vmdeStripDefinitionContext: () => undefined,
+        },
+      })
+      expect(inputs).toHaveLength(2)
+      expect(inputs[1]).not.toContain(SENTINEL)
+      expect(types).toEqual(['p', 'link-ref-defs-block', 'p'])
+    })
+
+    it('with the context hook answering undefined the upstream path runs (definitions moved last)', () => {
+      const { lookups, types } = run({
+        html: P('a') + DEFS + P('b'),
+        caretBlock: 0,
+        win: { __vmdeDefinitionContext: () => undefined },
+      })
+      expect(lookups).toEqual([
+        DEFS_SELECTOR,
+        NOTES_SELECTOR,
+        DEFS_SELECTOR,
+        NOTES_SELECTOR,
+      ])
+      expect(types.at(-1)).toBe('link-ref-defs-block')
+    })
   })
 })
 

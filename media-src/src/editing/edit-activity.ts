@@ -36,7 +36,12 @@ import { shouldSkipFenceSpin, shouldSkipProseSpin } from './spin-skip-fence'
 import { stripPreviewForSpin } from './spin-strip'
 import { installTocInvalidation } from './toc-invalidation'
 import { GAP_ATTR, TRAILING_ATTR } from './trailing-paragraph'
-import { type LiveUnit, unitFeedOf } from '../util/unit-changes'
+import {
+  type DefinitionContext,
+  type LiveUnit,
+  unitFeedOf,
+} from '../util/unit-changes'
+import { definitionContextProvider } from './unit-spin'
 
 // The quiet window stays 220 ms. A shorter "appear sooner" window was tried and REVERTED: it is < the
 // typical inter-keystroke gap (~180 ms), so the settle fires MID-BURST and repeatedly destroys+re-renders
@@ -197,7 +202,11 @@ function spinRegionOf(root: HTMLElement, top: Element): SpinRegion {
   const index = children.indexOf(top)
   let start = index
   let end = index
-  if (top.getAttribute('data-type') === 'link-ref-defs-block') {
+  // Task 733 / 017: with definition units live, the unit spin takes a definition alone.
+  if (
+    top.getAttribute('data-type') === 'link-ref-defs-block' &&
+    !definitionsLive(root)
+  ) {
     start = 0
     end = children.length - 1
   } else if (isList(top)) {
@@ -841,6 +850,33 @@ const NO_PREVIEWS: readonly HTMLElement[] = Object.freeze([])
 // longer fresh (scopedPreviews), and cleared at settle.
 const deferredPreviews = new Set<HTMLElement>()
 
+/** The context of the block spin in progress, read once by the strip hook. */
+let spinContext: DefinitionContext | undefined
+const NO_CONTEXT_HTML = ''
+
+const definitionsLive = (root: HTMLElement): boolean =>
+  definitionContextProvider()?.isLive(root) === true && liveFeedOf(root)
+
+/** `__vmdeDefinitionContext`: the referenced definitions of the spun block, '' for none; undefined when not live. */
+function definitionContextHook(
+  root: HTMLElement,
+  blockElement: HTMLElement,
+): string | undefined {
+  spinContext = undefined
+  const provider = definitionContextProvider()
+  if (!provider || !definitionsLive(root)) return undefined
+  spinContext = provider.contextFor(blockElement.textContent ?? '')
+  return spinContext ? spinContext.html : NO_CONTEXT_HTML
+}
+
+/** `__vmdeStripDefinitionContext`: the spin result without its context; undefined when the strip refuses. */
+function stripDefinitionContextHook(html: string): string | undefined {
+  const context = spinContext
+  spinContext = undefined
+  if (!context) return html
+  return definitionContextProvider()?.strip(html, context)
+}
+
 function liveFeedOf(root: HTMLElement): boolean {
   const feed = unitFeedOf(window)
   return feed !== undefined && feed.root === root && feed.isLive()
@@ -907,13 +943,17 @@ const WHOLE_ROOT_SPIN_TYPES = new Set([
   'footnotes-block',
 ])
 
+/** A caret in a definitions or footnotes block spins the whole root, unless the definition units are live. */
+const spinsWholeRoot = (root: HTMLElement, top: Element): boolean =>
+  WHOLE_ROOT_SPIN_TYPES.has(top.getAttribute('data-type') ?? '') &&
+  !definitionsLive(root)
+
 /** Live: the window's fresh previews plus the deferred ones still pending; undefined: whole root
  * (no live feed of this root, a caret outside it, or a spin that covered the whole root). */
 function scopedPreviews(root: HTMLElement): readonly HTMLElement[] | undefined {
   if (!liveFeedOf(root)) return undefined
   const top = caretTopOf(root)
-  if (!top || WHOLE_ROOT_SPIN_TYPES.has(top.getAttribute('data-type') ?? ''))
-    return undefined
+  if (!top || spinsWholeRoot(root, top)) return undefined
   const near = windowPreviews(top)
   if (deferredPreviews.size === 0) return near
   // Allocates only when a pending preview outside the window still waits (R-2).
@@ -1087,6 +1127,15 @@ function trailingBlocks(
   type: TrailingBlockType,
 ): HTMLElement[] | undefined {
   if (!liveFeedOf(root)) return undefined
+  // Task 733 / 017: definition units stay where they are written; nothing is merged or moved last.
+  return definitionsLive(root) ? NO_BLOCKS : tailBlocksOf(root, type)
+}
+
+/** The trailing run of `type` blocks under `root` (view-only paragraphs skipped); one constant when none. */
+function tailBlocksOf(
+  root: HTMLElement,
+  type: TrailingBlockType,
+): HTMLElement[] {
   let found: HTMLElement[] | undefined
   for (let el = root.lastElementChild; el; el = el.previousElementSibling) {
     const kind = el.getAttribute('data-type')
@@ -1126,6 +1175,11 @@ export function installEditActivity(
   ).acceptsWysiwyg = true
   ;(window as unknown as Record<string, unknown>).__vmdeTrailingBlocks =
     trailingBlocks
+  // Task 733 / 017 (patch V-D1): the definition context of an IR block spin and its strip.
+  ;(window as unknown as Record<string, unknown>).__vmdeDefinitionContext =
+    definitionContextHook
+  ;(window as unknown as Record<string, unknown>).__vmdeStripDefinitionContext =
+    stripDefinitionContextHook
   // Task 172: shrink the SpinVditorIRDOM input — empty the rendered preview SVG/canvas before the spin
   // re-parses it (consumed by the esbuild patchIrStripPreviewSpin in ir/input.ts).
   ;(window as unknown as Record<string, unknown>).__vmdeStripPreviewForSpin =
