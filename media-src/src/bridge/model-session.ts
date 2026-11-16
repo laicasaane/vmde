@@ -647,6 +647,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   /** Vditor shows the mode the model was built for. */
   const servesBuiltMode = (): boolean =>
     builtMode !== undefined && servedMode() === builtMode
+  /**
+   * Run 1 triage 4.3 (R-2): the model is live and Vditor shows its mode. A switch can reach the session
+   * late; until then the model of the hidden mode answers for nothing (feed, units, history port).
+   */
+  const serving = (): boolean => live() && servesBuiltMode()
   let prediction: Prediction | undefined
   let restartTimer: number | undefined
   let preTouchFallback = false
@@ -845,7 +850,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     // would do nothing: the old engine holds the history then (an IR re-entry before the first post's
     // answer, a deferred edit view before its build, a permanent off). Only a rebuild over the same
     // DOM keeps the unit engine: what is pending is held as one step of the next capture (`hold`).
-    claimable: () => (live() && builtMode !== 'sv') || buildFrame !== undefined,
+    claimable: () =>
+      (serving() && builtMode !== 'sv') || buildFrame !== undefined,
     vditor: () =>
       (win as unknown as { vditor?: { vditor?: unknown } }).vditor?.vditor,
     mode: () =>
@@ -1612,7 +1618,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     confirmedUnits() {
       if (
         !model ||
-        !live() ||
+        !serving() ||
         awaited !== undefined ||
         awaitingWrite ||
         stale ||
@@ -1642,9 +1648,9 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       publicationBase(sequence)
     },
     recordFallback: countFallback,
-    isLive: () => live(),
+    isLive: () => serving(),
     liveUnits() {
-      if (!model || !live()) return undefined
+      if (!model || !serving()) return undefined
       const root = modelRoot()
       const units: LiveUnit[] = []
       for (const unit of model.units) {
@@ -1675,7 +1681,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       return model && live() ? definitionIndex?.footnoteOf(label) : undefined
     },
     liveUnitOf(node) {
-      if (!model || !live()) return undefined
+      if (!model || !serving()) return undefined
       return liveUnitFor(model, modelRoot(), node)
     },
     markExplicitAtCaret() {

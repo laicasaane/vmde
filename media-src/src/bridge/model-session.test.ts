@@ -1948,6 +1948,36 @@ describe('013 WYSIWYG model session', () => {
     }
   })
 
+  // Run 1 triage 4.3 (R-2): the session can learn of a switch late (no `onModeChange` yet). While the
+  // shown mode differs from the built one, nothing may answer for the hidden model: the unit engine
+  // would claim the WYSIWYG history over the IR root and consumers would see the IR feed as live.
+  it('answers for no model while the shown mode differs from the built one', () => {
+    const r = modeRig({ mode: 'ir', wysiwygUnits: true })
+    r.render(TABLE_DOC)
+    r.session.onHostText(TABLE_DOC, 3)
+    r.session.onEditDomComplete()
+    const port = (
+      r.session as ModelSession & {
+        historyPort(): { claimable(): boolean; ready(): boolean }
+      }
+    ).historyPort()
+    const cell = r.irRoot.querySelector('td') as HTMLElement
+    expect(port.claimable()).toBe(true)
+    expect(r.session.isLive()).toBe(true)
+    // Vditor shows WYSIWYG; the session has not been told.
+    r.mode.value = 'wysiwyg'
+    expect(port.claimable(), 'history port claimable').toBe(false)
+    expect(port.ready(), 'history port ready').toBe(false)
+    expect(r.session.isLive(), 'feed live').toBe(false)
+    expect(r.session.liveUnits(), 'live units').toBeUndefined()
+    expect(r.session.liveUnitOf(cell.firstChild as Text)).toBeUndefined()
+    expect(r.session.confirmedUnits(), 'confirmed units').toBeUndefined()
+    // Back in IR the same model answers again.
+    r.mode.value = 'ir'
+    expect(port.claimable()).toBe(true)
+    expect(r.session.isLive()).toBe(true)
+  })
+
   // B-03 on the WYSIWYG fixture (D-13 design section 5.2): a list item Enter is a scoped change.
   describe.each([1, 4, 16] as const)(
     'B-03 list item Enter at factor %i',
