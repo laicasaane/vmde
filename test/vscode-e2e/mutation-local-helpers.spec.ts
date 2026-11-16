@@ -300,7 +300,8 @@ test('large mixed edits stay mutation-local and preserve exact host state', asyn
   const mergeStats = await readStats()
   expect(mergeStats.rawRecords).toBeGreaterThan(0)
   expect(mergeStats.helpers['section-fold-surface']).toBeDefined()
-  expect(mergeStats.helpers['section-fold-surface'].full).toBeGreaterThan(0)
+  // Task 733 (Q-129): the unit feed scopes a list item merge to its list, a local fold pass.
+  expect(mergeStats.helpers['section-fold-surface'].local).toBeGreaterThan(0)
   expect(mergeStats.helpers['responsive-tables']).toBeDefined()
   expect(mergeStats.helpers['responsive-tables'].full).toBe(0)
   expect(mergeStats.helpers['responsive-tables'].skipped).toBeGreaterThan(0)
