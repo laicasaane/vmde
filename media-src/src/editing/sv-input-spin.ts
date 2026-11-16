@@ -34,6 +34,8 @@ declare global {
       range: Range,
     ): boolean
     __vmdeModeSwitchText?(vditor: unknown, mode: string): string | undefined
+    /** Task 733 / 015 (D-14 review A-1): the Source switch at run time, for patches V-S3 and V-S3b. */
+    __vmdeSourceUnitsOn?(): boolean
   }
 }
 
@@ -121,7 +123,7 @@ function placeCaret(
   return false
 }
 
-/** Installs the three hooks on `win`; returns the removal. */
+/** Installs the hooks on `win` (V-S1, V-S2, and the Source switch of V-S3 and V-S3b); returns the removal. */
 export function installSourceInputHooks(
   win: Window,
   deps: SourceInputHookDeps = {},
@@ -140,10 +142,14 @@ export function installSourceInputHooks(
     if (mode !== 'sv' && current !== 'sv') return undefined
     return deps.modeSwitchText?.()
   }
+  const sourceUnitsOn = (): boolean => SOURCE_UNITS
+  win.__vmdeSourceUnitsOn = sourceUnitsOn
   win.__vmdeSvLocalSpin = local
   win.__vmdeSvPlaceCaret = place
   win.__vmdeModeSwitchText = switchText
   return () => {
+    if (win.__vmdeSourceUnitsOn === sourceUnitsOn)
+      delete win.__vmdeSourceUnitsOn
     if (win.__vmdeSvLocalSpin === local) delete win.__vmdeSvLocalSpin
     if (win.__vmdeSvPlaceCaret === place) delete win.__vmdeSvPlaceCaret
     if (win.__vmdeModeSwitchText === switchText) delete win.__vmdeModeSwitchText

@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest'
 import { tableHeavyMarkdown } from '../vscode-e2e/table-heavy-markdown'
 import { wrapLiveLineBreakIdentity } from '../../media-src/src/editing/live-line-breaks'
 import { createRealLute } from '../../media-src/src/testing/real-lute'
-import { patchSvSplitAnyBreak } from '../../media-src/esbuild-shared.mjs'
+import {
+  patchSvSetValueSplit,
+  patchSvSplitAnyBreak,
+} from '../../media-src/esbuild-shared.mjs'
 
 // Task 733 / 015, run-1 repair R-1 (V-S3b): the Source DOM is split into one `data-block` div per source
 // chunk only when Vditor's split regex matches the spin output. VMDE's Source spin wrapper
@@ -25,13 +28,21 @@ const dom = new JSDOM('')
 const SPLIT_INTO =
   '<span data-type="newline"><br /><span style="display: none">\n</span></span><span data-type="newline"><br /><span style="display: none">\n</span></span></div><div data-block="0"><'
 
-/** The split regex of `processSpinVditorSVDOM` in `code` (its first `spinHTML.replace(` regex literal). */
-function splitRegexOf(code: string): RegExp {
+/**
+ * The split regex `processSpinVditorSVDOM` in `code` uses: its first `spinHTML.replace(` argument,
+ * evaluated with `win` as the page window (the patched argument reads the Source switch hook).
+ */
+function splitRegexOf(code: string, win: object = {}): RegExp {
   const at = code.indexOf('export const processSpinVditorSVDOM')
-  const literal = /spinHTML\.replace\(\/(.+?)\/g, '/u.exec(code.slice(at))
-  if (!literal) throw new Error('split regex not found')
-  return new RegExp(literal[1].replace(/\\\//g, '/'), 'g')
+  const call =
+    code.indexOf('spinHTML.replace(', at) + 'spinHTML.replace('.length
+  const end = code.indexOf(", '<span", call)
+  const argument = code.slice(call, end).replace('(window as any)', 'window')
+  return new Function('window', `return ${argument}`)(win) as RegExp
 }
+
+const SWITCH_ON = { __vmdeSourceUnitsOn: () => true }
+const SWITCH_OFF = { __vmdeSourceUnitsOn: () => false }
 
 /** Divs of `processSpinVditorSVDOM`'s output for `spin`, built with `regex`. */
 function divCount(spin: string, regex: RegExp): number {
@@ -52,16 +63,55 @@ describe('V-S3b Source split on the wrapped spin', () => {
       expect(spin.includes('<br />')).toBe(false)
       // Before the patch: one div for the whole document.
       expect(divCount(spin, splitRegexOf(processSource))).toBe(1)
-      // After: the 15 blocks of the fixture plus the empty div a table at the end leaves.
-      expect(
-        divCount(spin, splitRegexOf(patchSvSplitAnyBreak(processSource))),
-      ).toBe(16)
+      const patched = patchSvSplitAnyBreak(processSource)
+      // After, with the Source switch on: the 15 blocks of the fixture plus the empty div a table at
+      // the end leaves.
+      expect(divCount(spin, splitRegexOf(patched, SWITCH_ON))).toBe(16)
+      // D-14 review A-1: with the switch off, or without the hook, Vditor's own split runs.
+      expect(divCount(spin, splitRegexOf(patched, SWITCH_OFF))).toBe(1)
+      expect(divCount(spin, splitRegexOf(patched))).toBe(1)
     },
     30_000,
   )
 
   it('asserts both regexes once and refuses a second application', () => {
     const patched = patchSvSplitAnyBreak(processSource)
-    expect(() => patchSvSplitAnyBreak(patched)).toThrow(/found 0/)
+    expect(() => patchSvSplitAnyBreak(patched)).toThrow(/already patched/)
+  })
+})
+
+// D-14 review A-1 for V-S3: Source `setValue` builds the split DOM only while the Source switch is on.
+describe('V-S3 Source setValue follows the Source switch at run time', () => {
+  const indexSource = readFileSync(
+    'media-src/node_modules/vditor/src/index.ts',
+    'utf8',
+  )
+
+  /** The patched `setValue` Source build, evaluated with `win` as the window. */
+  function setValueBuild(win: object): string {
+    const patched = patchSvSetValueSplit(indexSource)
+    const marker = 'this.vditor.sv.element.innerHTML = '
+    const start =
+      patched.indexOf(marker, patched.indexOf('public setValue(')) +
+      marker.length
+    const end = patched.indexOf(';\n', start)
+    const expression = patched
+      .slice(start, end)
+      .replace('(window as any)', 'window')
+    const self = {
+      vditor: { lute: { SpinVditorSVDOM: (md: string) => `spin(${md})` } },
+    }
+    return new Function(
+      'window',
+      'processSpinVditorSVDOM',
+      'markdown',
+      `return ${expression}`,
+    ).call(self, win, (md: string) => `split(${md})`, 'md') as string
+  }
+
+  it('splits with the switch on and keeps the one-div build with it off or without the hook', () => {
+    expect(setValueBuild(SWITCH_ON)).toBe('split(md)')
+    expect(setValueBuild(SWITCH_OFF)).toBe("<div data-block='0'>spin(md)</div>")
+    expect(setValueBuild({})).toBe("<div data-block='0'>spin(md)</div>")
   })
 })

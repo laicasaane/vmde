@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 import { countBudget } from '../testing/budget-harness'
 import {
@@ -9,6 +17,17 @@ import {
   svFixture,
 } from '../testing/real-lute'
 import type { UnitFeed } from '../util/unit-changes'
+
+// Task 733 / 015 (Q-129, Q-131): the 015 Source cases prove the Source path while the shipped
+// `SOURCE_UNITS` stays false. `sourceUnitsOn` turns the constant on for those cases only (set in their
+// describe blocks); every other case keeps the shipped value.
+const sourceUnitsOn = vi.hoisted(() => ({ value: false }))
+vi.mock('../util/unit-changes', async (original) => ({
+  ...(await original<typeof import('../util/unit-changes')>()),
+  get SOURCE_UNITS() {
+    return sourceUnitsOn.value
+  },
+}))
 
 // Task 733 / 015-T1, S-05 (task 015 sections 6.2 D-3 and 6.9 item 2): the window hooks of the patched
 // Source input. `__vmdeSvLocalSpin` decides whether the caret block is spun alone; `__vmdeSvPlaceCaret`
@@ -85,6 +104,12 @@ const divStarting = (root: HTMLElement, prefix: string): HTMLElement => {
 }
 
 describe('S-05 __vmdeSvLocalSpin', () => {
+  beforeEach(() => {
+    sourceUnitsOn.value = true
+  })
+  afterEach(() => {
+    sourceUnitsOn.value = false
+  })
   it('spins the caret block alone after a blank line', async () => {
     const root = svFixture('first\n\nsecond\n')
     await install(root)
@@ -137,6 +162,12 @@ describe.each([1, 4, 16] as const)(
   'S-05 __vmdeSvPlaceCaret at factor %i',
   { timeout: FIXTURE_TIMEOUT_MS },
   (factor) => {
+    beforeEach(() => {
+      sourceUnitsOn.value = true
+    })
+    afterEach(() => {
+      sourceUnitsOn.value = false
+    })
     const markdown = tableHeavyMarkdown(factor)
 
     it('finds the marker in the new elements only and flushes at most once', async () => {

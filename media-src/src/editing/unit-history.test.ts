@@ -29,12 +29,17 @@ import type { HistoryCapture } from '../util/unit-changes'
 // `WYSIWYG_UNITS` stays false. `wysiwygUnitsOn` turns the default of `unitModeOf` on for those
 // cases only (set in their describe block); every other case keeps the shipped default.
 const wysiwygUnitsOn = vi.hoisted(() => ({ value: false }))
+const sourceUnitsOn = vi.hoisted(() => ({ value: false }))
 vi.mock('../util/unit-changes', async (original) => {
   const actual = await original<typeof import('../util/unit-changes')>()
   return {
     ...actual,
     unitModeOf: (mode: string | null | undefined, wysiwygUnits?: boolean) =>
       actual.unitModeOf(mode, wysiwygUnits ?? wysiwygUnitsOn.value),
+    // Task 733 / 015 (Q-129, Q-131): on for the 015 Source cases only (their describe block).
+    get SOURCE_UNITS() {
+      return sourceUnitsOn.value
+    },
   }
 })
 
@@ -1154,45 +1159,54 @@ function collapseAt(node: Node, offset: number): void {
   window.getSelection()?.addRange(range)
 }
 
+// Rule 13.17: the factor-16 cell case takes about 2.4 s alone and timed out at the default 5 s in a
+// combined run; 30 s is at least five times its alone time.
+const FIRST_KEY_SPLIT_TIMEOUT_MS = 30_000
+
 describe('B-14: one flush per first-key split', () => {
-  describe.each(FACTORS)('factor %i', (factor) => {
-    const fixture = () => {
-      const { root } = irFixture(tableHeavyMarkdown(factor), tagProbe)
-      if (!root.isConnected) document.body.append(root.parentElement as Element)
-      return root
-    }
+  describe.each(FACTORS)(
+    'factor %i',
+    { timeout: FIRST_KEY_SPLIT_TIMEOUT_MS },
+    (factor) => {
+      const fixture = () => {
+        const { root } = irFixture(tableHeavyMarkdown(factor), tagProbe)
+        if (!root.isConnected)
+          document.body.append(root.parentElement as Element)
+        return root
+      }
 
-    it.each(['cell', 'item', 'paragraph', 'code block'] as const)(
-      'a text endpoint in a %s: flushes <= 1',
-      (unit) => {
-        const root = fixture()
-        const r = rig({ root })
-        const text = unitText(root, unit)
-        collapseAt(text, 1)
-        r.record()
-        const { counts } = countBudget(root, () =>
-          r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown')),
-        )
-        root.normalize()
-        expect(counts.flushes).toBeLessThanOrEqual(1)
-      },
-    )
+      it.each(['cell', 'item', 'paragraph', 'code block'] as const)(
+        'a text endpoint in a %s: flushes <= 1',
+        (unit) => {
+          const root = fixture()
+          const r = rig({ root })
+          const text = unitText(root, unit)
+          collapseAt(text, 1)
+          r.record()
+          const { counts } = countBudget(root, () =>
+            r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown')),
+          )
+          root.normalize()
+          expect(counts.flushes).toBeLessThanOrEqual(1)
+        },
+      )
 
-    it.each(['cell', 'item', 'paragraph'] as const)(
-      'an element endpoint in a %s: flushes <= 1',
-      (unit) => {
-        const root = fixture()
-        const r = rig({ root })
-        const element = root.querySelector(UNIT_SELECTOR[unit]) as HTMLElement
-        collapseAt(element, 0)
-        r.record()
-        const { counts } = countBudget(root, () =>
-          r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown')),
-        )
-        expect(counts.flushes).toBeLessThanOrEqual(1)
-      },
-    )
-  })
+      it.each(['cell', 'item', 'paragraph'] as const)(
+        'an element endpoint in a %s: flushes <= 1',
+        (unit) => {
+          const root = fixture()
+          const r = rig({ root })
+          const element = root.querySelector(UNIT_SELECTOR[unit]) as HTMLElement
+          collapseAt(element, 0)
+          r.record()
+          const { counts } = countBudget(root, () =>
+            r.hook.recordFirstPosition(r.vditor, new KeyboardEvent('keydown')),
+          )
+          expect(counts.flushes).toBeLessThanOrEqual(1)
+        },
+      )
+    },
+  )
 })
 
 describe('B-14: one flush per Undo and Redo', () => {
@@ -1432,6 +1446,12 @@ describe.each([1, 4, 16] as const)(
   'Source history at factor %i (S-11)',
   { timeout: FIXTURE_TIMEOUT_MS },
   (factor) => {
+    beforeEach(() => {
+      sourceUnitsOn.value = true
+    })
+    afterEach(() => {
+      sourceUnitsOn.value = false
+    })
     const sourceRig = () => {
       const svRoot = svFixture(tableHeavyMarkdown(factor))
       const r = rig({ liveMode: () => 'sv', svRoot })

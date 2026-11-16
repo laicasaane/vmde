@@ -2813,19 +2813,31 @@ export function patchSvInputCaretBlock(code) {
 // `processPaste`, `:58` in `processSpinVditorSVDOM`). VMDE's Source spin wrapper
 // (`editing/live-line-breaks.ts` `renderSvIdentityDom`) re-serializes the spin through `innerHTML`, which
 // writes `<br>`, so no split happened: every Source DOM was one div, and each key spun the whole
-// document. Both regexes now accept either form of the break.
+// document. Both regexes now accept either form of the break while the Source switch is on
+// (`window.__vmdeSourceUnitsOn`, editing/sv-input-spin.ts, reads `SOURCE_UNITS` at run time); with it off,
+// or without the hook, Vditor's own regex runs (D-14 review A-1).
+const SV_SPLIT_SENTINEL = '__vmdeSourceUnitsOn'
 const SV_SPLIT_REGEX =
   '/<span data-type="newline"><br \\/><span style="display: none">\\n<\\/span><\\/span><span data-type="newline"><br \\/><span style="display: none">\\n<\\/span><\\/span></g'
 const SV_SPLIT_REGEX_ANY_BREAK =
   '/<span data-type="newline"><br(?: \\/)?><span style="display: none">\\n<\\/span><\\/span><span data-type="newline"><br(?: \\/)?><span style="display: none">\\n<\\/span><\\/span></g'
 export function patchSvSplitAnyBreak(code) {
+  if (code.includes(SV_SPLIT_SENTINEL)) {
+    throw new Error(
+      'patchSvSplitAnyBreak: vditor sv/process.ts is already patched (applied twice?)',
+    )
+  }
   const count = code.split(SV_SPLIT_REGEX).length - 1
   if (count !== 2) {
     throw new Error(
-      `patchSvSplitAnyBreak: expected 2 split regexes in vditor sv/process.ts, found ${count} (version drift or applied twice?)`,
+      `patchSvSplitAnyBreak: expected 2 split regexes in vditor sv/process.ts, found ${count} (version drift?)`,
     )
   }
-  return code.split(SV_SPLIT_REGEX).join(SV_SPLIT_REGEX_ANY_BREAK)
+  return code
+    .split(SV_SPLIT_REGEX)
+    .join(
+      `((window as any).${SV_SPLIT_SENTINEL}?.() ? ${SV_SPLIT_REGEX_ANY_BREAK} : ${SV_SPLIT_REGEX})`,
+    )
 }
 
 // Task 733 / 015-I2, V-S2 (task 015 section 6.2 D-5): a switch into or out of Source takes the model
@@ -2855,7 +2867,9 @@ export function patchEditModeModelText(code) {
 // Task 733 / 015-I2, V-S3 (task 015 section 6.2 D-5): Source `setValue` (`src/index.ts:317`) wraps the
 // whole spin in one `data-block` div, so the first key after a host update spins the whole document.
 // It now builds with `processSpinVditorSVDOM`, the split the mode switch uses (`EditMode.ts:120`), so
-// the Source DOM has one div per source chunk. Chained after `patchTocFullSurfaceRender`.
+// the Source DOM has one div per source chunk, while the Source switch is on (`window.__vmdeSourceUnitsOn`);
+// with it off, or without the hook, Vditor's one-div build runs (D-14 review A-1). Chained after
+// `patchTocFullSurfaceRender`.
 const SV_SET_VALUE_IMPORT =
   'import {processAfterRender as processSVAfterRender, processPaste} from "./ts/sv/process";'
 const SV_SET_VALUE_ANCHOR =
@@ -2876,8 +2890,11 @@ export function patchSvSetValueSplit(code) {
     )
     .replace(
       SV_SET_VALUE_ANCHOR,
-      '            // Task 733 / 015 (VMDE patch V-S3): one data-block div per source chunk, as the mode switch builds.\n' +
-        '            this.vditor.sv.element.innerHTML = processSpinVditorSVDOM(markdown, this.vditor);',
+      '            // Task 733 / 015 (VMDE patch V-S3): one data-block div per source chunk, as the mode switch builds,\n' +
+        "            // while the Source switch is on; otherwise Vditor's one-div build.\n" +
+        '            this.vditor.sv.element.innerHTML = (window as any).__vmdeSourceUnitsOn?.()\n' +
+        '                ? processSpinVditorSVDOM(markdown, this.vditor)\n' +
+        `                : \`<div data-block='0'>\${this.vditor.lute.SpinVditorSVDOM(markdown)}</div>\`;`,
     )
 }
 

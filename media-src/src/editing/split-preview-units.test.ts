@@ -1,10 +1,29 @@
 // @vitest-environment jsdom
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 import { countBudget, countedLute } from '../testing/budget-harness'
 import { createRealLute, svFixture } from '../testing/real-lute'
 import type { LiveUnit, UnitFeed, UnitsChange } from '../util/unit-changes'
 import * as previewMorph from './preview-morph'
+
+// Task 733 / 015 (Q-129, Q-131): the 015 Source cases prove the Source path while the shipped
+// `SOURCE_UNITS` stays false. `sourceUnitsOn` turns the constant on for those cases only (set in their
+// describe blocks); every other case keeps the shipped value.
+const sourceUnitsOn = vi.hoisted(() => ({ value: false }))
+vi.mock('../util/unit-changes', async (original) => ({
+  ...(await original<typeof import('../util/unit-changes')>()),
+  get SOURCE_UNITS() {
+    return sourceUnitsOn.value
+  },
+}))
 
 // Task 733 / 015-T1, S-10 (task 015 sections 6.2 D-6 and 6.4): the Split pane renders only the Source
 // units that changed. The hook `__vmdeRenderSplitPreview` is the one patch V-S4 calls at the top of
@@ -134,6 +153,12 @@ describe.each([1, 4, 16] as const)(
   'S-10 at factor %i',
   { timeout: FIXTURE_TIMEOUT_MS },
   (factor) => {
+    beforeEach(() => {
+      sourceUnitsOn.value = true
+    })
+    afterEach(() => {
+      sourceUnitsOn.value = false
+    })
     const markdown = tableHeavyMarkdown(factor)
 
     it('renders the changed unit alone', async () => {

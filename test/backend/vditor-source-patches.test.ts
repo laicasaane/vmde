@@ -6505,12 +6505,46 @@ describe('Source unit patches V-S1 to V-S4 (task 733 / 015)', () => {
     expect(typeof patch).toBe('function')
     const patched = patch?.(vditorIndexSource) ?? ''
     const setValue = patched.slice(patched.indexOf('public setValue('))
-    expect(setValue.slice(0, 400)).toContain('processSpinVditorSVDOM(')
+    // The build sits behind its run-time switch comment (D-14 review A-1).
+    expect(setValue.slice(0, 700)).toContain('processSpinVditorSVDOM(')
     compiles(patched)
     expect(() => patch?.(patched)).toThrow()
     expect(
       registryTransform('/vditor/src/index.ts')(vditorIndexSource),
     ).toContain('processSpinVditorSVDOM(')
+  })
+
+  // D-14 review A-1: V-S3 and V-S3b choose their Source build at run time from the Source switch hook,
+  // and keep Vditor's original code as the branch taken with the switch off or without the hook.
+  it('V-S3 keeps the one-div Source setValue behind the run-time Source switch', () => {
+    const patched = patchOf('patchSvSetValueSplit')?.(vditorIndexSource) ?? ''
+    const setValue = patched.slice(patched.indexOf('public setValue('))
+    const build = setValue.slice(0, 700)
+    expect(build).toContain('(window as any).__vmdeSourceUnitsOn?.()')
+    expect(build).toContain('? processSpinVditorSVDOM(markdown, this.vditor)')
+    expect(build).toContain(
+      ": `<div data-block='0'>${this.vditor.lute.SpinVditorSVDOM(markdown)}</div>`;",
+    )
+    compiles(patched)
+  })
+
+  it('V-S3b keeps both upstream split regexes behind the run-time Source switch', () => {
+    const patch = patchOf('patchSvSplitAnyBreak')
+    expect(typeof patch).toBe('function')
+    const patched = patch?.(svProcessSource) ?? ''
+    expect(
+      patched.split('(window as any).__vmdeSourceUnitsOn?.() ?'),
+    ).toHaveLength(3)
+    // The upstream regex stays, once per site, as the off branch.
+    const upstream =
+      '/<span data-type="newline"><br \\/><span style="display: none">\\n<\\/span><\\/span><span data-type="newline"><br \\/><span style="display: none">\\n<\\/span><\\/span></g)'
+    expect(patched.split(` : ${upstream}`)).toHaveLength(3)
+    compiles(patched)
+    expect(() => patch?.(patched)).toThrow(/already patched/)
+    expect(() => patch?.('')).toThrow(/found 0/)
+    expect(
+      registryTransform('/vditor/src/ts/sv/process.ts')(svProcessSource),
+    ).toContain('__vmdeSourceUnitsOn')
   })
 
   it('V-S4 asks __vmdeRenderSplitPreview after the full-Preview hook', () => {
