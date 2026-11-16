@@ -76,8 +76,10 @@ const tableClones = (frame: Frame) =>
 
 /**
  * Task 733 (012-4): a large table is measured from a bounded clone (no `tableClone`). Counts table
- * measurements from here: a measurement host that lays out two sibling rows (a cell measured alone is
- * a one-row shell). The host is read when the records arrive, after it was filled.
+ * measurements from here: a node added inside the measurement host that holds two sibling rows (a
+ * cell measured alone is a one-row shell). Task 733 (012-13, M4): the host is mounted once and stays,
+ * so the clones are added inside it; a record whose target is inside the host carries the added
+ * subtree, read when the records arrive (after it was filled).
  */
 const countTableMeasures = (frame: Frame) =>
   frame.locator('body').evaluate(() => {
@@ -85,14 +87,20 @@ const countTableMeasures = (frame: Frame) =>
     view.__tableMeasures = 0
     new MutationObserver((records) => {
       view.__tableMeasures += records
+        .filter((record) =>
+          (record.target instanceof Element
+            ? record.target
+            : record.target.parentElement
+          )?.closest('[data-vmde-measure]'),
+        )
         .flatMap((record) => Array.from(record.addedNodes))
         .filter(
           (node) =>
             node instanceof HTMLElement &&
-            node.matches('[data-vmde-measure]') &&
+            (node.matches('table') || node.querySelector('table') !== null) &&
             node.querySelector('tr + tr') !== null,
         ).length
-    }).observe(document.body, { childList: true })
+    }).observe(document.body, { childList: true, subtree: true })
   })
 
 const tableMeasures = (frame: Frame) =>
