@@ -4405,9 +4405,10 @@ describe('Task 580 CP3-2 key-hint removal patches', () => {
       '<button data-mode="sv">${window.VditorI18n.splitView}</button>`;',
     )
     expect(patched).not.toMatch(KEY_HINT)
+    // The registry entry chains the key-hint patch and V-S2 (task 733 / 015, Q-125).
     expect(
       entryFor('/vditor/src/ts/toolbar/EditMode.ts').transform(editModeSource),
-    ).toBe(patched)
+    ).toBe(sourcePatches.patchEditModeModelText(patched))
   })
 
   it('the WYSIWYG popover labels and placeholders keep their names and lose every key', () => {
@@ -6406,5 +6407,97 @@ describe('013 WYSIWYG unit patches (V-W1 to V-W4)', () => {
       const patch = patchNamed('patchWysiwygScopedInputQueries')
       expect(() => patch('// drift')).toThrow(/found 0 \(version drift\?\)/)
     })
+  })
+})
+
+// Task 733 / 015-T2, S-06 (task 015 sections 6.2 D-3, D-5, D-6 and 6.4): the Source build patches.
+// V-S1 `patchSvInputCaretBlock` (sv/inputEvent.ts), V-S2 `patchEditModeModelText` (toolbar/EditMode.ts),
+// V-S3 `patchSvSetValueSplit` (src/index.ts), V-S4 `patchPreviewSplitUnits` (preview/index.ts). Each
+// asserts its anchors once, keeps the upstream code as the path taken when the hook is absent or
+// declines, and is wired in the registry. Read through the module namespace so this file typechecks
+// before the patches exist.
+describe('Source unit patches V-S1 to V-S4 (task 733 / 015)', () => {
+  type Patch = (code: string) => string
+  const patchOf = (name: string): Patch | undefined =>
+    (sourcePatches as unknown as Record<string, Patch | undefined>)[name]
+  const svInputSource = read(
+    '../../media-src/node_modules/vditor/src/ts/sv/inputEvent.ts',
+  )
+  const editModeSource = read(
+    '../../media-src/node_modules/vditor/src/ts/toolbar/EditMode.ts',
+  )
+  const registryTransform = (file: string) => {
+    const entry = VDITOR_TS_PATCHES.find((candidate) =>
+      candidate.file.test(file),
+    )
+    expect(entry, file).toBeDefined()
+    return entry?.transform as Patch
+  }
+  const compiles = (code: string) =>
+    expect(() => transformSync(code, { loader: 'ts' })).not.toThrow()
+
+  it('V-S1 asks __vmdeSvLocalSpin and __vmdeSvPlaceCaret and keeps the upstream merge, gather and caret write', () => {
+    const patch = patchOf('patchSvInputCaretBlock')
+    expect(typeof patch).toBe('function')
+    const patched = patch?.(svInputSource) ?? ''
+    expect(patched).toContain('__vmdeSvLocalSpin')
+    expect(patched).toContain('__vmdeSvPlaceCaret')
+    // The upstream lines stay for the declined path (`inputEvent.ts:135-160`, `:170-179`).
+    expect(patched).toContain('blockElement.previousElementSibling.remove();')
+    expect(patched).toContain(
+      `vditor.sv.element.querySelectorAll("[data-type='link-ref-defs-block']")`,
+    )
+    expect(patched).toContain('setRangeByWbr(vditor.sv.element, range);')
+    compiles(patched)
+    expect(() => patch?.(patched)).toThrow()
+    // No anchor: the patch refuses instead of returning the code unpatched.
+    expect(() => patch?.('')).toThrow()
+    expect(
+      registryTransform('/vditor/src/ts/sv/inputEvent.ts')(svInputSource),
+    ).toContain('__vmdeSvLocalSpin')
+  })
+
+  it('V-S2 takes __vmdeModeSwitchText and falls back to getMarkdown', () => {
+    const patch = patchOf('patchEditModeModelText')
+    expect(typeof patch).toBe('function')
+    const patched = patch?.(editModeSource) ?? ''
+    expect(patched).toContain('__vmdeModeSwitchText')
+    expect(patched).toContain('getMarkdown(vditor)')
+    compiles(patched)
+    expect(() => patch?.(patched)).toThrow()
+    const chained = registryTransform('/vditor/src/ts/toolbar/EditMode.ts')(
+      editModeSource,
+    )
+    expect(chained).toContain('__vmdeModeSwitchText')
+    // V-S2 is chained after the key-hint patch of the same entry (task 015 section 6.4).
+    expect(chained).toBe(
+      patch?.(sourcePatches.patchEditModeKeyHints(editModeSource)),
+    )
+  })
+
+  it("V-S3 builds Source setValue with processSpinVditorSVDOM's split", () => {
+    const patch = patchOf('patchSvSetValueSplit')
+    expect(typeof patch).toBe('function')
+    const patched = patch?.(vditorIndexSource) ?? ''
+    const setValue = patched.slice(patched.indexOf('public setValue('))
+    expect(setValue.slice(0, 400)).toContain('processSpinVditorSVDOM(')
+    compiles(patched)
+    expect(() => patch?.(patched)).toThrow()
+    expect(
+      registryTransform('/vditor/src/index.ts')(vditorIndexSource),
+    ).toContain('processSpinVditorSVDOM(')
+  })
+
+  it('V-S4 asks __vmdeRenderSplitPreview after the full-Preview hook', () => {
+    const patch = patchOf('patchPreviewSplitUnits')
+    expect(typeof patch).toBe('function')
+    const chained = registryTransform('/vditor/src/ts/preview/index.ts')(
+      previewSource,
+    )
+    const full = chained.indexOf('__vmdeRenderFullPreview')
+    const split = chained.indexOf('__vmdeRenderSplitPreview')
+    expect(full).toBeGreaterThan(-1)
+    expect(split).toBeGreaterThan(full)
+    compiles(chained)
   })
 })

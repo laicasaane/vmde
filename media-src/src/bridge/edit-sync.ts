@@ -195,6 +195,7 @@ interface EditSyncDeps {
         | 'deltaPort'
         | 'canPublishDelta'
         | 'ownsText'
+        | 'modeSwitchText'
         | 'onWholeTextPublished'
         | 'recordFallback'
         | 'markExplicitAtCaret'
@@ -1458,8 +1459,16 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     ) {
       // Vditor fires input while switching render modes. Rebaseline the IR authority during the
       // transition, but never post mode-canonicalized bytes for a document the user did not edit.
+      // Task 733 / 015 (D-5): into or out of Source, a model that owns the text keeps it with its epoch
+      // (read before the mode change tears the old model down), so the whole serialization of the new
+      // mode is skipped; only the serialize mode is recorded. Otherwise it rebaselines as before.
+      const keptText =
+        previousMode === 'sv' || currentMode === 'sv'
+          ? deps.modelSession?.modeSwitchText?.()
+          : undefined
       shadowCall(() => deps.modelSession?.onModeChange(currentMode))
-      serializeForHost()
+      if (keptText === undefined) serializeForHost()
+      else lastSerializeMode = currentMode
       reportDocMode()
       syncUndoDelay()
       cancelTakenRendererPerf(perf)

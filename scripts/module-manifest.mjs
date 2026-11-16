@@ -268,7 +268,7 @@ export const WEBVIEW_MODULES = {
   // production importer is message-router, an intra-module edge.
   // Task 730 — `line-reveal`: the reveal-line surface dispatch (IR/WYSIWYG via nav, Split, Preview).
   // Task 733 — `change-set` (pure text-change arithmetic), `unit-lute` (per-unit Lute string functions), `text-model` (units, pairing, proof, rebind), `model-sync` (leaf sync) and `model-structure` (root, table and list windows); `unit-dom` (the DOM adapter and mutation observer of the model) `unit-schedule` (idle and pre-touch proofs, pre-touch listeners, rotating audit) and `model-session` (the per-editor model, its build points and the shadow comparison). `boot` imports `model-session`; the model session calls `installModelSync()` (model-structure) once at start-up, and `sync()` returns `sync-error` until then. `model-block-units` maps the confirmed units to the source-block index units (injected by `boot/finish-init.ts`; `nav` never imports it). `unit-feed` provides the IR session's live units and per-frame unit changes to `editing`, `nav`, `links` and `chrome` through `util/unit-changes` (provided by `boot/finish-init.ts`). `delta-sync` publishes the model's changes as `edit-delta` messages and handles `baseline` and `restore-baseline`. `unit-capture` (task 004) captures and restores the HTML of changed units for the unit history engine. `apply-text` (task 010) plans and commits an apply (a text change written into the IR DOM unit by unit); `unit-dom` installs it. `definition-units` (task 017) scans and lists the model-only kinds `definition`, `footnote` and `toc` and holds their Lute string helpers; `definition-index` (task 017) indexes definitions, footnotes and their references and re-renders the dependents of a definition change in background jobs.
-  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md', 'sv-source-relation', 'line-reveal', 'change-set', 'unit-lute', 'text-model', 'model-sync', 'model-structure', 'unit-dom', 'unit-schedule', 'model-session', 'model-block-units', 'unit-feed', 'delta-sync', 'unit-capture', 'apply-text', 'definition-units', 'definition-index'] },
+  bridge: { module: 'bridge', dir: 'bridge', ids: ['message-router', 'editor-actions', 'edit-sync', 'edit-sync-tuning', 'save-flush', 'pending-edit', 'incremental-md', 'sv-source-relation', 'line-reveal', 'change-set', 'unit-lute', 'text-model', 'model-sync', 'model-structure', 'unit-dom', 'unit-schedule', 'model-session', 'model-block-units', 'unit-feed', 'delta-sync', 'unit-capture', 'apply-text', 'definition-units', 'definition-index', 'sv-chunks', 'sv-units'] },
   editing: {
     module: 'editing', dir: 'editing',
     ids: [
@@ -376,6 +376,8 @@ export const WEBVIEW_MODULES = {
       // unification) focuses the callout popover controls + Escape returns focus to the editor
       'preview-caret', // Task 652 — restores the editor selection after Preview is turned off.
       'preview-morph',
+      'sv-input-spin', // Task 733 / 015 — window hooks of the Source input and mode-switch patches (V-S1, V-S2).
+      'split-preview-units', // Task 733 / 015 — the Split pane renders the Source units that changed (V-S4).
       'preview-render', // Task 643 — VMDE full-Preview renderer (chunked Md2HTML assembly).
       'preview-state', // Task 530 — content/config generations and explicit Preview reuse authority.
       'preview-task-checkboxes', // Task 220 — source-owned Preview/SV checkbox click controller.

@@ -21,25 +21,52 @@ export function createUnitFeed(
   editSync: Pick<EditSync, 'flush'>,
   deps: UnitFeedDeps,
 ): UnitFeed {
+  return feedOf(session, editSync, deps, false)
+}
+
+/**
+ * Task 733 / 015 (D-8): the Source feed of the same session. It describes the Source model only; the
+ * IR feed (`createUnitFeed`) describes the IR and WYSIWYG models only, so neither feed's consumers see
+ * the other mode's units or changes.
+ */
+export function createSourceUnitFeed(
+  session: ModelSession,
+  editSync: Pick<EditSync, 'flush'>,
+  deps: UnitFeedDeps,
+): UnitFeed {
+  return feedOf(session, editSync, deps, true)
+}
+
+function feedOf(
+  session: ModelSession,
+  editSync: Pick<EditSync, 'flush'>,
+  deps: UnitFeedDeps,
+  source: boolean,
+): UnitFeed {
   // The root a feed describes is the one it was created for; a later null keeps the last one.
   let lastRoot = deps.root()
+  /** The live model is this feed's mode (O(1), no allocation); a session fake without `liveMode` serves IR. */
+  const mine = (): boolean => (session.liveMode?.() === 'sv') === source
   return {
     get root() {
       lastRoot = deps.root() ?? lastRoot
       return lastRoot as HTMLElement
     },
-    isLive: () => session.isLive(),
-    liveUnitOf: (node) => session.liveUnitOf(node),
-    liveUnits: () => session.liveUnits(),
-    onUnitsChanged: (listener) => session.onUnitsChanged(listener),
+    isLive: () => session.isLive() && mine(),
+    liveUnitOf: (node) => (mine() ? session.liveUnitOf(node) : undefined),
+    liveUnits: () => (mine() ? session.liveUnits() : undefined),
+    onUnitsChanged: (listener) =>
+      session.onUnitsChanged((change) => {
+        if (mine()) listener(change)
+      }),
     confirmNow() {
       // A composition owns the DOM: nothing is published.
       if (deps.isComposing()) return false
       editSync.flush()
       // Read after the flush (R-1): the flush can post, rebind or leave a unit dirty.
-      return session.confirmedUnits() !== undefined
+      return mine() && session.confirmedUnits() !== undefined
     },
-    confirmedLines: () => session.confirmedLines(),
+    confirmedLines: () => (mine() ? session.confirmedLines() : undefined),
   }
 }
 

@@ -3,7 +3,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
-import { createRealLute } from '../testing/real-lute'
+import { countBudget, countedLute } from '../testing/budget-harness'
+import { createRealLute, svBlocksHtml } from '../testing/real-lute'
 import { writeQuietly } from '../util/mutation-impact'
 import type { UnitsChange } from '../util/unit-changes'
 import { createModelSession, type ModelSession } from './model-session'
@@ -12,6 +13,16 @@ import { wysiwygFixture } from '../testing/budget-harness'
 
 // Task 733 / 004-C: the model session over a real text model, real Lute and a jsdom IR root. The
 // animation frames and the clock are fake; the host messages are plain objects.
+// Task 733 / 015-T1 (S-12): `SOURCE_UNITS` (`U/unit-changes.ts`, task 015 section 6.9 item 1) as a
+// switch the Source tests set; the other tests leave it on.
+const sourceUnits = vi.hoisted(() => ({ value: true }))
+vi.mock('../util/unit-changes', async (original) => ({
+  ...(await original<typeof import('../util/unit-changes')>()),
+  get SOURCE_UNITS() {
+    return sourceUnits.value
+  },
+}))
+
 let lute: UnitLute
 beforeAll(() => {
   const real = createRealLute('ir')
@@ -23,6 +34,8 @@ beforeAll(() => {
 interface Rig {
   session: ModelSession
   root: HTMLElement
+  /** The Source root (`pre.vditor-sv`); empty until a test switches to Source. */
+  sourceRoot: HTMLElement
   mode: { value: string | null }
   streaming: { value: boolean }
   composing: { value: boolean }
@@ -65,11 +78,16 @@ function rig(options: { e2e?: boolean; wysiwygUnits?: boolean } = {}): Rig {
   const viewport = { calls: 0 }
   window.requestAnimationFrame = (cb) => frames.push(() => cb(0))
   window.cancelAnimationFrame = () => undefined
+  // Task 733 / 015: the Source root (`pre.vditor-sv`), empty until a test switches to Source.
+  const sourceRoot = document.createElement('pre')
+  sourceRoot.className = 'vditor-sv vditor-reset'
+  document.body.appendChild(sourceRoot)
   // Task 733 / 013: these rigs hold an IR root only, so WYSIWYG units stay off here (the 013 block
   // below builds WYSIWYG rigs); a mode change to WYSIWYG keeps its pre-013 meaning.
   const session = createModelSession({
     wysiwygUnits: options.wysiwygUnits ?? false,
     win: window,
+    getSourceRoot: () => sourceRoot,
     getRoot: () => root,
     getLute: () => lute,
     getMode: () => mode.value,
@@ -96,6 +114,7 @@ function rig(options: { e2e?: boolean; wysiwygUnits?: boolean } = {}): Rig {
   return {
     session,
     root,
+    sourceRoot,
     mode,
     streaming,
     composing,
@@ -168,13 +187,16 @@ describe('build', () => {
     expect(r.stats().state).toBe('live')
   })
 
-  it('is off for a mode that is not IR', () => {
+  it('is off for a mode the model does not serve', () => {
+    // Task 733 / 015: Source is served while SOURCE_UNITS is on; with it off, Source keeps the 'mode' reason.
+    sourceUnits.value = false
     const r = rig()
     r.render(DOC)
     r.mode.value = 'sv'
     r.session.onHostText(DOC, 1)
     r.session.onEditDomComplete()
     expect(r.stats()).toMatchObject({ state: 'off', offReason: 'mode' })
+    sourceUnits.value = true
   })
 
   it('is off not-mounted while streaming and builds when the stream is done', () => {
@@ -1961,3 +1983,103 @@ describe('013 WYSIWYG model session', () => {
     },
   )
 })
+
+// Task 733 / 015-T1, S-07 and S-12 (task 015 sections 6.2 D-5 and 6.3): the model survives a switch
+// to Source and back with its epoch, with no `rebind` round trip and no whole-document IR
+// serialization by the session. With unpublished typing, or with `SOURCE_UNITS` off, today's path runs:
+// the host text is dropped and the IR re-entry asks for a `rebind`. The two session members are those
+// of task 015 section 6.4, read through a cast so this file typechecks before they exist.
+interface SourceSessionApi {
+  liveMode?(): 'ir' | 'sv' | undefined
+  modeSwitchText?(): string | undefined
+}
+const sourceApi = (r: Rig) => r.session as unknown as SourceSessionApi
+
+// Factor 16 renders the IR DOM of a 208 KB document twice with the real Lute (about 7 s in jsdom).
+const SWITCH_TIMEOUT_MS = 30_000
+
+describe.each([1, 4, 16] as const)(
+  'S-07 mode switch at factor %i',
+  (factor) => {
+    const markdown = tableHeavyMarkdown(factor)
+    let sv: ReturnType<typeof createRealLute>
+    beforeAll(() => {
+      sv = createRealLute('sv')
+      countedLute(lute)
+    })
+    afterEach(() => {
+      sourceUnits.value = true
+    })
+
+    /** Vditor's switch into Source: the spin of `text`, split into `data-block` divs. */
+    const toSource = (r: Rig, text: string) => {
+      r.mode.value = 'sv'
+      r.sourceRoot.innerHTML = svBlocksHtml(sv.render(text))
+      return countBudget(r.root, () => {
+        r.session.onModeChange('sv')
+        r.session.onEditDomComplete()
+        r.runFrames()
+      }).counts
+    }
+    const toIr = (r: Rig, text: string) => {
+      r.mode.value = 'ir'
+      r.render(text)
+      r.session.onModeChange('ir')
+      r.session.onEditDomComplete()
+      r.runFrames()
+    }
+
+    it(
+      'keeps the text and epoch through IR, Source and IR',
+      () => {
+        const r = open(markdown, 3)
+        const api = sourceApi(r)
+        expect(typeof api.modeSwitchText).toBe('function')
+        expect(api.modeSwitchText?.()).toBe(markdown)
+        const counts = toSource(r, markdown)
+        expect(counts.luteCalls).toBe(0)
+        expect(api.liveMode?.()).toBe('sv')
+        expect(r.session.confirmedSnapshot()).toEqual({
+          text: markdown,
+          epoch: 3,
+        })
+        expect(api.modeSwitchText?.()).toBe(markdown)
+        toIr(r, markdown)
+        expect(api.liveMode?.()).toBe('ir')
+        // No `onRebind` was delivered: the model is confirmed from the kept host text.
+        expect(r.session.confirmedSnapshot()).toEqual({
+          text: markdown,
+          epoch: 3,
+        })
+      },
+      SWITCH_TIMEOUT_MS,
+    )
+
+    it(
+      'takes the rebind path when typing is unpublished at the switch',
+      () => {
+        const r = open(markdown, 3)
+        const api = sourceApi(r)
+        expect(typeof api.modeSwitchText).toBe('function')
+        type(r, 0, 'typed but not published')
+        expect(api.modeSwitchText?.()).toBeUndefined()
+      },
+      SWITCH_TIMEOUT_MS,
+    )
+
+    it(
+      'S-12 with SOURCE_UNITS off keeps the model off in Source and asks for a rebind in IR',
+      () => {
+        sourceUnits.value = false
+        const r = open(markdown, 3)
+        const api = sourceApi(r)
+        expect(typeof api.liveMode).toBe('function')
+        toSource(r, markdown)
+        expect(api.liveMode?.()).toBeUndefined()
+        toIr(r, markdown)
+        expect(r.session.confirmedSnapshot()).toBeUndefined()
+      },
+      SWITCH_TIMEOUT_MS,
+    )
+  },
+)

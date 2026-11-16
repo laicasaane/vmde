@@ -113,6 +113,14 @@ type SnapshotScope = Parameters<
  * WYSIWYG, Source and every other case. */
 export const IR_HISTORY_ENGINE: 'unit' | 'vditor' = 'unit'
 
+/**
+ * Task 733 / 015 (D-7): the engine of Source history. The unit engine can hold Source history (it claims
+ * Source while the Source model is live), but the Source model has no history port of its own yet: its
+ * capture of changed-unit DOM windows (`bridge/unit-capture.ts`) is IR-shaped (preview, list and table
+ * restores). Until a Source port lands, Source keeps Vditor's `Undo` (follow-up recorded by 015-I4).
+ */
+export const SOURCE_HISTORY_ENGINE: 'unit' | 'vditor' = 'vditor'
+
 const MODES: readonly HistoryMode[] = ['ir', 'wysiwyg', 'sv']
 
 type TransitionHook = (kind: 'undo' | 'redo', run: () => void) => void
@@ -356,7 +364,8 @@ class VditorHistoryStore implements HistoryStore {
    * units (Task 733 / 013), and only for the mode the editor shows (the engine keeps one history).
    */
   private claimed(mode: HistoryMode): UnitHistoryDelegate | undefined {
-    return unitModeOf(mode) !== undefined &&
+    return (unitModeOf(mode) !== undefined ||
+      (mode === 'sv' && SOURCE_HISTORY_ENGINE === 'unit')) &&
       mode === this.inner.currentMode &&
       unitDelegate?.claims(this.inner)
       ? unitDelegate

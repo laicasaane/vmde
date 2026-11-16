@@ -112,7 +112,9 @@ export function maskPreviewSource(markdown: string): string {
 // Task 83: the editor Lute keeps its fidelity-preserving soft-break default; only the synchronous
 // Preview render flips it, then restores it.
 function renderHtml(lute: PreviewLute, markdown: string): string {
-  lute.SetSoftBreak2HardBreak(!win().__vmdeReflowPreview)
+  // Task 733 / 015: without reflow the flip sets the value the editor already keeps (true): skip both calls.
+  if (!win().__vmdeReflowPreview) return lute.Md2HTML(markdown)
+  lute.SetSoftBreak2HardBreak(false)
   try {
     return lute.Md2HTML(markdown)
   } finally {
@@ -269,6 +271,31 @@ function renderCheapPasses(vditor: PreviewVditor, nodes: readonly Element[]) {
   renderImageCaptions(root, 'preview', preview.markdown.imageCaption)
   codeRender(root, preview.hljs)
   if (preview.render.media.enable) mediaRender(root)
+}
+
+/**
+ * Task 733 / 015 (D-6): the HTML of one Source unit for the Split pane: the masked source through the
+ * same `Md2HTML` setup as full Preview (one Lute call).
+ */
+export function renderPreviewHtml(lute: PreviewLute, markdown: string): string {
+  return renderHtml(lute, maskPreviewSource(markdown))
+}
+
+/**
+ * Task 733 / 015 (D-6): the post-render passes of full Preview on `blocks` only (the elements a Split
+ * unit morph inserted). A renderer that throws leaves its block unrendered; the pane stays usable.
+ */
+export function renderPreviewBlocks(
+  vditor: PreviewVditor,
+  blocks: readonly HTMLElement[],
+): void {
+  if (blocks.length === 0) return
+  try {
+    renderCheapPasses(vditor, blocks)
+    for (const block of blocks) renderHeavyBlock(vditor, block)
+  } catch {
+    // An engine or option that is missing (a partial owner) renders nothing more.
+  }
 }
 
 interface Run {

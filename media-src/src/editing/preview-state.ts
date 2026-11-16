@@ -1,5 +1,6 @@
 import { findScroller } from '../chrome/toolbar-scroll-guard'
 import { installFullPreviewRoute } from './preview-render'
+import { installSplitPreviewRoute } from './split-preview-units'
 
 interface PreviewRevisionState {
   invalidateContent(): void
@@ -141,6 +142,8 @@ export function installPreviewState(
   activePreviewRefresh = refreshVisiblePreview
   // Task 643: full Preview is rendered by VMDE; the patched Preview.render asks this hook first.
   const disposeFullPreviewRoute = installFullPreviewRoute(owner as any)
+  // Task 733 / 015 (D-6): the Split pane by changed Source units (patch V-S4).
+  const disposeSplitPreviewRoute = installSplitPreviewRoute(owner as any)
   const win = window as any
   win.__vmdePreviewSnapshot = snapshotMarkdown
   win.__vmdeCapturePreviewSource = (markdown: string) =>
@@ -174,6 +177,7 @@ export function installPreviewState(
   return () => {
     if (activeOwner !== owner) return
     disposeFullPreviewRoute()
+    disposeSplitPreviewRoute()
     activeOwner = undefined
     activePreviewRefresh = undefined
     pendingScrollRestore = undefined

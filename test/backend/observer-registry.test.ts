@@ -28,6 +28,11 @@ const FROZEN: ReadonlyArray<readonly [string, number, string]> = [
     'The single observer of the text model: marks units dirty and reports batches to the feed.',
   ],
   [
+    'bridge/sv-units.ts',
+    1,
+    'The Source model observer; one model is live at a time',
+  ],
+  [
     'chrome/diff-markers.ts',
     1,
     'Redraws diff markers when the pane content changes.',
@@ -272,9 +277,9 @@ describe('observer freeze-list', () => {
     )
   }
 
-  it('lists 47 files and 53 sites, each with a reason', () => {
-    expect(FROZEN).toHaveLength(47)
-    expect(FROZEN.reduce((sum, [, count]) => sum + count, 0)).toBe(53)
+  it('lists 48 files and 54 sites, each with a reason', () => {
+    expect(FROZEN).toHaveLength(48)
+    expect(FROZEN.reduce((sum, [, count]) => sum + count, 0)).toBe(54)
     expect(FROZEN.every(([, , reason]) => reason.trim().length > 0)).toBe(true)
   })
 

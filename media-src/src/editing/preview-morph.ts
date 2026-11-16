@@ -22,6 +22,8 @@
 // and re-baseline.
 
 const rawCache = new WeakMap<HTMLElement, string[]>()
+// Task 733 / 015: element counts per Source unit of a Split pane (see `morphPreviewUnits`).
+const unitCounts = new WeakMap<HTMLElement, number[]>()
 
 // One top-level unit = an element plus its trailing non-element siblings (Lute emits
 // '\n' text nodes between blocks; they ride with the PRECEDING block).
@@ -56,6 +58,8 @@ function fullSet(el: HTMLElement, html: string, raws: string[]): void {
  *  since the previous morph. Exported for unit tests; installed as the
  *  window.__vmdeMorphPreview hook consumed by the vditor preview patch. */
 export function morphPreviewInto(el: HTMLElement, html: string): void {
+  // Task 733 / 015: a raw-diff morph rewrites the pane outside the unit baseline.
+  unitCounts.delete(el)
   try {
     const tpl = document.createElement('template')
     tpl.innerHTML = html
@@ -112,6 +116,69 @@ export function morphPreviewInto(el: HTMLElement, html: string): void {
  *  A baseline whose length disagrees with the pane's element children is ignored by `morphPreviewInto`. */
 export function setPreviewMorphBaseline(el: HTMLElement, raws: string[]): void {
   rawCache.set(el, raws)
+}
+
+// Task 733 / 015-I3 (task 015 section 6.2 D-6): the Split pane morph by Source units. The pane holds one
+// group of top-level elements per Source unit; the baseline keeps each group's element count, so a
+// changed unit replaces only its own elements, with no raw-HTML diff of the pane. A pane whose element
+// count no longer matches its baseline (an outside write) answers false and the caller falls back.
+
+/** Records the element count of each unit of a pane built outside `morphPreviewUnits` (a whole render). */
+export function setPreviewUnitBaseline(
+  pane: HTMLElement,
+  elementCounts: readonly number[],
+): void {
+  unitCounts.set(pane, [...elementCounts])
+}
+
+/** The number of units a pane's baseline holds; undefined without a baseline. */
+export function previewUnitCount(pane: HTMLElement): number | undefined {
+  return unitCounts.get(pane)?.length
+}
+
+/** The top-level element nodes of `html`, parsed in `pane`'s document. */
+function elementsOf(pane: HTMLElement, html: string): Element[] {
+  const template = pane.ownerDocument.createElement('template')
+  template.innerHTML = html
+  return Array.from(template.content.children)
+}
+
+/**
+ * Replaces the elements of units `from` to `from + removed - 1` by the elements of `htmls` (one entry per
+ * new unit). Elements of other units stay the same nodes. False when the pane left its baseline
+ * (nothing written); the caller renders the pane whole then.
+ */
+export function morphPreviewUnits(
+  pane: HTMLElement,
+  from: number,
+  removed: number,
+  htmls: readonly string[],
+): boolean {
+  const counts = unitCounts.get(pane)
+  if (!counts || from < 0 || from + removed > counts.length) return false
+  let total = 0
+  let start = 0
+  for (let i = 0; i < counts.length; i++) {
+    if (i === from) start = total
+    total += counts[i]
+  }
+  if (from === counts.length) start = total
+  const children = pane.children
+  if (total !== children.length) return false
+  let removedElements = 0
+  for (let i = from; i < from + removed; i++) removedElements += counts[i]
+  const stopAt = children[start + removedElements] ?? null
+  for (let i = 0; i < removedElements; i++) children[start]?.remove()
+  const fresh: number[] = []
+  for (const html of htmls) {
+    const elements = elementsOf(pane, html)
+    for (const element of elements) pane.insertBefore(element, stopAt)
+    fresh.push(elements.length)
+  }
+  counts.splice(from, removed, ...fresh)
+  // The raw cache of `morphPreviewInto` no longer describes the pane: its next morph sets it whole.
+  rawCache.delete(pane)
+  return true
 }
 
 declare global {

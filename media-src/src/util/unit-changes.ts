@@ -86,19 +86,25 @@ interface FeedSlot {
 }
 
 const slots = new WeakMap<Window, FeedSlot>()
+// Task 733 / 015 (D-8): a second slot for the Source feed, so a consumer of the IR or WYSIWYG feed never
+// receives a Source change and needs no mode check of its own.
+const sourceSlots = new WeakMap<Window, FeedSlot>()
 
-function slotOf(win: Window): FeedSlot {
-  let slot = slots.get(win)
+function slotIn(registry: WeakMap<Window, FeedSlot>, win: Window): FeedSlot {
+  let slot = registry.get(win)
   if (!slot) {
     slot = { feed: undefined, off: undefined, listeners: new Set() }
-    slots.set(win, slot)
+    registry.set(win, slot)
   }
   return slot
 }
 
-/** Makes `feed` the feed of `win` (`undefined` clears it); the listeners of `onUnitFeed` follow the replacement. */
-export function provideUnitFeed(win: Window, feed: UnitFeed | undefined): void {
-  const slot = slotOf(win)
+function provideIn(
+  registry: WeakMap<Window, FeedSlot>,
+  win: Window,
+  feed: UnitFeed | undefined,
+): void {
+  const slot = slotIn(registry, win)
   slot.off?.()
   slot.off = undefined
   slot.feed = feed
@@ -109,18 +115,60 @@ export function provideUnitFeed(win: Window, feed: UnitFeed | undefined): void {
   })
 }
 
+function listenIn(
+  registry: WeakMap<Window, FeedSlot>,
+  win: Window,
+  listener: FeedListener,
+): () => void {
+  const slot = slotIn(registry, win)
+  slot.listeners.add(listener)
+  return () => {
+    slot.listeners.delete(listener)
+  }
+}
+
+/** Makes `feed` the feed of `win` (`undefined` clears it); the listeners of `onUnitFeed` follow the replacement. */
+export function provideUnitFeed(win: Window, feed: UnitFeed | undefined): void {
+  provideIn(slots, win, feed)
+}
+
 export function unitFeedOf(win: Window): UnitFeed | undefined {
   return slots.get(win)?.feed
 }
 
 /** Subscribes to the current feed and to every feed provided later; returns the unsubscribe. */
 export function onUnitFeed(win: Window, listener: FeedListener): () => void {
-  const slot = slotOf(win)
-  slot.listeners.add(listener)
-  return () => {
-    slot.listeners.delete(listener)
-  }
+  return listenIn(slots, win, listener)
 }
+
+/** Task 733 / 015: `provideUnitFeed` for the Source feed (its own slot). */
+export function provideSourceUnitFeed(
+  win: Window,
+  feed: UnitFeed | undefined,
+): void {
+  provideIn(sourceSlots, win, feed)
+}
+
+/**
+ * Task 733 / 015: the Source feed of `win`, if one is provided.
+ */
+export function sourceUnitFeedOf(win: Window): UnitFeed | undefined {
+  return sourceSlots.get(win)?.feed
+}
+
+/**
+ * Task 733 / 015: `onUnitFeed` for the Source feed.
+ */
+export function onSourceUnitFeed(
+  win: Window,
+  listener: FeedListener,
+): () => void {
+  return listenIn(sourceSlots, win, listener)
+}
+
+/** Task 733 / 015 (D-1 to D-8): Source mode has its own text model, published by units; false restores
+ *  today's Source path (model off in Source with reason 'mode', whole-text posts, old history engine). */
+export const SOURCE_UNITS: boolean = true
 
 /** Task 733 / 013 (D-13): the text model, unit spin, unit history and the unit feed serve WYSIWYG. false
  *  restores today's WYSIWYG path (model off with reason 'mode', hooks refuse, old history engine). */

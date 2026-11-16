@@ -2749,6 +2749,118 @@ function assertOneAnchor(code, anchor, name, where) {
     )
   }
 }
+// Task 733 / 015-I2, V-S1 (task 015 section 6.2 D-3): Source input spins only the caret block.
+// Upstream `sv/inputEvent.ts` prepends the previous block and gathers every link-ref-defs and
+// footnotes block of the document into each spin (`:135-160`), moves the link-ref-defs back with a
+// root query and walks the root for footnotes (`:170-177`), and finds the caret marker with a root
+// search (`setRangeByWbr`, `:179`). When `window.__vmdeSvLocalSpin` (editing/sv-input-spin.ts) says
+// the caret block stands alone, those lines are skipped and `window.__vmdeSvPlaceCaret` writes the caret
+// from the elements the spin produced; a declined hook, or no hook, runs the upstream lines unchanged.
+const SV_LOCAL_SPIN_SENTINEL = '__vmdeSvLocalSpin'
+const SV_LOCAL_SPIN_DECIDE = '    let html = blockElement.textContent;\n'
+const SV_LOCAL_SPIN_GATHER = '    } else {\n        // 添加前一个块元素'
+const SV_LOCAL_SPIN_AFTER =
+  '    vditor.sv.element.querySelectorAll("[data-type=\'link-ref-defs-block\']").forEach((item) => {\n' +
+  '        vditor.sv.element.insertAdjacentElement("beforeend", item.parentElement)\n' +
+  '    })\n\n' +
+  '    // 合并脚注\n' +
+  '    combineFootnote(vditor.sv.element, (root: HTMLElement) => {\n' +
+  '        vditor.sv.element.insertAdjacentElement("beforeend", root)\n' +
+  '    })\n\n' +
+  '    setRangeByWbr(vditor.sv.element, range);'
+export function patchSvInputCaretBlock(code) {
+  if (code.includes(SV_LOCAL_SPIN_SENTINEL)) {
+    throw new Error(
+      'patchSvInputCaretBlock: vditor sv/inputEvent.ts is already patched (applied twice?)',
+    )
+  }
+  for (const anchor of [
+    SV_LOCAL_SPIN_DECIDE,
+    SV_LOCAL_SPIN_GATHER,
+    SV_LOCAL_SPIN_AFTER,
+  ]) {
+    assertOneAnchor(code, anchor, 'patchSvInputCaretBlock', 'sv/inputEvent.ts')
+  }
+  const decide =
+    '    // Task 733 / 015 (VMDE patch V-S1): spin the caret block alone when the hook says it stands alone.\n' +
+    '    const vmdeLocalSpin = !!(window as any).__vmdeSvLocalSpin?.(vditor, blockElement);\n' +
+    '    const vmdeBefore = blockElement.previousElementSibling;\n' +
+    '    const vmdeAfter = blockElement.nextElementSibling;\n'
+  const after =
+    '    if (!vmdeLocalSpin) {\n' +
+    SV_LOCAL_SPIN_AFTER.replace(
+      '\n\n    setRangeByWbr(vditor.sv.element, range);',
+      '',
+    )
+      .split('\n')
+      .map((line) => (line ? `    ${line}` : line))
+      .join('\n') +
+    '\n    }\n\n' +
+    '    if (!(vmdeLocalSpin && (window as any).__vmdeSvPlaceCaret?.(vditor, vmdeBefore, vmdeAfter, range))) {\n' +
+    '        setRangeByWbr(vditor.sv.element, range);\n' +
+    '    }'
+  return code
+    .replace(SV_LOCAL_SPIN_DECIDE, decide + SV_LOCAL_SPIN_DECIDE)
+    .replace(
+      SV_LOCAL_SPIN_GATHER,
+      '    } else if (!vmdeLocalSpin) {\n        // 添加前一个块元素',
+    )
+    .replace(SV_LOCAL_SPIN_AFTER, after)
+}
+
+// Task 733 / 015-I2, V-S2 (task 015 section 6.2 D-5): a switch into or out of Source takes the model
+// text from `window.__vmdeModeSwitchText` (editing/sv-input-spin.ts) when the model owns it, instead of
+// Lute's whole-document serialization of the old mode (`toolbar/EditMode.ts:28`); undefined keeps
+// `getMarkdown`. Chained after `patchEditModeKeyHints` in the same registry entry.
+const EDIT_MODE_TEXT_ANCHOR = '        markdownText = getMarkdown(vditor);'
+export function patchEditModeModelText(code) {
+  if (code.includes('__vmdeModeSwitchText')) {
+    throw new Error(
+      'patchEditModeModelText: vditor toolbar/EditMode.ts is already patched (applied twice?)',
+    )
+  }
+  assertOneAnchor(
+    code,
+    EDIT_MODE_TEXT_ANCHOR,
+    'patchEditModeModelText',
+    'toolbar/EditMode.ts',
+  )
+  return code.replace(
+    EDIT_MODE_TEXT_ANCHOR,
+    '        // Task 733 / 015 (VMDE patch V-S2): the model text of a Source switch, else getMarkdown.\n' +
+      '        markdownText = (window as any).__vmdeModeSwitchText?.(vditor, type) ?? getMarkdown(vditor);',
+  )
+}
+
+// Task 733 / 015-I2, V-S3 (task 015 section 6.2 D-5): Source `setValue` (`src/index.ts:317`) wraps the
+// whole spin in one `data-block` div, so the first key after a host update spins the whole document.
+// It now builds with `processSpinVditorSVDOM`, the split the mode switch uses (`EditMode.ts:120`), so
+// the Source DOM has one div per source chunk. Chained after `patchTocFullSurfaceRender`.
+const SV_SET_VALUE_IMPORT =
+  'import {processAfterRender as processSVAfterRender, processPaste} from "./ts/sv/process";'
+const SV_SET_VALUE_ANCHOR =
+  "            this.vditor.sv.element.innerHTML = `<div data-block='0'>${this.vditor.lute.SpinVditorSVDOM(markdown)}</div>`;"
+export function patchSvSetValueSplit(code) {
+  if (code.includes('processSpinVditorSVDOM(markdown, this.vditor)')) {
+    throw new Error(
+      'patchSvSetValueSplit: vditor src/index.ts is already patched (applied twice?)',
+    )
+  }
+  for (const anchor of [SV_SET_VALUE_IMPORT, SV_SET_VALUE_ANCHOR]) {
+    assertOneAnchor(code, anchor, 'patchSvSetValueSplit', 'src/index.ts')
+  }
+  return code
+    .replace(
+      SV_SET_VALUE_IMPORT,
+      'import {processAfterRender as processSVAfterRender, processPaste, processSpinVditorSVDOM} from "./ts/sv/process";',
+    )
+    .replace(
+      SV_SET_VALUE_ANCHOR,
+      '            // Task 733 / 015 (VMDE patch V-S3): one data-block div per source chunk, as the mode switch builds.\n' +
+        '            this.vditor.sv.element.innerHTML = processSpinVditorSVDOM(markdown, this.vditor);',
+    )
+}
+
 export function patchIrUnitSpin(code) {
   assertOneAnchor(code, IR_UNIT_SPIN_START, 'patchIrUnitSpin', 'ir/input.ts')
   assertOneAnchor(code, IR_UNIT_SPIN_END, 'patchIrUnitSpin', 'ir/input.ts')
@@ -4303,6 +4415,36 @@ ${PREVIEW_FULL_ROUTE_ANCHOR}`,
   )
 }
 
+// Task 733 / 015-I3, V-S4 (task 015 section 6.2 D-6): after the full-Preview hook, Vditor's
+// `Preview.render` asks `window.__vmdeRenderSplitPreview` (editing/split-preview-units.ts), which takes
+// the Split pane's render by changed Source units; false keeps Vditor's whole render. Runs after
+// `patchPreviewFullRoute`, whose inserted hook is this patch's anchor.
+const PREVIEW_SPLIT_UNITS_ANCHOR = `        if ((window as any).__vmdeRenderFullPreview?.(vditor, value, vmdeImmediate)) {
+            return;
+        }
+`
+export function patchPreviewSplitUnits(code) {
+  if (code.includes('__vmdeRenderSplitPreview')) {
+    throw new Error(
+      'patchPreviewSplitUnits: vditor preview/index.ts is already patched (applied twice?)',
+    )
+  }
+  assertOneAnchor(
+    code,
+    PREVIEW_SPLIT_UNITS_ANCHOR,
+    'patchPreviewSplitUnits',
+    'preview/index.ts (after patchPreviewFullRoute)',
+  )
+  return code.replace(
+    PREVIEW_SPLIT_UNITS_ANCHOR,
+    `${PREVIEW_SPLIT_UNITS_ANCHOR}        // Task 733 / 015 (VMDE patch V-S4): the Split pane by changed Source units.
+        if ((window as any).__vmdeRenderSplitPreview?.(vditor, value)) {
+            return;
+        }
+`,
+  )
+}
+
 // Declarative registry of every Vditor *source* (.ts) patch: one entry per file we rewrite at
 // bundle time, mapping the file's filter to the transform(s) applied to its contents. Each
 // transform is an anchor-asserted `patchXxx` defined above (tests import those directly); the
@@ -4321,7 +4463,8 @@ export const VDITOR_TS_PATCHES = [
     // Task 536: insertMD/setValue must refresh native and embedded ToCs together; outline.render
     // alone can rewrite heading IDs while leaving embedded data-target-id values stale.
     file: /vditor[/\\]src[/\\]index\.ts$/,
-    transform: patchTocFullSurfaceRender,
+    // Task 733 / 015: then V-S3 (Source setValue split).
+    transform: (code) => patchSvSetValueSplit(patchTocFullSurfaceRender(code)),
   },
   {
     // chain the undo/index.ts patches: CJS default-import interop + the split-caret restore
@@ -4427,7 +4570,8 @@ export const VDITOR_TS_PATCHES = [
   {
     // Task 580 CP3-2: the edit-mode rows show names only.
     file: /vditor[/\\]src[/\\]ts[/\\]toolbar[/\\]EditMode\.ts$/,
-    transform: patchEditModeKeyHints,
+    // Task 733 / 015: then V-S2 (the model text of a Source switch).
+    transform: (code) => patchEditModeModelText(patchEditModeKeyHints(code)),
   },
   {
     // Task 580 CP3-2: the WYSIWYG popover labels and placeholders show names only.
@@ -4476,6 +4620,11 @@ export const VDITOR_TS_PATCHES = [
     transform: patchSvCopyGuard,
   },
   {
+    // Task 733 / 015: V-S1, the Source input spins only the caret block.
+    file: /vditor[/\\]src[/\\]ts[/\\]sv[/\\]inputEvent\.ts$/,
+    transform: patchSvInputCaretBlock,
+  },
+  {
     file: /vditor[/\\]src[/\\]ts[/\\]markdown[/\\]mathRender\.ts$/,
     transform: (code) => {
       const resilient = patchMathRender(code)
@@ -4501,13 +4650,16 @@ export const VDITOR_TS_PATCHES = [
     file: /vditor[/\\]src[/\\]ts[/\\]preview[/\\]index\.ts$/,
     transform: (code) => {
       const single = patchPreviewSingleSnapshot(code)
-      return patchPreviewFullRoute(
-        patchPreviewImmediateAndCommit(
-          patchPreviewTaskSourceCapture(
-            patchPreviewInstanceSoftBreak(
-              patchPreviewComments(
-                patchPreviewMorph(
-                  patchPreviewCopyClipboardData(patchPreviewCopyTip(single)),
+      // Task 733 / 015: V-S4 after the full-Preview route.
+      return patchPreviewSplitUnits(
+        patchPreviewFullRoute(
+          patchPreviewImmediateAndCommit(
+            patchPreviewTaskSourceCapture(
+              patchPreviewInstanceSoftBreak(
+                patchPreviewComments(
+                  patchPreviewMorph(
+                    patchPreviewCopyClipboardData(patchPreviewCopyTip(single)),
+                  ),
                 ),
               ),
             ),

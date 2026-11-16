@@ -154,6 +154,7 @@ import {
 } from '../bridge/definition-units'
 import { modelBlockUnits } from '../bridge/model-block-units'
 import { createUnitFeed, installUnitFeedStats } from '../bridge/unit-feed'
+import { installSourceInputHooks } from '../editing/sv-input-spin'
 import {
   type ModeLute,
   spinCellHtml,
@@ -753,7 +754,12 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set(
     'preview-state',
     // Task 607: the preview only displays; the rendering stands in when no exact source is owned.
-    installPreviewState(innerVditor() ?? window.vditor, legacyExactMarkdown),
+    // Task 733 / 015 (D-6): the model text, when the model owns it, is the snapshot with no serialization.
+    installPreviewState(
+      innerVditor() ?? window.vditor,
+      () =>
+        sessionState.modelSession?.modeSwitchText() ?? legacyExactMarkdown(),
+    ),
   )
   observers.set(
     'preview-task-checkboxes',
@@ -796,6 +802,14 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
   observers.set('unit-spin', installUnitSpinHook())
   // Task 733 / 005: the live units and unit changes of the IR session for `nav`, `editing`, `links`, `chrome`.
   observers.set('unit-feed', installUnitFeed())
+  // Task 733 / 015: the Source input and mode-switch hooks of patches V-S1 and V-S2. The session is read at
+  // call time, so a re-init's session counts.
+  observers.set(
+    'source-input-hooks',
+    installSourceInputHooks(window, {
+      modeSwitchText: () => sessionState.modelSession?.modeSwitchText(),
+    }),
+  )
   // Task 733 / 004: Undo and Redo of IR restore the changed units and post a `history-delta`. The
   // end-to-end harness can keep Vditor's own engine for the specs that read its internals
   // (`VMDE_E2E_HISTORY_ENGINE=vditor`, sent in `init` only under `VMDE_E2E`).

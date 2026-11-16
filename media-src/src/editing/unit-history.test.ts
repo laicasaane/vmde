@@ -14,7 +14,7 @@ import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { createModelSession, type ModelSession } from '../bridge/model-session'
 import type { UnitLute } from '../bridge/unit-lute'
 import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
-import { createRealLute } from '../testing/real-lute'
+import { createRealLute, svFixture } from '../testing/real-lute'
 import { historyStoreOf, type RecordedEntry } from './history-store'
 import { invalidateCaret, requestCaret } from './caret'
 import { tagCodeSource } from './code-source'
@@ -35,6 +35,10 @@ const engine = vi.hoisted(() => ({ value: 'unit' as 'unit' | 'vditor' }))
 vi.mock('./history-store', async (original) => ({
   ...(await original<typeof import('./history-store')>()),
   get IR_HISTORY_ENGINE() {
+    return engine.value
+  },
+  // Task 733 / 015-T1: the Source engine constant of task 015 section 6.4.
+  get SOURCE_HISTORY_ENGINE() {
     return engine.value
   },
 }))
@@ -85,7 +89,15 @@ const cap = (name: string) => ({ name }) as unknown as HistoryCapture
 let uninstall: (() => void) | undefined
 
 function rig(
-  options: { port?: boolean; root?: HTMLElement; mode?: 'ir' | 'wysiwyg' } = {},
+  options: {
+    port?: boolean
+    root?: HTMLElement
+    mode?: 'ir' | 'wysiwyg'
+    /** Task 015 (D-7): the mode whose model is live; a dependency the Source engine reads (provisional). */
+    liveMode?: () => 'ir' | 'sv' | undefined
+    /** Task 015: the Source root the inner Vditor shows. */
+    svRoot?: HTMLElement
+  } = {},
 ) {
   const mode = options.mode ?? 'ir'
   // Task 733 / 013: Vditor keeps both mode trees; the rig's paragraphs live in the root of `mode`.
@@ -113,6 +125,11 @@ function rig(
     },
     wysiwyg: {
       element: mode === 'wysiwyg' ? root : other,
+      composingLock: false,
+      processTimeoutId: undefined,
+    },
+    sv: {
+      element: options.svRoot ?? other,
       composingLock: false,
       processTimeoutId: undefined,
     },
@@ -145,7 +162,9 @@ function rig(
             return state.restoreResult
           },
         }
-  uninstall = installUnitHistory(window, {
+  // A variable, not a literal: `liveMode` is not a dependency of the engine yet (task 015 section 6.2 D-7).
+  const deps = {
+    ...(options.liveMode ? { liveMode: options.liveMode } : {}),
     port: () => port as never,
     publishHistory: (kind, steps) => {
       state.published.push([kind, steps])
@@ -153,7 +172,8 @@ function rig(
     },
     lastPostedSequence: () => state.sequence,
     epoch: () => state.epoch,
-  })
+  }
+  uninstall = installUnitHistory(window, deps)
   const hook = hookOf()
   const names = (list: Array<[HistoryCapture, string]>) =>
     list.map(([c, side]) => [(c as unknown as { name: string }).name, side])
@@ -193,7 +213,7 @@ describe('claims', () => {
     const r = rig()
     expect(r.hook.claims(r.vditor)).toBe(true)
   })
-  it('is false in Source', () => {
+  it('is false in Source while no Source model is live', () => {
     const r = rig()
     r.vditor.currentMode = 'sv'
     expect(r.hook.claims(r.vditor)).toBe(false)
@@ -1379,3 +1399,55 @@ describe('013 WYSIWYG unit history', () => {
     expect(counts.flushes).toBeLessThanOrEqual(1)
   })
 })
+
+// Task 733 / 015-T1, S-11 (task 015 sections 6.2 D-7, 6.3 and 6.9 item 2): the unit engine holds Source
+// history while the Source model is live. An Undo and a Redo restore through the port once each, publish
+// one history delta each, read no Source root HTML and flush layout at most once. The live mode reaches
+// the engine through a `liveMode` dependency, provisional (task 015 section 6.4 does not name the
+// engine's input; see the 015-T1 handoff).
+// Task 733 / 015: factors 4 and 16 build Source or IR fixtures of 51 KB and 208 KB with the real Lute in
+// jsdom; the suite timeout is explicit (family rule 13.17).
+const FIXTURE_TIMEOUT_MS = 30_000
+
+describe.each([1, 4, 16] as const)(
+  'Source history at factor %i (S-11)',
+  { timeout: FIXTURE_TIMEOUT_MS },
+  (factor) => {
+    const sourceRig = () => {
+      const svRoot = svFixture(tableHeavyMarkdown(factor))
+      const r = rig({ liveMode: () => 'sv', svRoot })
+      r.vditor.currentMode = 'sv'
+      return { ...r, svRoot }
+    }
+
+    it('claims Source with a live Source model and the unit engine', () => {
+      const r = sourceRig()
+      expect(r.hook.claims(r.vditor)).toBe(true)
+      engine.value = 'vditor'
+      expect(r.hook.claims(r.vditor)).toBe(false)
+    })
+
+    it('undoes and redoes a key by one restore and one delta each', () => {
+      const r = sourceRig()
+      // The engine must hold Source history; without the claim Vditor's O(document) engine keeps it.
+      expect(r.hook.claims(r.vditor)).toBe(true)
+      r.record()
+      r.record(cap('key'))
+      const undo = countBudget(r.svRoot, () => r.hook.undo(r.vditor)).counts
+      const redo = countBudget(r.svRoot, () => r.hook.redo(r.vditor)).counts
+      expect(r.names(r.state.restores)).toEqual([
+        ['key', 'before'],
+        ['key', 'after'],
+      ])
+      expect(r.state.published).toEqual([
+        ['undo', 1],
+        ['redo', 1],
+      ])
+      for (const counts of [undo, redo]) {
+        expect(counts.innerHtmlReads).toBe(0)
+        expect(counts.rootQueries).toBe(0)
+        expect(counts.flushes).toBeLessThanOrEqual(1)
+      }
+    })
+  },
+)

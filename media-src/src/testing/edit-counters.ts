@@ -17,6 +17,10 @@ export interface EditCounters {
   tableClone: number
   rootQueryAll: number
   maxPostBytes: number
+  /** Task 733 / 015: `SpinVditorSVDOM` calls (the Source spin). Not classified as a document, table or list call. */
+  luteSvSpin: number
+  /** Task 733 / 015: the longest `SpinVditorSVDOM` input since the reset. */
+  luteSvSpinChars: number
   fallbackPublications: number
   /** Task 733 / 012-19: Selection writes made while the selection is in a mode root, or that put it there. */
   selectionWrites: number
@@ -57,6 +61,8 @@ const NUMBER_FIELDS = [
   'tableClone',
   'rootQueryAll',
   'maxPostBytes',
+  'luteSvSpin',
+  'luteSvSpinChars',
   'fallbackPublications',
   'selectionWrites',
 ] as const
@@ -240,6 +246,21 @@ function installInstanceWrappers(win: Window, vditor: VditorLike): void {
       if (typeof input === 'string')
         classify(win.__vmdeEditCounters!, input, isHtml, method)
       return original.call(this, input, ...rest)
+    }
+  }
+  // Task 733 / 015: the Source spin is counted by calls and its longest input only (D-3: one unit per key).
+  const originalSvSpin = lute.SpinVditorSVDOM as AnyFn | undefined
+  if (typeof originalSvSpin === 'function') {
+    lute.SpinVditorSVDOM = function (
+      this: unknown,
+      input: unknown,
+      ...rest: any[]
+    ) {
+      const counters = win.__vmdeEditCounters!
+      counters.luteSvSpin++
+      if (typeof input === 'string' && input.length > counters.luteSvSpinChars)
+        counters.luteSvSpinChars = input.length
+      return originalSvSpin.call(this, input, ...rest)
     }
   }
 }

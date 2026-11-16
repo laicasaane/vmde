@@ -30,6 +30,7 @@ import {
   type UnitLines,
   type UnitMode,
   type UnitsChange,
+  SOURCE_UNITS,
   unitModeOf,
   WYSIWYG_UNITS,
   DEFINITION_UNITS,
@@ -44,6 +45,8 @@ import {
   scanModelBlocks,
   stripDefinitionContext,
 } from './definition-units'
+import { scanSourceChunks } from './sv-chunks'
+import { createSourceUnitDom } from './sv-units'
 import { createUnitCapture } from './unit-capture'
 import {
   type ModeLute,
@@ -118,6 +121,9 @@ function lineHint(
 /** Text size up to which a prediction mismatch counts as a model error (agreement subset). */
 const AGREEMENT_MAX_CHARS = 100_000
 
+/** Task 733 / 015: the modes a model serves: IR and WYSIWYG units (013) and the Source model. */
+type ServedMode = UnitMode | 'sv'
+
 export interface ModelSessionDeps {
   win: Window
   /** The IR edit root, or null while it does not exist. */
@@ -127,6 +133,8 @@ export interface ModelSessionDeps {
   getMode(): string | null
   /** Task 733 / 013: WYSIWYG units on; default WYSIWYG_UNITS. Tests pass false to prove today's path. */
   wysiwygUnits?: boolean
+  /** Task 733 / 015: the Source root (`pre.vditor-sv`), or null while it does not exist; absent: no Source model. */
+  getSourceRoot?(): HTMLElement | null
   /**
    * The Preview pane is showing over the IR editor (Vditor's current mode stays `ir`). The model does
    * no work then: no proof slices, no audit.
@@ -224,6 +232,10 @@ export interface ModelSession {
   canPublishDelta(): boolean
   /** Live, trusted, confirmed and not awaiting: the model text is the exact host text plus typing. */
   ownsText(): boolean
+  /** Task 733 / 015: the mode whose model is live (`sv`: the Source model); undefined when off. */
+  liveMode(): ServedMode | undefined
+  /** Task 733 / 015: the model text when the model owns it and no typing is unpublished (a mode switch reads it). */
+  modeSwitchText(): string | undefined
   /**
    * A whole-text edit that asked for a `rebind` was posted by the fallback publisher: record the
    * awaited sequence only (the shadow work is not repeated), and the model awaits the answer.
@@ -618,11 +630,20 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let stale = false
   /** Entering IR again: the first IR post asks for the host bytes, and its rebind builds the model (3.6). */
   let modeReentry = false
-  /** Task 733 / 013: the mode the current model was built for (shared rules 3.12). */
-  let builtMode: UnitMode | undefined
+  /** Task 733 / 013: the mode the current model was built for (shared rules 3.12); 015: `sv` for Source. */
+  let builtMode: ServedMode | undefined
+  /** The mode the model serves for Vditor mode `mode`; O(1), no allocation. */
+  const servedModeOf = (mode: string | null): ServedMode | undefined =>
+    mode === 'sv'
+      ? SOURCE_UNITS && deps.getSourceRoot
+        ? 'sv'
+        : undefined
+      : unitModeOf(mode, deps.wysiwygUnits ?? WYSIWYG_UNITS)
   /** The mode the model serves for Vditor's current mode; O(1), no allocation. */
-  const servedMode = (): UnitMode | undefined =>
-    unitModeOf(deps.getMode(), deps.wysiwygUnits ?? WYSIWYG_UNITS)
+  const servedMode = (): ServedMode | undefined => servedModeOf(deps.getMode())
+  /** The root the live model describes: the Source root for a Source model, else the IR or WYSIWYG root. */
+  const modelRoot = (): HTMLElement | null =>
+    builtMode === 'sv' ? (deps.getSourceRoot?.() ?? null) : deps.getRoot()
   /** Vditor shows the mode the model was built for. */
   const servesBuiltMode = (): boolean =>
     builtMode !== undefined && servedMode() === builtMode
@@ -700,7 +721,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     withKept?: BatchSets,
   ): UnitsChange => {
     // Resolved before the cancel: it clears the reused spun set.
-    const resolved = resolveBatch(pending, deps.getRoot(), withKept)
+    const resolved = resolveBatch(pending, modelRoot(), withKept)
     cancelFeedFrame()
     return { cause, ...resolved }
   }
@@ -810,17 +831,25 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
 
   const capture = createUnitCapture({
     model: () => model,
-    root: () => deps.getRoot() ?? undefined,
+    root: () => modelRoot() ?? undefined,
     drain: () => dom?.drain(),
-    ready: () => live() && servesBuiltMode() && !awaitingNow() && !stale,
+    // Task 733 / 015 (D-7): this capture is IR-shaped; a Source model offers no history port (the unit
+    // engine leaves Source to Vditor's Undo, SOURCE_HISTORY_ENGINE).
+    ready: () =>
+      live() &&
+      servesBuiltMode() &&
+      builtMode !== 'sv' &&
+      !awaitingNow() &&
+      !stale,
     // A model that is off observes nothing, so the unit engine could not capture an edit and its Undo
     // would do nothing: the old engine holds the history then (an IR re-entry before the first post's
     // answer, a deferred edit view before its build, a permanent off). Only a rebuild over the same
     // DOM keeps the unit engine: what is pending is held as one step of the next capture (`hold`).
-    claimable: () => live() || buildFrame !== undefined,
+    claimable: () => (live() && builtMode !== 'sv') || buildFrame !== undefined,
     vditor: () =>
       (win as unknown as { vditor?: { vditor?: unknown } }).vditor?.vditor,
-    mode: () => builtMode ?? 'ir',
+    mode: () =>
+      builtMode === undefined || builtMode === 'sv' ? 'ir' : builtMode,
   })
 
   /** One mutation change per animation frame, after the last batch of the frame. */
@@ -945,6 +974,43 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     buildFrame = undefined
   }
 
+  /**
+   * Task 733 / 015 (D-1, D-2): the Source model over Vditor's Source DOM. Its units are the `data-block`
+   * divs, proven by text equality at attach (no Lute, no proof schedule, no history capture: Source
+   * history stays on the old engine until 015-I4).
+   */
+  const attemptSource = (): void => {
+    const root = deps.getSourceRoot?.() ?? null
+    if (!host || !domComplete || deps.isStreaming() || !root) {
+      offReason = 'not-mounted'
+      return
+    }
+    builtMode = 'sv'
+    modelLute = undefined
+    const sourceDom = createSourceUnitDom(root, { onBatch })
+    const built = createTextModel(sourceDom, scanSourceChunks)
+    built.build(host.text)
+    model = built
+    if (built.state !== 'live') {
+      offReason = built.offReason ?? 'not-mounted'
+      return
+    }
+    dom = sourceDom
+    sourceDom.attach(built)
+    confirmed = true
+    emitWhole('build')
+  }
+
+  /** Task 733 / 017: in IR the scan adds the definition kinds; the ToC option decides what `[toc]` is. */
+  const scanFor = (
+    mode: UnitMode,
+    root: HTMLElement,
+  ): ((text: string) => MovableBlock[]) => {
+    if (mode !== 'ir' || !DEFINITION_UNITS) return scanMovableBlocks
+    const toc = tocEnabledFor(deps, root)
+    return (text: string) => scanModelBlocks(text, { toc })
+  }
+
   /** Builds the model from the held host text if every precondition holds; otherwise stays off. */
   const attempt = (): void => {
     cancelBuild()
@@ -953,6 +1019,10 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     const mode = servedMode()
     if (!mode) {
       offReason = 'mode'
+      return
+    }
+    if (mode === 'sv') {
+      attemptSource()
       return
     }
     const root = deps.getRoot()
@@ -976,15 +1046,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       vditor: () =>
         (win as unknown as { vditor?: { vditor?: unknown } }).vditor?.vditor,
     })
-    // Task 733 / 017: in IR the scan adds the definition kinds; the ToC option decides what `[toc]` is.
-    const definitions = mode === 'ir' && DEFINITION_UNITS
-    const toc = definitions && tocEnabledFor(deps, root)
-    const built = createTextModel(
-      unitDom,
-      definitions
-        ? (text: string) => scanModelBlocks(text, { toc })
-        : scanMovableBlocks,
-    )
+    const built = createTextModel(unitDom, scanFor(mode, root))
     built.build(host.text)
     model = built
     if (built.state !== 'live') {
@@ -1028,7 +1090,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     }
     confirmed = true
     unitSchedule.start()
-    if (definitions) definitionIndex = createIndex(built, unitDom, root)
+    if (mode === 'ir' && DEFINITION_UNITS)
+      definitionIndex = createIndex(built, unitDom, root)
     emitWhole('build')
   }
 
@@ -1157,6 +1220,36 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   }
 
   const awaitingNow = (): boolean => awaited !== undefined || awaitingWrite
+
+  /**
+   * Task 733 / 015 (D-5): a switch into or out of Source keeps the host epoch when the old model owned
+   * the text and no typing was unpublished; undefined otherwise (today's path: the host text is dropped).
+   */
+  const keptAcrossSwitch = (
+    next: ServedMode | undefined,
+  ): { text: string; epoch: number } | undefined => {
+    if (next === undefined || (next !== 'sv' && builtMode !== 'sv') || !host)
+      return undefined
+    const text = ownedText()
+    return text === undefined ? undefined : { text, epoch: host.epoch }
+  }
+
+  /** Task 733 / 015: the new mode's model builds from the kept text on the next frame, with no `rebind` round trip. */
+  const buildKept = (kept: { text: string; epoch: number }): void => {
+    host = kept
+    buildFrame = deps.requestAnimationFrame(() => {
+      buildFrame = undefined
+      attempt()
+    })
+  }
+
+  /** Task 733 / 015: the model text when the model owns it (live, confirmed, trusted, not awaiting) and no unit is dirty. */
+  const ownedText = (): string | undefined => {
+    if (!model || !live() || awaitingNow() || stale || !confirmed)
+      return undefined
+    dom?.drain()
+    return model.hasDirty() ? undefined : model.text
+  }
 
   /**
    * The proof queues rebuild by walking every unit, so a restart per keystroke costs the document size.
@@ -1340,7 +1433,9 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     },
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the apply's gates, plan, render, kind check and commit are one transaction (handoff 2.4)
     applyText(changes, origin) {
-      if (!model || !dom || !live() || !servesBuiltMode()) return APPLY_OFF
+      // Task 733 / 015: the Source host renders nothing; a host update in Source takes today's setValue.
+      if (!model || !dom || !live() || !servesBuiltMode() || builtMode === 'sv')
+        return APPLY_OFF
       if (origin === 'exact' && !session.ownsText()) return APPLY_OFF
       // A composition owns the DOM under the caret.
       if (deps.isComposing()) return applyFallback('dirty-overlap')
@@ -1443,13 +1538,15 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       offReason = reason
     },
     onModeChange(mode) {
-      const next = unitModeOf(mode, deps.wysiwygUnits ?? WYSIWYG_UNITS)
+      const next = servedModeOf(mode)
       if (next !== undefined && (!model || next === builtMode)) {
         // Back in a served mode with the complete edit DOM: the first post asks for the host bytes, and
         // the matched `rebind` builds the model (3.6). A model of this mode, or none ever built, does nothing.
         if (!model && offReason === 'mode' && domComplete) modeReentry = true
         return
       }
+      // Task 733 / 015 (D-5): read before the teardown (R-1).
+      const kept = keptAcrossSwitch(next)
       capture.invalidate()
       modeReentry = false
       host = undefined
@@ -1459,6 +1556,10 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       awaited = undefined
       awaitingWrite = false
       offReason = 'mode'
+      if (kept) {
+        buildKept(kept)
+        return
+      }
       // Task 733 / 013: a switch between the served modes (IR to WYSIWYG) re-enters at once.
       if (next !== undefined && domComplete) modeReentry = true
     },
@@ -1532,6 +1633,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     canPublishDelta: () => live() && servesBuiltMode(),
     ownsText: () =>
       live() && servesBuiltMode() && !awaitingNow() && !stale && confirmed,
+    liveMode: () => (live() ? builtMode : undefined),
+    modeSwitchText: () => ownedText(),
     onWholeTextPublished(sequence, options) {
       if (!live()) return
       if (options?.requestId !== undefined)
@@ -1542,7 +1645,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     isLive: () => live(),
     liveUnits() {
       if (!model || !live()) return undefined
-      const root = deps.getRoot()
+      const root = modelRoot()
       const units: LiveUnit[] = []
       for (const unit of model.units) {
         if (unit.el ?? unit.members[0]) units.push(toLiveUnit(unit, root))
@@ -1573,7 +1676,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     },
     liveUnitOf(node) {
       if (!model || !live()) return undefined
-      return liveUnitFor(model, deps.getRoot(), node)
+      return liveUnitFor(model, modelRoot(), node)
     },
     markExplicitAtCaret() {
       if (!model || !live()) return

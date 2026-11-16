@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, test } from 'vitest'
+import { countBudget } from '../testing/budget-harness'
+import * as previewMorph from './preview-morph'
 import { morphPreviewInto, setPreviewMorphBaseline } from './preview-morph'
 
 // Task 187: the morph must keep the LIVE DOM of blocks whose RAW html is unchanged
@@ -132,3 +134,81 @@ describe('setPreviewMorphBaseline (task 643)', () => {
     expect(pane.innerHTML).toBe([A, B, C].join('\n'))
   })
 })
+
+// Task 733 / 015-T1, S-09 (task 015 sections 6.2 D-6 and 6.4): the Split pane morph by Source units.
+// A unit's HTML may hold several top-level elements; the baseline keeps their count per unit. Read
+// through the namespace so this file typechecks before the two functions exist.
+interface UnitMorph {
+  morphPreviewUnits?(
+    pane: HTMLElement,
+    from: number,
+    removed: number,
+    htmls: readonly string[],
+  ): boolean
+  setPreviewUnitBaseline?(
+    pane: HTMLElement,
+    elementCounts: readonly number[],
+  ): void
+}
+const unitMorph = previewMorph as unknown as UnitMorph
+
+// Task 733 / 015: factors 4 and 16 build Source or IR fixtures of 51 KB and 208 KB with the real Lute in
+// jsdom; the suite timeout is explicit (family rule 13.17).
+const FIXTURE_TIMEOUT_MS = 30_000
+
+describe.each([1, 4, 16] as const)(
+  'morphPreviewUnits at factor %i (S-09)',
+  { timeout: FIXTURE_TIMEOUT_MS },
+  (factor) => {
+    let pane: HTMLElement
+    const units = 10 * factor
+    beforeEach(() => {
+      document.body.innerHTML = ''
+      pane = document.createElement('div')
+      // Every unit is one paragraph, except unit 1, which renders as two elements.
+      const parts: string[] = []
+      for (let i = 0; i < units; i++)
+        parts.push(i === 1 ? '<p>b1</p><p>b2</p>' : `<p>unit ${i}</p>`)
+      pane.innerHTML = parts.join('')
+      document.body.appendChild(pane)
+    })
+    const counts = () =>
+      Array.from({ length: units }, (_, i) => (i === 1 ? 2 : 1))
+
+    test('replaces only the elements of the changed unit', () => {
+      expect(typeof unitMorph.morphPreviewUnits).toBe('function')
+      unitMorph.setPreviewUnitBaseline?.(pane, counts())
+      const kept = Array.from(pane.children).filter(
+        (_, i) => i !== 1 && i !== 2,
+      )
+      const { result, counts: budget } = countBudget(pane, () =>
+        unitMorph.morphPreviewUnits?.(pane, 1, 1, ['<p>changed</p>']),
+      )
+      expect(result).toBe(true)
+      expect(pane.children).toHaveLength(units)
+      expect(pane.children[1]?.textContent).toBe('changed')
+      const after = Array.from(pane.children).filter((_, i) => i !== 1)
+      expect(after).toEqual(kept)
+      expect(budget.innerHtmlReads).toBe(0)
+      expect(budget.rootQueries).toBe(0)
+    })
+
+    test('inserts and removes whole units', () => {
+      unitMorph.setPreviewUnitBaseline?.(pane, counts())
+      expect(unitMorph.morphPreviewUnits?.(pane, 2, 0, ['<p>new</p>'])).toBe(
+        true,
+      )
+      expect(pane.children[3]?.textContent).toBe('new')
+      expect(unitMorph.morphPreviewUnits?.(pane, 1, 1, [])).toBe(true)
+      expect(pane.children[1]?.textContent).toBe('new')
+    })
+
+    test('returns false (the caller falls back to morphPreviewInto) when the pane left the baseline', () => {
+      unitMorph.setPreviewUnitBaseline?.(pane, counts())
+      pane.appendChild(document.createElement('p'))
+      expect(unitMorph.morphPreviewUnits?.(pane, 0, 1, ['<p>x</p>'])).toBe(
+        false,
+      )
+    })
+  },
+)

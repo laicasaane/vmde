@@ -28,9 +28,10 @@ import {
 import { patchLuteSerialize, setKnownPagesRef } from '../links/wiki-serialize'
 import { Disposables } from '../util/disposables'
 import { innerVditor } from '../util/inner-vditor'
-import { unitModeOf } from '../util/unit-changes'
+import { provideSourceUnitFeed, unitModeOf } from '../util/unit-changes'
 import { createEditSync } from '../bridge/edit-sync'
 import { createModelSession, type ModelSession } from '../bridge/model-session'
+import { createSourceUnitFeed } from '../bridge/unit-feed'
 import { countFallbackPublication } from '../testing/edit-counters'
 import { isCompositionActive } from '../util/caret-gesture'
 import {
@@ -321,6 +322,8 @@ export function initVditor(
   const modelSession = createModelSession({
     win: window,
     getRoot: servedRoot,
+    // Task 733 / 015: the Source root the Source model describes.
+    getSourceRoot: () => (window.vditor as any)?.vditor?.sv?.element ?? null,
     getLute: () => (window.vditor as any)?.vditor?.lute ?? null,
     getMode: () => window.vditor?.getCurrentMode?.() ?? null,
     isPreviewShowing: () => previewShowing(),
@@ -363,6 +366,16 @@ export function initVditor(
   // Task 733 (007-B): the delta publisher is created by edit-sync (its whole-text fallback is edit-sync's
   // own post) and shared with the router, which hands it the host messages that concern deltas.
   sessionState.deltaSync = sessionState.editSync?.deltaSync ?? null
+  // Task 733 / 015 (D-8): the Source feed of this session, in its own slot (the IR feed is provided in
+  // finish-init); a new init replaces it.
+  if (sessionState.editSync)
+    provideSourceUnitFeed(
+      window,
+      createSourceUnitFeed(modelSession, sessionState.editSync, {
+        isComposing,
+        root: () => (window.vditor as any)?.vditor?.sv?.element ?? null,
+      }),
+    )
   const defaultOptions = buildVditorOptions(msg)
   // Task 188 gives persisted SV its own direct streaming path. WYSIWYG remains session-forced to
   // IR because only IR and SV have chunked renderers; preserve that preference across this session

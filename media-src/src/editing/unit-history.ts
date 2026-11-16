@@ -5,6 +5,7 @@ import {
 } from 'vditor/src/ts/toolbar/setToolbar'
 import {
   type HistoryModelPort,
+  SOURCE_UNITS,
   type UnitMode,
   unitModeOf,
 } from '../util/unit-changes'
@@ -21,6 +22,7 @@ import {
   type HistorySlotToken,
   IR_HISTORY_ENGINE,
   provideUnitHistoryDelegate,
+  SOURCE_HISTORY_ENGINE,
   reportUnitEntry,
   type UnitHistoryDelegate,
 } from './history-store'
@@ -44,6 +46,11 @@ export interface UnitHistoryDeps {
   ): 'delta' | 'nothing' | 'fallback'
   lastPostedSequence(): number
   epoch(): number | undefined
+  /**
+   * Task 733 / 015 (D-7): the mode whose text model is live (`ModelSession.liveMode`). The engine holds
+   * Source history only while it is `sv`; absent: Source stays on the old engine.
+   */
+  liveMode?(): 'ir' | 'wysiwyg' | 'sv' | undefined
 }
 
 interface UnitHistoryHook {
@@ -109,8 +116,11 @@ interface State {
   /** The last answer of `claims`, to see an engine hand-over; undefined before the first call. */
   claimed: boolean | undefined
   /** Task 733 / 013: the mode the kept history describes; a claim in another mode starts a new one. */
-  claimedMode?: UnitMode
+  claimedMode?: EngineMode
 }
+
+/** Task 733 / 015: the modes the engine can hold: IR and WYSIWYG units (013) and Source (D-7). */
+type EngineMode = UnitMode | 'sv'
 
 /** The per-mode editor state the engine reads (`vditor.ir`, `vditor.wysiwyg`). */
 type ModeState = {
@@ -126,6 +136,7 @@ type Vditor = {
   currentMode: string
   ir: ModeState
   wysiwyg?: ModeState
+  sv?: ModeState
   undo: Record<string, any>
   toolbar?: { elements: Record<string, HTMLElement>; element?: HTMLElement }
   hint?: unknown
@@ -133,13 +144,19 @@ type Vditor = {
 
 const token = <T>(): T => Object.freeze({}) as unknown as T
 
-/** Task 733 / 013: the mode the engine serves for the editor ('ir' when it serves none). O(1). */
-const modeOf = (vditor: Vditor): UnitMode =>
-  unitModeOf(vditor.currentMode) ?? 'ir'
+/** The mode the editor shows when the engine can serve it, else undefined. O(1), no allocation. */
+const servedModeOf = (vditor: Vditor): EngineMode | undefined =>
+  vditor.currentMode === 'sv' ? 'sv' : unitModeOf(vditor.currentMode)
 
-/** The editor state of the served mode (`vditor.ir`, or `vditor.wysiwyg` with WYSIWYG units). */
-const stateOfMode = (vditor: Vditor): ModeState | undefined =>
-  modeOf(vditor) === 'wysiwyg' ? vditor.wysiwyg : vditor.ir
+/** Task 733 / 013: the mode the engine serves for the editor ('ir' when it serves none). O(1). */
+const modeOf = (vditor: Vditor): EngineMode => servedModeOf(vditor) ?? 'ir'
+
+/** The editor state of the served mode (`vditor.ir`, `vditor.wysiwyg` with WYSIWYG units, `vditor.sv`). */
+const stateOfMode = (vditor: Vditor): ModeState | undefined => {
+  const mode = modeOf(vditor)
+  if (mode === 'sv') return vditor.sv
+  return mode === 'wysiwyg' ? vditor.wysiwyg : vditor.ir
+}
 
 /** The old engine's IR slot holds an entry above its base, or a Redo entry. */
 const oldHolds = (vditor: Vditor): boolean => {
@@ -342,10 +359,17 @@ export function installUnitHistory(
     ])
   }
 
+  /** Task 733 / 015 (D-7): Source with the unit engine on and the Source model live. */
+  const holdsSource = (): boolean =>
+    SOURCE_UNITS &&
+    SOURCE_HISTORY_ENGINE === 'unit' &&
+    deps.liveMode?.() === 'sv'
+
   const holds = (vditor: Vditor): boolean =>
-    unitModeOf(vditor.currentMode) !== undefined &&
-    IR_HISTORY_ENGINE === 'unit' &&
-    deps.port()?.claimable() === true
+    (vditor.currentMode === 'sv'
+      ? holdsSource()
+      : unitModeOf(vditor.currentMode) !== undefined &&
+        IR_HISTORY_ENGINE === 'unit') && deps.port()?.claimable() === true
 
   /**
    * Another engine held the history in between (a mode switch, a rebuild without a model): what this
@@ -742,7 +766,7 @@ export function installUnitHistory(
     restore(inner, savepoint) {
       if (!savepoints.has(savepoint)) return undefined
       const saved = savepoint as unknown as {
-        mode: UnitMode
+        mode: EngineMode
         slot: HistorySlotToken
         undo: Entry[]
         redo: Entry[]
@@ -752,10 +776,7 @@ export function installUnitHistory(
       }
       const vditor = inner as Vditor
       const state = stateOf(vditor)
-      if (
-        unitModeOf(vditor.currentMode) !== saved.mode ||
-        state.slot !== saved.slot
-      )
+      if (servedModeOf(vditor) !== saved.mode || state.slot !== saved.slot)
         return false
       state.undo = [...saved.undo]
       state.redo = [...saved.redo]

@@ -18,6 +18,9 @@ import { waitForE2EReadiness, wf } from './webview-helpers'
 // never document text. @probe: excluded from the default run.
 // VMDE_PERF_MODE=wysiwyg (task 733 / 013): switch to WYSIWYG after the open and measure the same rows
 // there; unset (or `ir`) keeps the IR rows unchanged.
+// VMDE_PERF_MODE=sv or split (task 733 / 015): switch to Source (preview pane hidden) or Split (preview
+// pane shown) and measure the same places in the Source text, located by their first line; both
+// values add two switch rows (Source to IR, IR to Source) at the end.
 
 type Frame = ReturnType<typeof wf>
 
@@ -27,6 +30,26 @@ const LETTERS = 'abcdefghij'
 
 const PERF_MODE: 'ir' | 'wysiwyg' =
   process.env.VMDE_PERF_MODE === 'wysiwyg' ? 'wysiwyg' : 'ir'
+/** Task 015: VMDE_PERF_MODE=sv (Source alone) or split (Source with its preview pane); undefined otherwise. */
+const SOURCE_MODE: 'sv' | 'split' | undefined =
+  process.env.VMDE_PERF_MODE === 'sv' || process.env.VMDE_PERF_MODE === 'split'
+    ? process.env.VMDE_PERF_MODE
+    : undefined
+/** The mode named in the JSON report. */
+const REPORTED_MODE = SOURCE_MODE ?? PERF_MODE
+/** The Source block of a place: the `data-block` div whose text starts with `prefix`, caret at the end of `line`. */
+interface SourcePlace {
+  prefix: string
+  line: number
+}
+/** Task 015: the Source block that holds each place of PLACES (same order). */
+const SOURCE_PLACES: Record<string, SourcePlace> = {
+  paragraph: { prefix: 'Second paragraph', line: 0 },
+  // Body row 2 of table A, the row of the IR cell `td` 7.
+  'table cell': { prefix: '| Name', line: 3 },
+  'list item': { prefix: '- list item', line: 2 },
+  'code block': { prefix: '```ts', line: 1 },
+}
 /** The mode tree the rows run in. */
 const MODE_ROOT = `.vditor-${PERF_MODE}`
 /** The editable source of a fenced code block in the measured mode. */
@@ -148,8 +171,97 @@ async function placeCaretInCodeSource(
   if (!placed) throw new Error('code block source not found')
 }
 
+/** Task 015: dispatches a toolbar click on the edit-mode button of `mode` (the panel is hidden until hover). */
+async function clickEditMode(frame: Frame, mode: 'ir' | 'sv'): Promise<void> {
+  await frame.locator('body').evaluate((_body, m) => {
+    document
+      .querySelector(`.vditor-toolbar button[data-mode="${m as string}"]`)
+      ?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      )
+  }, mode)
+}
+
+/** Task 015: Source with the preview pane hidden (`sv`) or shown (`split`), through the toolbar. */
+async function enterSourceMode(
+  frame: Frame,
+  sourceMode: 'sv' | 'split',
+): Promise<void> {
+  const before = await waitForE2EReadiness(
+    frame,
+    (snapshot) => snapshot.editorEpoch > 0,
+    { message: 'the editor finished initialization' },
+  )
+  await clickEditMode(frame, 'sv')
+  await waitForE2EReadiness(
+    frame,
+    (snapshot) =>
+      snapshot.modeEpoch > before.modeEpoch && snapshot.mode === 'sv',
+    { message: 'the editor reported Source' },
+  )
+  // The `both` toolbar button toggles the preview pane; click it only when the pane is not as wanted.
+  await frame.locator('body').evaluate((_body, wantPreview) => {
+    const pane = document.querySelector<HTMLElement>('.vditor-preview')
+    const shown = !!pane && getComputedStyle(pane).display !== 'none'
+    if (shown === wantPreview) return
+    document
+      .querySelector('.vditor-toolbar [data-type="both"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }, sourceMode === 'split')
+}
+
+/** Task 015: puts the caret at the end of `place.line` of its Source block and focuses the Source root. */
+async function placeCaretInSourceBlock(
+  frame: Frame,
+  place: SourcePlace,
+): Promise<void> {
+  await frame
+    .locator('.vditor-sv')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  const placed = await frame.locator('body').evaluate((_body, target) => {
+    const { prefix, line } = target as SourcePlace
+    const root = document.querySelector<HTMLElement>('pre.vditor-sv')
+    const block = Array.from(root?.children ?? []).find((el) =>
+      el.textContent?.startsWith(prefix),
+    )
+    if (!root || !block) return false
+    block.scrollIntoView({ block: 'center' })
+    // The offset of the end of `line` in the block's text, then the text node that holds it.
+    const text = block.textContent ?? ''
+    let end = -1
+    for (let i = 0; i <= line; i++) end = text.indexOf('\n', end + 1)
+    if (end < 0) return false
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT)
+    let seen = 0
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const length = node.textContent?.length ?? 0
+      if (seen + length >= end) {
+        const range = document.createRange()
+        range.setStart(node, end - seen)
+        range.collapse(true)
+        const selection = window.getSelection()
+        selection?.removeAllRanges()
+        selection?.addRange(range)
+        root.focus()
+        return true
+      }
+      seen += length
+    }
+    return false
+  }, place)
+  if (!placed) throw new Error('Source block not found')
+}
+
 /** VMDE_PERF_MODE=wysiwyg: switch to WYSIWYG and let the new mode settle; IR: nothing. */
 async function enterMeasuredMode(frame: Frame): Promise<void> {
+  if (SOURCE_MODE) {
+    await enterSourceMode(frame, SOURCE_MODE)
+    await frame
+      .locator('body')
+      .evaluate(() => new Promise((r) => setTimeout(r, 4000)))
+    return
+  }
   if (PERF_MODE !== 'wysiwyg') return
   await switchToWysiwyg(frame)
   await frame
@@ -185,6 +297,73 @@ async function switchToWysiwyg(frame: Frame): Promise<void> {
     (snapshot) =>
       snapshot.modeEpoch > before.modeEpoch && snapshot.mode === 'wysiwyg',
     { message: 'the editor reported WYSIWYG' },
+  )
+}
+
+interface Place {
+  name: string
+  selector: string
+  nth: number
+  programmatic?: boolean
+}
+
+/** Puts the caret in `place`: Source text (task 015), a code block's source, or a click and `end` key. */
+async function placeCaretAt(
+  frame: Frame,
+  end: () => Promise<void>,
+  place: Place,
+): Promise<void> {
+  if (SOURCE_MODE)
+    return placeCaretInSourceBlock(frame, SOURCE_PLACES[place.name])
+  if (place.programmatic) return placeCaretInCodeSource(frame, place.selector)
+  const target = frame.locator(place.selector).nth(place.nth)
+  await target.scrollIntoViewIfNeeded()
+  await target.click({ timeout: 10_000 })
+  await end()
+}
+
+/** The first table: in Source (task 015) the `data-block` div that starts with its header row. */
+const firstTableOf = (frame: Frame) =>
+  SOURCE_MODE
+    ? frame
+        .locator('pre.vditor-sv > [data-block]')
+        .filter({ hasText: /^\| Name/ })
+        .first()
+    : frame.locator(`${MODE_ROOT} .vditor-reset > table`).first()
+
+/** The block the selection-change row clicks: in Source (task 015) the first paragraph's div. */
+const selectionTargetOf = (frame: Frame) =>
+  SOURCE_MODE
+    ? frame
+        .locator('pre.vditor-sv > [data-block]')
+        .filter({ hasText: /^First paragraph/ })
+        .first()
+    : frame.locator(PLACES[0].selector).nth(1)
+
+/** Task 015: the two switch rows, from the toolbar click until the new mode reports (Source to IR,
+ *  then back to Source with the same preview pane state). */
+async function recordSwitchRows(
+  frame: Frame,
+  record: (
+    operation: string,
+    place: string,
+    drive: () => Promise<void>,
+  ) => Promise<void>,
+): Promise<void> {
+  const sourceMode = SOURCE_MODE
+  if (!sourceMode) return
+  await record('mode switch', 'Source to IR', async () => {
+    const before = await waitForE2EReadiness(frame, () => true)
+    await clickEditMode(frame, 'ir')
+    await waitForE2EReadiness(
+      frame,
+      (snapshot) =>
+        snapshot.modeEpoch > before.modeEpoch && snapshot.mode === 'ir',
+      { message: 'the editor reported IR' },
+    )
+  })
+  await record('mode switch', 'IR to Source', () =>
+    enterSourceMode(frame, sourceMode),
   )
 }
 
@@ -347,17 +526,8 @@ test('edit latency on a large document @probe', async ({
     )
   }
 
-  const placeCaret = async (place: {
-    selector: string
-    nth: number
-    programmatic?: boolean
-  }) => {
-    if (place.programmatic) return placeCaretInCodeSource(frame, place.selector)
-    const target = frame.locator(place.selector).nth(place.nth)
-    await target.scrollIntoViewIfNeeded()
-    await target.click({ timeout: 10_000 })
-    await workbox.keyboard.press('End')
-  }
+  const placeCaret = (place: Place) =>
+    placeCaretAt(frame, () => workbox.keyboard.press('End'), place)
   const rows: Row[] = []
   const failures: { place: string; operation: string; error: string }[] = []
   // One failed step must not end the run: keep the first line of the message only (a locator call log
@@ -408,9 +578,7 @@ test('edit latency on a large document @probe', async ({
 
   // The first pointer move over the document, then a selection change by click.
   await record('first pointer move', 'table', async () => {
-    const firstTable = frame
-      .locator(`${MODE_ROOT} .vditor-reset > table`)
-      .first()
+    const firstTable = firstTableOf(frame)
     await firstTable.scrollIntoViewIfNeeded()
     const box = await firstTable.boundingBox()
     if (!box) throw new Error('table has no bounding box')
@@ -420,7 +588,7 @@ test('edit latency on a large document @probe', async ({
     })
   })
   await record('selection change', 'paragraph', async () => {
-    await frame.locator(PLACES[0].selector).nth(1).click()
+    await selectionTargetOf(frame).click()
     await workbox.keyboard.press('ArrowRight')
   })
 
@@ -466,6 +634,8 @@ test('edit latency on a large document @probe', async ({
     }, [])
   })
 
+  await recordSwitchRows(frame, record)
+
   const violations = rows
     .filter(
       (row) =>
@@ -476,7 +646,7 @@ test('edit latency on a large document @probe', async ({
     .map((row) => `${row.place} ${row.operation}`)
   const json = JSON.stringify({
     source: label,
-    mode: PERF_MODE,
+    mode: REPORTED_MODE,
     gateMs: GATE_MS,
     rows,
     failures,

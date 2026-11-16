@@ -636,3 +636,214 @@ test.describe('edit counter gates', () => {
     expect(await modelState(frame)).toBe('live')
   })
 })
+
+// Task 733 / 015-T2 (task 015 section 6.6): the Source and Split gates. Counter assertions only, no
+// timing. `luteSvSpin` and `luteSvSpinChars` (Source spins counted on the wrapped Lute) come with
+// 015-I2; until then they read as undefined and the spin gate fails on that.
+interface SourceCounters extends Counters {
+  luteSvSpin?: number
+  luteSvSpinChars?: number
+}
+
+const readSourceCounters = async (
+  frame: Frame,
+  test: string,
+  place: string,
+): Promise<SourceCounters> => {
+  const base = await readCounters(frame, test, place)
+  const spin = await frame.locator('body').evaluate(() => {
+    const c = (
+      window as unknown as {
+        __vmdeEditCounters: { luteSvSpin?: number; luteSvSpinChars?: number }
+      }
+    ).__vmdeEditCounters
+    return { luteSvSpin: c.luteSvSpin, luteSvSpinChars: c.luteSvSpinChars }
+  })
+  console.log(`EDIT-COUNTERS ${JSON.stringify({ test, place, spin })}`)
+  return { ...base, ...spin }
+}
+
+/** The edit-mode toolbar buttons are in a panel hidden until hover: dispatch the click on the button. */
+const clickMode = (frame: Frame, mode: 'ir' | 'sv') =>
+  frame.locator('body').evaluate((_body, m) => {
+    document
+      .querySelector(`.vditor-toolbar button[data-mode="${m as string}"]`)
+      ?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      )
+  }, mode)
+
+/** Switches to `mode`, waits for the mode report, and sets the Source preview pane (Split) as asked. */
+async function switchMode(
+  frame: Frame,
+  mode: 'ir' | 'sv',
+  preview?: boolean,
+): Promise<void> {
+  const before = await waitForE2EReadiness(frame, () => true)
+  await clickMode(frame, mode)
+  await waitForE2EReadiness(
+    frame,
+    (snapshot) =>
+      snapshot.modeEpoch > before.modeEpoch && snapshot.mode === mode,
+    { message: `the editor reported ${mode}` },
+  )
+  if (preview === undefined) return
+  await frame.locator('body').evaluate((_body, want) => {
+    const pane = document.querySelector<HTMLElement>('.vditor-preview')
+    const shown = !!pane && getComputedStyle(pane).display !== 'none'
+    if (shown !== want)
+      document
+        .querySelector('.vditor-toolbar [data-type="both"]')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }, preview)
+}
+
+/** Caret at the end of the first line of the Source block that starts with `prefix`; returns that block's text length. */
+async function placeInSource(frame: Frame, prefix: string): Promise<number> {
+  await frame
+    .locator('pre.vditor-sv')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  const length = await frame.locator('body').evaluate((_body, start) => {
+    const root = document.querySelector<HTMLElement>('pre.vditor-sv')
+    const block = Array.from(root?.children ?? []).find((el) =>
+      el.textContent?.startsWith(start as string),
+    )
+    const text = block
+      ? (document
+          .createTreeWalker(block, NodeFilter.SHOW_TEXT)
+          .nextNode() as Text | null)
+      : null
+    if (!root || !block || !text) return -1
+    const range = document.createRange()
+    range.setStart(text, text.length)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+    root.focus()
+    return block.textContent?.length ?? -1
+  }, prefix)
+  if (length < 0) throw new Error('Source block not found')
+  return length
+}
+
+const SOURCE_PARAGRAPH = 'Second paragraph'
+
+test.describe('Source counter gates', () => {
+  test('keys in Source spin one unit', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await switchMode(frame, 'sv', false)
+    const unitLength = await placeInSource(frame, SOURCE_PARAGRAPH)
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    await typeLetters(workbox, 150)
+    await settleForPublication(workbox)
+    const counters = await readSourceCounters(
+      frame,
+      'keys in Source spin one unit',
+      'source paragraph',
+    )
+    expect(counters.luteSvSpin).toBe(LETTERS.length)
+    // The unit's text, the typed letters and the caret marker.
+    expect(
+      counters.luteSvSpinChars ?? Number.POSITIVE_INFINITY,
+    ).toBeLessThanOrEqual(unitLength + LETTERS.length + 1)
+  })
+
+  test('Source publishes deltas', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await switchMode(frame, 'sv', false)
+    await placeInSource(frame, SOURCE_PARAGRAPH)
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    await typeLetters(workbox, 150)
+    await settleForPublication(workbox)
+    const counters = await readSourceCounters(
+      frame,
+      'Source publishes deltas',
+      'source paragraph',
+    )
+    expect(counters.deltaPosts).toBeGreaterThan(0)
+    expect(counters.legacyEditPosts).toBe(0)
+    expect(counters.rootClone).toBe(0)
+  })
+
+  test('the Split pane renders changed units', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await switchMode(frame, 'sv', true)
+    await placeInSource(frame, SOURCE_PARAGRAPH)
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    await typeLetters(workbox, 150)
+    await settleForPublication(workbox)
+    const counters = await readSourceCounters(
+      frame,
+      'the Split pane renders changed units',
+      'split paragraph',
+    )
+    // A whole-document `Md2HTML` (Vditor's Split render) counts as `luteDocument`.
+    expect(counters.luteDocument).toBe(0)
+    expect(counters.fullGetValue).toBe(0)
+  })
+
+  test('the mode switch makes no whole-document IR serialization', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await expect.poll(() => modelState(frame), { timeout: 30_000 }).toBe('live')
+    // Hide the Source preview pane first, so the measured switch renders no Split pane.
+    await switchMode(frame, 'sv', false)
+    await switchMode(frame, 'ir')
+    await expect.poll(() => modelState(frame), { timeout: 30_000 }).toBe('live')
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    await switchMode(frame, 'sv')
+    await settleForPublication(workbox)
+    const counters = await readSourceCounters(
+      frame,
+      'the mode switch makes no whole-document IR serialization',
+      'IR to Source',
+    )
+    expect(counters.luteDocument).toBe(0)
+    expect(counters.fullGetValue).toBe(0)
+  })
+
+  test('Source Undo takes no root snapshot', async ({
+    workbox,
+    evaluateInVSCode,
+    baseDir,
+  }) => {
+    const frame = await openFixture(workbox, evaluateInVSCode, baseDir)
+    await switchMode(frame, 'sv', false)
+    await placeInSource(frame, SOURCE_PARAGRAPH)
+    await typeLetters(workbox, 150)
+    await settleForPublication(workbox)
+    await resetCounters(frame)
+    await workbox.keyboard.press('Control+z')
+    await workbox.waitForTimeout(400)
+    await workbox.keyboard.press('Control+y')
+    await settleForPublication(workbox)
+    const counters = await readSourceCounters(
+      frame,
+      'Source Undo takes no root snapshot',
+      'source paragraph',
+    )
+    expect(counters.rootInnerHtmlRead).toBe(0)
+    expect(counters.rootClone).toBe(0)
+    expect(counters.legacyEditPosts).toBe(0)
+  })
+})
