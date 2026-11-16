@@ -50,6 +50,7 @@ import {
   forEachRecordScope,
   liveFeedOf,
   onLiveChange,
+  recordHelperMutationPass,
 } from '../util/mutation-impact'
 import {
   type BackgroundJob,
@@ -91,6 +92,21 @@ const PLANTUML = 'plantuml'
 // Every native lang the cache reserves+paints (reserve target + PUT are identical across them); the MISS
 // path branches by PendingBlock.kind — offscreen for NATIVE_CACHE_LANGS, live re-trigger for plantuml.
 const NATIVE_RESERVE_LANGS = [...NATIVE_CACHE_LANGS, PLANTUML]
+// Task 733 (022): with a live feed the helper still records its pass statistics (end-to-end runs
+// only): 'local' with the blocks it queued, else 'skipped'. A feed change passes no records.
+const NO_RECORDS: readonly MutationRecord[] = []
+function recordScopedPass(
+  records: readonly MutationRecord[],
+  queued: number,
+): void {
+  recordHelperMutationPass(
+    'render-cache',
+    records,
+    queued > 0 ? 'local' : 'skipped',
+    queued,
+  )
+}
+
 // The editor root (#app), captured on install — the scope a plantuml miss re-renders live under.
 let cacheRoot: HTMLElement | null = null
 // The post fn, captured on install for the same reason: a theme flip (task 436's rethemeCacheFirst)
@@ -984,13 +1000,14 @@ export function installRenderCache(
   }
   const obs = new MutationObserver((records) => {
     if (liveFeedOf(appEl)) {
-      let found = false
+      let found = 0
       forEachRecordScope(appEl, records, (scope) => {
-        found = true
+        found++
         paintLocalHits(scope)
         addBlock(scope)
       })
-      if (found) schedule()
+      recordScopedPass(records, found)
+      if (found > 0) schedule()
       return
     }
     const classified = classifyAndRecordEditorSurfaceMutations(
@@ -1016,16 +1033,18 @@ export function installRenderCache(
   obs.observe(appEl, { childList: true, subtree: true })
   const offFeed = onLiveChange(appEl, (change) => {
     if (change.whole) {
+      recordHelperMutationPass('render-cache', NO_RECORDS, 'full')
       postFull()
       return
     }
-    let found = false
+    let found = 0
     forEachChangeScope(change, (scope) => {
-      found = true
+      found++
       paintLocalHits(scope)
       pendingBlocks.add(scope)
     })
-    if (found) schedule()
+    recordScopedPass(NO_RECORDS, found)
+    if (found > 0) schedule()
   })
   postFull()
   return () => {

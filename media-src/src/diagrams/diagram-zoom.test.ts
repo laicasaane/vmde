@@ -500,3 +500,120 @@ describe('013 B-10 observeDiagramZoom on the WYSIWYG fixture', () => {
     }, 60_000)
   })
 })
+
+// Task 733 (022, part 1): with a live unit feed the diagram-zoom helper still records its passes,
+// so the end-to-end spec reads `__vmdeMutationImpactStats.helpers['diagram-zoom']`. The observer
+// callback records 'local' or 'skipped' with the record count; the feed callback records 'full'
+// for a whole change, else 'local' with the scopes queued. Frames never run here: each case reads
+// the counters right after the callback, before any decoration can mutate the document.
+describe('the feed path records helper statistics (022)', () => {
+  type StatsWindow = Window & {
+    __vmdeMutationImpactStats?: {
+      helpers: Record<string, Record<string, number> | undefined>
+    }
+  }
+  const win = window as StatsWindow
+  const listeners = new Set<(change: UnitsChange) => void>()
+  let stopHelper: (() => void) | undefined
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', () => 1)
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+    ;(win as unknown as Record<string, unknown>).__vmdeE2EReadiness = true
+  })
+  afterEach(() => {
+    stopHelper?.()
+    stopHelper = undefined
+    provideUnitFeed(window, undefined)
+    listeners.clear()
+    delete (win as unknown as Record<string, unknown>).__vmdeE2EReadiness
+    delete win.__vmdeMutationImpactStats
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+  })
+  const helperStats = () =>
+    win.__vmdeMutationImpactStats?.helpers['diagram-zoom']
+  const flushRecords = async (): Promise<void> => {
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve()
+  }
+  const emitChange = (partial: Partial<UnitsChange>): void => {
+    const change = {
+      cause: 'mutation',
+      whole: false,
+      changed: [],
+      structural: [],
+      ...partial,
+    } as UnitsChange
+    for (const listener of Array.from(listeners)) listener(change)
+  }
+  async function mountOnFeed(): Promise<HTMLElement> {
+    const markdown = 'Intro text.\n\n```mermaid\ngraph TD\nA-->B\n```\n'
+    const html = irFixture(markdown).root.innerHTML
+    const app = document.createElement('div')
+    app.id = 'app'
+    const container = document.createElement('div')
+    container.className = 'vditor-ir'
+    const root = document.createElement('pre')
+    root.className = 'vditor-reset'
+    root.setAttribute('contenteditable', 'true')
+    root.innerHTML = html
+    container.append(root)
+    app.append(container)
+    document.body.replaceChildren(app)
+    vi.stubGlobal('vditor', {
+      getCurrentMode: () => 'ir',
+      vditor: { currentMode: 'ir', ir: { element: root } },
+    })
+    const feed: UnitFeed = {
+      root,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    stopHelper = observeDiagramZoom(app)
+    await flushRecords()
+    delete win.__vmdeMutationImpactStats
+    return root
+  }
+
+  it('a record batch inside the feed root records one pass with its records', async () => {
+    const root = await mountOnFeed()
+    const paragraph = root.querySelector(':scope > p') as HTMLElement
+    paragraph.append(document.createTextNode('x'))
+    await flushRecords()
+    const stats = helperStats()
+    expect(stats, "helpers['diagram-zoom']").toBeDefined()
+    expect(stats?.callbacks).toBe(1)
+    expect(stats?.records).toBe(1)
+    expect((stats?.skipped ?? 0) + (stats?.local ?? 0)).toBe(1)
+    expect(stats?.full).toBe(0)
+  })
+
+  it('a feed change with one diagram scope records one local pass of one block', async () => {
+    const root = await mountOnFeed()
+    const diagram = root.querySelector(
+      ':scope > [data-type="code-block"]',
+    ) as HTMLElement
+    expect(diagram).not.toBeNull()
+    emitChange({ scopes: [diagram] })
+    const stats = helperStats()
+    expect(stats, "helpers['diagram-zoom']").toBeDefined()
+    expect(stats?.local).toBe(1)
+    expect(stats?.blocks).toBe(1)
+    expect(stats?.full).toBe(0)
+  })
+
+  it('a whole change records one full pass', async () => {
+    await mountOnFeed()
+    emitChange({ whole: true })
+    const stats = helperStats()
+    expect(stats, "helpers['diagram-zoom']").toBeDefined()
+    expect(stats?.full).toBe(1)
+  })
+})

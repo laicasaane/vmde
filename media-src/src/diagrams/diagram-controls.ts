@@ -14,6 +14,7 @@ import {
   forEachRecordScope,
   liveFeedOf,
   onLiveChange,
+  recordHelperMutationPass,
 } from '../util/mutation-impact'
 import {
   type BackgroundJob,
@@ -32,6 +33,21 @@ const ZOOMABLE_SELECTOR = engineLangs((engine) => engine.zoom !== 'none')
   .map((lang) => `.language-${lang}`)
   .join(', ')
 const ownedBars = new WeakSet<HTMLElement>()
+
+// Task 733 (022): with a live feed the helper still records its pass statistics (end-to-end runs
+// only): 'local' with the blocks it queued, else 'skipped'. A feed change passes no records.
+const NO_RECORDS: readonly MutationRecord[] = []
+function recordScopedPass(
+  records: readonly MutationRecord[],
+  queued: number,
+): void {
+  recordHelperMutationPass(
+    'diagram-controls',
+    records,
+    queued > 0 ? 'local' : 'skipped',
+    queued,
+  )
+}
 
 function iconButton(label: string, icon: string): HTMLButtonElement {
   const button = document.createElement('button')
@@ -193,6 +209,8 @@ export function observeDiagramControls(app: HTMLElement | null): () => void {
     const before = pendingBlocks.size
     if (liveFeedOf(app)) {
       forEachRecordScope(app, records, queue)
+      const added = pendingBlocks.size - before
+      recordScopedPass(records, added)
       flushSoon(before)
       return
     }
@@ -211,11 +229,14 @@ export function observeDiagramControls(app: HTMLElement | null): () => void {
   observer.observe(app, { childList: true, subtree: true })
   const offFeed = onLiveChange(app, (change) => {
     if (change.whole) {
+      recordHelperMutationPass('diagram-controls', NO_RECORDS, 'full')
       postFull()
       return
     }
     const before = pendingBlocks.size
     forEachChangeScope(change, queue)
+    const added = pendingBlocks.size - before
+    recordScopedPass(NO_RECORDS, added)
     flushSoon(before)
   })
   postFull()

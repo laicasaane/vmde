@@ -27,6 +27,7 @@ import {
   forEachRecordScope,
   liveFeedOf,
   onLiveChange,
+  recordHelperMutationPass,
 } from '../util/mutation-impact'
 import {
   type BackgroundJob,
@@ -316,6 +317,21 @@ function createDecoratePass(
   }
 }
 
+// Task 733 (022): with a live feed the helper still records its pass statistics (end-to-end runs
+// only): 'local' with the blocks it queued, else 'skipped'. A feed change passes no records.
+const NO_RECORDS: readonly MutationRecord[] = []
+function recordScopedPass(
+  records: readonly MutationRecord[],
+  queued: number,
+): void {
+  recordHelperMutationPass(
+    'diagram-zoom',
+    records,
+    queued > 0 ? 'local' : 'skipped',
+    queued,
+  )
+}
+
 let observer: MutationObserver | null = null
 let disposeCurrent: (() => void) | null = null
 
@@ -365,7 +381,9 @@ export function observeDiagramZoom(app: HTMLElement | null): () => void {
     if (liveFeedOf(app)) {
       const before = pendingBlocks.size
       forEachRecordScope(app, records, add)
-      if (pendingBlocks.size > before) schedule()
+      const added = pendingBlocks.size - before
+      recordScopedPass(records, added)
+      if (added > 0) schedule()
       return
     }
     const classified = classifyAndRecordEditorSurfaceMutations(
@@ -387,12 +405,15 @@ export function observeDiagramZoom(app: HTMLElement | null): () => void {
   observer.observe(app, { childList: true, subtree: true })
   const offFeed = onLiveChange(app, (change) => {
     if (change.whole) {
+      recordHelperMutationPass('diagram-zoom', NO_RECORDS, 'full')
       postFull()
       return
     }
     const before = pendingBlocks.size
     forEachChangeScope(change, add)
-    if (pendingBlocks.size > before) schedule()
+    const added = pendingBlocks.size - before
+    recordScopedPass(NO_RECORDS, added)
+    if (added > 0) schedule()
   })
   postFull()
   const dispose = () => {
