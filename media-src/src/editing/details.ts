@@ -8,6 +8,8 @@
 import { observeScopedMutations, writeQuietly } from '../util/mutation-impact'
 
 const HTML_BLOCK = '[data-type="html-block"]'
+// The owners of a block whose parent holds no pair; shared and never written (Task 733 / 031).
+const NO_OWNERS: readonly DetailsBlockPair[] = []
 const TOGGLE_CLASS = 'vmde-details__toggle'
 const START_ATTR = 'data-vmde-details-start'
 const END_ATTR = 'data-vmde-details-end'
@@ -565,13 +567,17 @@ export function createDetailsController(root: HTMLElement): DetailsController {
     apply()
   }
 
-  const ownersForBlock = (block: Element | null): DetailsBlockPair[] => {
-    if (!block) return []
+  const ownersForBlock = (
+    block: Element | null,
+  ): readonly DetailsBlockPair[] => {
+    if (!block) return NO_OWNERS
     let owners = ownersByBlock.get(block)
     if (!owners) {
-      owners = (pairsByParent.get(block.parentElement as Element) ?? []).filter(
-        (pair) => blockFallsWithin(pair, block),
-      )
+      // Task 733 / 031: a cell or item scope has no pair under its parent; return the shared empty
+      // array without caching, so an edited cell allocates nothing.
+      const siblings = pairsByParent.get(block.parentElement as Element)
+      if (!siblings) return NO_OWNERS
+      owners = siblings.filter((pair) => blockFallsWithin(pair, block))
       ownersByBlock.set(block, owners)
     }
     return owners
@@ -670,14 +676,19 @@ export function observeDetails(
 ): () => void {
   if (!root) return () => undefined
   const controller = createDetailsController(root)
-  const disposeObserver = observeScopedMutations(root, {
-    full: () => controller.refresh(),
-    within: (block) => {
-      if (block.matches(HTML_BLOCK) || block.querySelector(HTML_BLOCK))
-        controller.refresh()
-      else controller.applyWithin(block)
+  const disposeObserver = observeScopedMutations(
+    root,
+    {
+      full: () => controller.refresh(),
+      within: (block) => {
+        if (block.matches(HTML_BLOCK) || block.querySelector(HTML_BLOCK))
+          controller.refresh()
+        else controller.applyWithin(block)
+      },
     },
-  })
+    // Task 733 / 031: a cell or item change reads that cell or item, not its whole table or list.
+    { scope: 'unit' },
+  )
   return () => {
     disposeObserver()
     controller.dispose()

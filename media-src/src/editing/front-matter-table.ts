@@ -700,17 +700,24 @@ export function observeFrontMatter(
     )
   }
 
-  const disposeObserver = observeScopedMutations(root, {
-    full: applyAll,
-    within: (scope) => {
-      for (const block of queryIncludingSelf<HTMLElement>(
-        scope,
-        BLOCK_SELECTOR,
-      ))
-        apply(block)
-      applyToml(true)
+  const disposeObserver = observeScopedMutations(
+    root,
+    {
+      full: applyAll,
+      within: (scope) => {
+        // Task 733 / 031: one scope-bounded query finds the blocks and the TOML warnings in the scope (a
+        // warning restored by Undo is then tracked), so no document sweep runs per key.
+        for (const found of queryIncludingSelf<HTMLElement>(
+          scope,
+          `${BLOCK_SELECTOR}, .${TOML_CLASS}`,
+        ))
+          if (found.classList.contains(TOML_CLASS)) tomlSpans.add(found)
+          else apply(found)
+        applyToml(false)
+      },
     },
-  })
+    { scope: 'unit' },
+  )
 
   // A bare caret move in or out of the block changes no DOM the mutation observer sees.
   const onSelectionChange = () => {

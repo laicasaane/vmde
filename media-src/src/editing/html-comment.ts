@@ -203,10 +203,15 @@ export function observeHtmlComments(
     return () => {
       /* no-op disposer */
     }
-  return observeScopedMutations(editorEl, {
-    full: applyCommentPreviews,
-    within: applyCommentPreviewsWithin,
-  })
+  return observeScopedMutations(
+    editorEl,
+    {
+      full: applyCommentPreviews,
+      within: applyCommentPreviewsWithin,
+    },
+    // Task 733 / 031: a cell or item change rescans that cell or item, not its whole table or list.
+    { scope: 'unit' },
+  )
 }
 
 export function observePreviewComments(

@@ -1063,3 +1063,54 @@ export function countBudget<T>(
     for (let i = restores.length - 1; i >= 0; i--) restores[i]()
   }
 }
+
+// ---- unit feed fakes (Task 733 / 031, Q-150) ----
+// Structural copies of the `UnitFeed` and `LiveUnit` members the counted consumer tests build:
+// `testing->util` is not an allowed edge, so nothing here imports `util`. Each test passes the feed
+// object to `provideUnitFeed` itself.
+
+/** A fake live unit feed over `root`; `emit` plays one per-frame unit change to its listeners. */
+export function fakeUnitFeed<Change>(root: HTMLElement): {
+  readonly root: HTMLElement
+  isLive(): boolean
+  liveUnitOf(node: Node): undefined
+  liveUnits(): readonly never[]
+  onUnitsChanged(listener: (change: Change) => void): () => void
+  confirmNow(): boolean
+  confirmedLines(): undefined
+  emit(change: Change): void
+} {
+  const listeners = new Set<(change: Change) => void>()
+  return {
+    root,
+    isLive: () => true,
+    liveUnitOf: () => undefined,
+    liveUnits: () => [] as const,
+    onUnitsChanged: (listener) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    confirmNow: () => true,
+    confirmedLines: () => undefined,
+    emit(change) {
+      for (const listener of Array.from(listeners)) listener(change)
+    },
+  }
+}
+
+/** The live unit of one table cell: the cell is its only member and its table is the top. */
+export function cellUnit(cell: HTMLElement): {
+  readonly el: HTMLElement
+  readonly members: readonly HTMLElement[]
+  readonly kind: 'cell'
+  readonly top: HTMLElement
+} {
+  return {
+    el: cell,
+    members: [cell],
+    kind: 'cell',
+    top: cell.closest('table') as HTMLElement,
+  }
+}

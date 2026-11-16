@@ -12,7 +12,16 @@ import {
   type FrontMatterParseResult,
   parseFrontMatterProperties,
 } from '../../../src/shared/front-matter'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  cellUnit,
+  countBudget,
+  type Factor,
+  fakeUnitFeed,
+  irFixture,
+} from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
+import { provideUnitFeed, type UnitsChange } from '../util/unit-changes'
 import {
   decorateFrontMatter,
   FRONT_MATTER_COPY_CONFIRM_MS,
@@ -929,5 +938,101 @@ describe('observeFrontMatter on a container root (Task 733)', () => {
     document.dispatchEvent(new Event('selectionchange'))
     for (const spy of spies) expect(spy).not.toHaveBeenCalled()
     dispose()
+  })
+})
+
+// Task 733 / 031 (F-7): with the live feed, one cell key reads the cell only: no table query and no
+// document sweep of the TOML warnings. A stale TOML warning in a changed scope is still swept.
+// Building the factor 16 fixture with the real Lute can pass 5 s under a full parallel run.
+describe('scoped budgets (Task 733 / 031, F-7)', { timeout: 60_000 }, () => {
+  const FACTORS: readonly Factor[] = [1, 4, 16]
+
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+  })
+
+  // The file's afterEach empties the body, so the cached fixture is attached again before use.
+  async function observed(factor: Factor) {
+    const { root } = irFixture(tableHeavyMarkdown(factor))
+    if (!root.isConnected) document.body.append(root.parentElement!)
+    const feed = fakeUnitFeed<UnitsChange>(root)
+    provideUnitFeed(window, feed)
+    const dispose = observeFrontMatter(root, {
+      loadParser: async () => parseFrontMatterProperties,
+    })
+    await flush()
+    return { root, feed, dispose }
+  }
+
+  async function cellKey(factor: Factor) {
+    const { root, feed, dispose } = await observed(factor)
+    try {
+      const cell = root.querySelector<HTMLElement>('table tbody td')!
+      const subtree = cell.getElementsByTagName('*').length + 1
+      const { counts } = countBudget(root, () =>
+        feed.emit({
+          cause: 'mutation',
+          whole: false,
+          changed: [cellUnit(cell)],
+          structural: [],
+          scopes: [cell],
+        }),
+      )
+      return { counts, subtree }
+    } finally {
+      dispose()
+    }
+  }
+
+  it.each(FACTORS)(
+    'a cell key sweeps no table and no document at factor %i',
+    async (factor) => {
+      const { counts, subtree } = await cellKey(factor)
+      expect(counts.tableQueries).toBe(0)
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes + counts.nodesWalked).toBeLessThanOrEqual(
+        subtree + 8,
+      )
+    },
+  )
+
+  it('costs the same at every factor', async () => {
+    const costs: number[] = []
+    for (const factor of FACTORS) {
+      const { counts } = await cellKey(factor)
+      costs.push(counts.queriedNodes + counts.nodesWalked)
+    }
+    expect(new Set(costs).size).toBe(1)
+  })
+
+  it('a TOML paragraph restored with a stale warning, in scope, has the warning swept', async () => {
+    const { root, feed, dispose } = await observed(1)
+    try {
+      const paragraph = Array.from(
+        root.querySelectorAll<HTMLElement>('p'),
+      ).find((p) => p.textContent?.startsWith('First paragraph'))!
+      const stale = document.createElement('span')
+      stale.className =
+        'vmde-front-matter__warning vmde-front-matter__warning--toml'
+      stale.setAttribute('data-render', '1')
+      paragraph.append(stale)
+      feed.emit({
+        cause: 'mutation',
+        whole: false,
+        changed: [
+          {
+            el: paragraph,
+            members: [paragraph],
+            kind: 'paragraph',
+            top: paragraph,
+          },
+        ],
+        structural: [],
+        scopes: [paragraph],
+      })
+      expect(stale.isConnected).toBe(false)
+    } finally {
+      dispose()
+    }
   })
 })

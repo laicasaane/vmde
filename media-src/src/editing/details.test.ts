@@ -1,6 +1,19 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
-import { createDetailsController, pairDetailsBlocks } from './details'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  cellUnit,
+  countBudget,
+  type Factor,
+  fakeUnitFeed,
+  irFixture,
+} from '../testing/budget-harness'
+import { provideUnitFeed, type UnitsChange } from '../util/unit-changes'
+import {
+  createDetailsController,
+  observeDetails,
+  pairDetailsBlocks,
+} from './details'
 
 const htmlBlock = (source: string, id = '') =>
   `<div ${id ? `id="${id}" ` : ''}data-block="0" data-type="html-block" class="vditor-ir__node"><pre class="vditor-ir__marker--pre"><code data-type="html-block">${source.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</code></pre><pre class="vditor-ir__preview" data-render="2"></pre></div>`
@@ -246,5 +259,99 @@ describe('details edit-mode controller', () => {
     expect(root.querySelector('[data-vmde-details-editing]')).toBeNull()
     expect(body.hasAttribute('data-vmde-details-hidden')).toBe(true)
     controller.dispose()
+  })
+})
+
+// Task 733 / 031 (F-7): with the live feed, one cell key reads the cell only, never its table or the
+// whole root; an HTML block inside a list item scope still refreshes the details pairs.
+// Building the factor 16 fixture with the real Lute can pass 5 s under a full parallel run.
+describe('scoped budgets (Task 733 / 031, F-7)', { timeout: 60_000 }, () => {
+  const FACTORS: readonly Factor[] = [1, 4, 16]
+
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+  })
+
+  // The observer on the factor's fixture, and the counts of one change of its first body cell.
+  function cellKey(factor: Factor) {
+    const { root } = irFixture(tableHeavyMarkdown(factor))
+    const feed = fakeUnitFeed<UnitsChange>(root)
+    provideUnitFeed(window, feed)
+    const dispose = observeDetails(root)
+    try {
+      const cell = root.querySelector<HTMLElement>('table tbody td')!
+      const subtree = cell.getElementsByTagName('*').length + 1
+      const { counts } = countBudget(root, () =>
+        feed.emit({
+          cause: 'mutation',
+          whole: false,
+          changed: [cellUnit(cell)],
+          structural: [],
+          scopes: [cell],
+        }),
+      )
+      return { counts, subtree }
+    } finally {
+      dispose()
+    }
+  }
+
+  it.each(FACTORS)(
+    'a cell key projects details with no table or root query at factor %i',
+    (factor) => {
+      const { counts, subtree } = cellKey(factor)
+      expect(counts.tableQueries).toBe(0)
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes + counts.nodesWalked).toBeLessThanOrEqual(
+        subtree + 8,
+      )
+    },
+  )
+
+  it('costs the same at every factor', () => {
+    const costs = FACTORS.map((factor) => {
+      const { counts } = cellKey(factor)
+      return counts.queriedNodes + counts.nodesWalked
+    })
+    expect(new Set(costs).size).toBe(1)
+  })
+
+  it('an HTML block inside a list item scope still refreshes details', () => {
+    const root = editor(
+      htmlBlock('<details><summary>More</summary>', 'start') +
+        '<p id="body">Body</p>' +
+        htmlBlock('</details>', 'end') +
+        '<ul data-block="0"><li id="item" data-marker="*">' +
+        htmlBlock('<br>', 'inner') +
+        '</li></ul>',
+    )
+    const feed = fakeUnitFeed<UnitsChange>(root)
+    provideUnitFeed(window, feed)
+    const dispose = observeDetails(root)
+    try {
+      const start = root.querySelector<HTMLElement>('#start')!
+      start.querySelector('.vmde-details__toggle')!.remove()
+      const item = root.querySelector<HTMLElement>('#item')!
+      feed.emit({
+        cause: 'mutation',
+        whole: false,
+        changed: [
+          {
+            el: item,
+            members: [item],
+            kind: 'list-item',
+            top: item.parentElement as HTMLElement,
+          },
+        ],
+        structural: [],
+        scopes: [item],
+      })
+      expect(
+        start.querySelector(':scope > .vmde-details__toggle'),
+      ).not.toBeNull()
+    } finally {
+      dispose()
+      document.body.innerHTML = ''
+    }
   })
 })

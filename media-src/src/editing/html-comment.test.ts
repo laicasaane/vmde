@@ -1,5 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  cellUnit,
+  countBudget,
+  type Factor,
+  fakeUnitFeed,
+  irFixture,
+} from '../testing/budget-harness'
+import { provideUnitFeed, type UnitsChange } from '../util/unit-changes'
 import {
   applyCommentPreviews,
   observeHtmlComments,
@@ -224,5 +233,87 @@ describe('observeHtmlComments scoping (task 173/174)', () => {
         (e) => e.textContent,
       ),
     ).toEqual(['<!-- alpha renamed -->', '<!-- bravo -->']) // fresh node decorated, sibling untouched
+  })
+})
+
+// Task 733 / 031 (F-7): with the live feed, one cell key rescans the cell only, never its table or the
+// whole root; an HTML comment block change still decorates through its own block scope.
+// Building the factor 16 fixture with the real Lute can pass 5 s under a full parallel run.
+describe('scoped budgets (Task 733 / 031, F-7)', { timeout: 60_000 }, () => {
+  const FACTORS: readonly Factor[] = [1, 4, 16]
+
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+  })
+
+  // Counts one change of the first body cell with the observer installed on the factor's fixture.
+  function cellKey(factor: Factor) {
+    const { root } = irFixture(tableHeavyMarkdown(factor))
+    const feed = fakeUnitFeed<UnitsChange>(root)
+    provideUnitFeed(window, feed)
+    const dispose = observeHtmlComments(root)
+    try {
+      const cell = root.querySelector<HTMLElement>('table tbody td')!
+      const subtree = cell.getElementsByTagName('*').length + 1
+      const { counts } = countBudget(root, () =>
+        feed.emit({
+          cause: 'mutation',
+          whole: false,
+          changed: [cellUnit(cell)],
+          structural: [],
+          scopes: [cell],
+        }),
+      )
+      return { counts, subtree }
+    } finally {
+      dispose()
+    }
+  }
+
+  it.each(FACTORS)(
+    'a cell key decorates without a table or root query at factor %i',
+    (factor) => {
+      const { counts, subtree } = cellKey(factor)
+      expect(counts.tableQueries).toBe(0)
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes + counts.nodesWalked).toBeLessThanOrEqual(
+        subtree + 8,
+      )
+    },
+  )
+
+  it('costs the same at every factor', () => {
+    const costs = FACTORS.map((factor) => {
+      const { counts } = cellKey(factor)
+      return counts.queriedNodes + counts.nodesWalked
+    })
+    expect(new Set(costs).size).toBe(1)
+  })
+
+  it('an HTML comment block change still decorates', () => {
+    const ir = document.createElement('div')
+    ir.className = 'vditor-ir vditor-reset'
+    const node = htmlBlockNode('alpha')
+    ir.append(node)
+    document.body.replaceChildren(ir)
+    const feed = fakeUnitFeed<UnitsChange>(ir)
+    provideUnitFeed(window, feed)
+    const dispose = observeHtmlComments(ir)
+    try {
+      node.querySelector('code')!.textContent = '<!-- alpha renamed -->'
+      feed.emit({
+        cause: 'mutation',
+        whole: false,
+        changed: [{ el: node, members: [node], kind: 'html', top: node }],
+        structural: [],
+        scopes: [node],
+      })
+      expect(node.querySelector('.vmde-comment')?.textContent).toBe(
+        '<!-- alpha renamed -->',
+      )
+    } finally {
+      dispose()
+      document.body.innerHTML = ''
+    }
   })
 })

@@ -66,8 +66,13 @@ export function observeCodeSource(
     return () => {
       /* no-op disposer */
     }
-  return observeScopedMutations(editorEl, {
-    full: tagCodeSource,
-    within: tagCodeSource,
-  })
+  return observeScopedMutations(
+    editorEl,
+    {
+      full: tagCodeSource,
+      within: tagCodeSource,
+    },
+    // Task 733 / 031: a cell or item change rescans that cell or item, not its whole table or list.
+    { scope: 'unit' },
+  )
 }
