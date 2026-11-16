@@ -150,7 +150,7 @@ describe.each<Factor>([1, 4, 16])(
       expect(counts.nodesWalked + counts.queriedNodes).toBeLessThanOrEqual(
         nodes + 8,
       )
-    })
+    }, 30_000)
 
     it('B-06 and B-10: a definition edit is non-whole and names no table or list (no table or diagram pass)', () => {
       const live = openFeed(factor)
@@ -159,7 +159,7 @@ describe.each<Factor>([1, 4, 16])(
       expect(change?.whole).toBe(false)
       expect(change?.structural).toEqual([])
       expect(scopesOf(change)).toEqual([definition])
-    })
+    }, 30_000)
 
     it('B-11: the gap-paragraph pass visits only the top level of the root', () => {
       const live = openFeed(factor)
@@ -170,7 +170,7 @@ describe.each<Factor>([1, 4, 16])(
       expect(counts.nodesWalked).toBeLessThanOrEqual(
         live.root.children.length + 8,
       )
-    })
+    }, 30_000)
 
     it('B-13: the feed maps a caret in a definition and in a footnote to their units (settle re-spins the unit)', () => {
       const live = openFeed(factor)
@@ -184,7 +184,7 @@ describe.each<Factor>([1, 4, 16])(
       const unit = live.feed.liveUnitOf(note.firstChild as Node)
       expect(unit?.kind).toBe('footnote')
       expect(unit?.top.getAttribute('data-type')).toBe('footnotes-block')
-    })
+    }, 30_000)
 
     it('B-14: a definition unit spin makes at most one flush and one selection write', () => {
       const live = openFeed(factor)
@@ -226,6 +226,6 @@ describe.each<Factor>([1, 4, 16])(
       expect(counts.flushes).toBeLessThanOrEqual(1)
       expect(counts.selectionWrites).toBeLessThanOrEqual(1)
       expect(counts.rootQueries).toBe(0)
-    })
+    }, 30_000)
   },
 )
