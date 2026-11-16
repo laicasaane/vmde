@@ -196,6 +196,42 @@ const changeKeyOf = (html: string, atEnd: boolean): string => {
 
 const TABLE_ROWS = ':scope > thead > tr, :scope > tbody > tr'
 
+/**
+ * Task 733 / 029 (F-5): the rows of `table` in `TABLE_ROWS` order without a query, or undefined when the
+ * table's element children are not only `caption`, `colgroup`, one `thead` and `tbody`s after it (then
+ * `table.rows` and `TABLE_ROWS` differ: a `tfoot`, a direct `tr`, a second `thead`, or a `tbody` before
+ * the `thead`, since `rows` lists `thead` rows first while `TABLE_ROWS` returns tree order). The check
+ * walks the table's children only, so the cell window of a long table costs no whole-table query.
+ */
+function plainRows(
+  table: Element,
+): HTMLCollectionOf<HTMLTableRowElement> | undefined {
+  if (table.localName !== 'table') return undefined
+  let head = false
+  let body = false
+  for (let el = table.firstElementChild; el; el = el.nextElementSibling) {
+    const name = el.localName
+    if (name === 'thead') {
+      if (head || body) return undefined
+      head = true
+    } else if (name === 'tbody') body = true
+    else if (name !== 'caption' && name !== 'colgroup') return undefined
+  }
+  return (table as HTMLTableElement).rows
+}
+
+/** The index of `tr` in the `TABLE_ROWS` order of `table`: `rowIndex` for a plain table, else the query. */
+function rowIndexOf(table: Element, tr: Element): number {
+  const section = tr.parentElement
+  if (
+    plainRows(table) &&
+    section?.parentElement === table &&
+    (section.localName === 'thead' || section.localName === 'tbody')
+  )
+    return (tr as HTMLTableRowElement).rowIndex
+  return Array.from(table.querySelectorAll(TABLE_ROWS)).indexOf(tr)
+}
+
 // Task 733 / 013: a restored fragment holds the DOM of one mode, so the previews of both modes match.
 const PREVIEW_PENDING =
   ".vditor-ir__preview[data-render='1'], .vditor-wysiwyg__preview[data-render='1']"
@@ -948,11 +984,10 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     if (unit.kind === 'cell') {
       const table = el.closest('table') as HTMLElement
       const tr = el.parentElement as HTMLElement
-      const rows = Array.from(table.querySelectorAll(TABLE_ROWS))
       return {
         kind: 'cell',
         a: index,
-        b: rows.indexOf(tr),
+        b: rowIndexOf(table, tr),
         c: Array.prototype.indexOf.call(tr.children, el),
         beforeCount: 1,
         afterCount: 1,
@@ -1028,9 +1063,10 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       const target =
         window.kind === 'item'
           ? (top?.children[window.b] as HTMLElement | undefined)
-          : (top?.querySelectorAll(TABLE_ROWS)[window.b]?.children[window.c] as
-              | HTMLElement
-              | undefined)
+          : top
+            ? ((plainRows(top) ?? top.querySelectorAll(TABLE_ROWS))[window.b]
+                ?.children[window.c] as HTMLElement | undefined)
+            : undefined
       if (target) {
         known.set(
           target,
@@ -1254,7 +1290,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         replace: (html) => replaceItem(li, html),
       }
     }
-    const row = top.querySelectorAll(TABLE_ROWS)[window.b]
+    const row = (plainRows(top) ?? top.querySelectorAll(TABLE_ROWS))[window.b]
     const cell = row?.children[window.c] as HTMLElement | undefined
     if (!cell) return undefined
     return {

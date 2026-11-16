@@ -11,7 +11,7 @@ import {
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
-import { wysiwygFixture } from '../testing/budget-harness'
+import { countBudget, wysiwygFixture } from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
 import type { HistoryCapture } from '../util/unit-changes'
 import { insertWrapHint } from '../util/wrap-hint-mark'
@@ -1410,5 +1410,130 @@ describe('013 B-17 WYSIWYG list item Undo and Redo', () => {
       expect(r.state()).toEqual(second)
       expect(redo, 'Redo').toBe(0)
     }, 120_000)
+  })
+})
+
+// ---- Task 733 / 029-T: F-5, the row of a cell window is found without a whole-table query ----
+//
+// `leafWindow` (capture) and `remember` and `current` (capture and restore) find the row of a cell window
+// with `querySelectorAll(TABLE_ROWS)` on its table, which visits every element of the table. For a table of
+// the plain Lute shape (`thead` then `tbody`) the row comes from `HTMLTableElement.rows` instead, so the
+// counted capture and restore make no table query and their `queriedNodes` do not grow with the table.
+// A table of any other shape (a `tfoot`, a `tbody` before its `thead`) keeps the query as its fallback.
+describe('cell capture and restore make no whole-table query (029, F-5)', () => {
+  beforeEach(() => window.getSelection()?.removeAllRanges())
+
+  /** The first body cell whose text is `text`. */
+  const cellOf = (r: Rig, text: string) =>
+    Array.from(r.root.querySelectorAll('table td')).find(
+      (td) => td.textContent === text,
+    ) as HTMLElement | undefined
+
+  /** `queriedNodes` of the capture plus the restore, per factor; compared by the last case. */
+  const queried = new Map<number, number>()
+
+  describe.each([1, 4, 16] as const)('at factor %i', (factor) => {
+    it('a cell edit is captured and restored with no table query', () => {
+      const markdown = tableHeavyMarkdown(factor)
+      const r = open(markdown)
+      expect(r.sync()).toBe(markdown)
+      const cell = cellOf(r, 'plain 5') as HTMLElement
+      // The caret in the cell, as the editor has it, keeps the pre-touch proof local to that cell.
+      const caret = document.createRange()
+      caret.setStart(cell.firstChild as Node, 0)
+      window.getSelection()?.addRange(caret)
+      typeInto(cell, 'plain 5X')
+      const captured = countBudget(r.root, () => r.port.capture())
+      const capture = captured.result as HistoryCapture
+      expect(capture).toBeDefined()
+      expect(r.sync()).toBe(markdown.replace('| plain 5 |', '| plain 5X |'))
+      const restored = countBudget(r.root, () =>
+        r.port.restore(capture, 'before'),
+      )
+      expect(restored.result).toBe(true)
+      expect(r.sync()).toBe(markdown)
+      queried.set(
+        factor,
+        captured.counts.queriedNodes + restored.counts.queriedNodes,
+      )
+      expect(captured.counts.tableQueries, 'capture').toBe(0)
+      expect(restored.counts.tableQueries, 'restore').toBe(0)
+    }, 120_000)
+  })
+
+  it('queriedNodes of the capture and restore are the same at factors 1, 4 and 16', () => {
+    expect(queried.size).toBe(3)
+    expect(queried.get(4), 'factor 4').toBe(queried.get(1))
+    expect(queried.get(16), 'factor 16').toBe(queried.get(1))
+  })
+
+  /** Opens `markdown` with its table reshaped by `reshape` before the session reads the root. */
+  function openReshaped(
+    markdown: string,
+    reshape: (table: HTMLTableElement) => void,
+  ): Rig {
+    const render = lute.Md2VditorIRDOM.bind(lute)
+    vi.spyOn(lute, 'Md2VditorIRDOM').mockImplementationOnce((source) => {
+      const holder = document.createElement('div')
+      holder.innerHTML = render(source)
+      reshape(holder.querySelector('table') as HTMLTableElement)
+      return holder.innerHTML
+    })
+    return open(markdown)
+  }
+
+  /**
+   * Types into the body cell `d`, captures, and restores the before side: the cell `d` is back in its
+   * row and the DOM equals the DOM before the edit. Both counted runs take the query (the fallback).
+   * With `publish`, a publication follows the capture and the restore, and the model text comes back.
+   */
+  function restoresCell(r: Rig, publish: boolean): void {
+    const first = r.state()
+    typeInto(cellOf(r, 'd') as HTMLElement, 'dX')
+    const captured = countBudget(r.root, () => r.port.capture())
+    const capture = captured.result as HistoryCapture
+    expect(capture).toBeDefined()
+    if (publish) expect(r.sync()).toBe(DOC.replace('| d |', '| dX |'))
+    const restored = countBudget(r.root, () =>
+      r.port.restore(capture, 'before'),
+    )
+    expect(restored.result).toBe(true)
+    expect(cellOf(r, 'dX')).toBeUndefined()
+    const cell = cellOf(r, 'd') as HTMLElement
+    expect(cell.previousElementSibling?.textContent).toBe('c')
+    expect(r.root.innerHTML).toBe(first.html)
+    if (publish) expect(r.sync()).toBe(DOC)
+    expect(captured.counts.tableQueries, 'capture').toBeGreaterThanOrEqual(1)
+    expect(restored.counts.tableQueries, 'restore').toBeGreaterThanOrEqual(1)
+  }
+
+  it('a table with a tfoot row takes the query and restores the right cell', () => {
+    const r = openReshaped(DOC, (table) => {
+      const foot = document.createElement('tfoot')
+      const row = document.createElement('tr')
+      const cell = document.createElement('td')
+      cell.textContent = 'foot'
+      row.append(cell)
+      foot.append(row)
+      table.append(foot)
+    })
+    expect(r.root.querySelector('table > tfoot')).not.toBeNull()
+    expect(r.sync()).toBe(DOC)
+    restoresCell(r, true)
+  })
+
+  it('a table whose tbody precedes its thead takes the query and restores the right cell', () => {
+    const r = openReshaped(DOC, (table) => {
+      table.append(table.querySelector(':scope > thead') as HTMLElement)
+    })
+    expect(
+      Array.from(
+        (r.root.querySelector('table') as HTMLElement).children,
+        (child) => child.localName,
+      ),
+    ).toEqual(['tbody', 'thead'])
+    // The text model publishes an edit of this shape as a fallback (the cell has no proof), so no
+    // publication runs here: the case proves the restored DOM, which is the part `current` owns.
+    restoresCell(r, false)
   })
 })
