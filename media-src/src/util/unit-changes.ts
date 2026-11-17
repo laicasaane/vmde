@@ -174,6 +174,11 @@ export const SOURCE_UNITS: boolean = true
  *  restores today's WYSIWYG path (model off with reason 'mode', hooks refuse, old history engine). */
 export const WYSIWYG_UNITS: boolean = false
 
+/** Task 733 / 030 (Q-190, Q-193): WYSIWYG diagram previews wait for the settle while typing, as in IR.
+ *  Not a unit-model switch: it applies with WYSIWYG_UNITS on or off. false restores today's WYSIWYG
+ *  path (every fresh preview renders at once). */
+export const WYSIWYG_DIAGRAM_DEFERRAL: boolean = true
+
 export type UnitMode = 'ir' | 'wysiwyg'
 
 /** The mode the model serves for Vditor's current mode: 'ir', 'wysiwyg' when `wysiwygUnits` (default

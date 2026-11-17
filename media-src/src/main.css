@@ -221,17 +221,19 @@ body[data-use-vscode-theme-color="1"] .vditor-reset pre code.hljs {
    burst, edit-activity.ts marks its preview `.vmde-deferred` and appends a `.vmde-stale-overlay`
    holding the last-good render. Hide the raw source children so ONLY that overlay shows → the diagram
    stays visible (no flicker to raw text). The overlay stays up through the settle re-render too and is
-   only removed once the new render is ready (swap-when-ready) — no "jump through white text". */
-.vditor-ir__preview.vmde-deferred > *:not(.vmde-stale-overlay) {
+   only removed once the new render is ready (swap-when-ready) — no "jump through white text".
+   Task 733 / 030: WYSIWYG previews defer the same way, so each rule names both preview classes. */
+:is(.vditor-ir__preview, .vditor-wysiwyg__preview).vmde-deferred
+  > *:not(.vmde-stale-overlay) {
   display: none;
 }
 /* Canvas/WebGL engines (echarts/mindmap/stl) measure their container, so at settle they must render
    VISIBLE+sized — keep the source child in flow and lay the overlay over it (opaque, so the raw text /
    half-drawn canvas underneath never shows through) until the new <canvas> lands and we reveal. */
-.vditor-ir__preview.vmde-cover {
+:is(.vditor-ir__preview, .vditor-wysiwyg__preview).vmde-cover {
   position: relative;
 }
-.vditor-ir__preview.vmde-cover > .vmde-stale-overlay {
+:is(.vditor-ir__preview, .vditor-wysiwyg__preview).vmde-cover > .vmde-stale-overlay {
   position: absolute;
   inset: 0;
   z-index: 2;

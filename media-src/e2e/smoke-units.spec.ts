@@ -1255,3 +1255,199 @@ test.describe('022: history during a pending rebind', () => {
     await expect.poll(() => shadow(page)).toEqual({ state: 'live', mode: 'ir' })
   })
 })
+
+// Task 733 / 030 (design Q-190, review Q-192): WYSIWYG diagram renders wait for the settle while typing,
+// on `/smoke/wysiwyg.html` and `/smoke/none.html` (the deferral is not gated on `WYSIWYG_UNITS`). The
+// document and the counter are 030-E's: the page's render hook `__vmdeDeferIrDiagramRender` is wrapped
+// after the first renders land, keeping `acceptsWysiwyg`, and counts each `processCodeRender` call by
+// language, split into "while typing" and "at the settle". Logged values are counters and lines only.
+
+const DEFERRAL_DOC = [
+  '# Probe heading',
+  '',
+  'Alpha bravo charlie.',
+  '',
+  '```mermaid',
+  'graph TD',
+  '  A --> B',
+  '```',
+  '',
+  'Middle para.',
+  '',
+  '```graphviz',
+  'digraph G { a -> b }',
+  '```',
+  '',
+  '```js',
+  'const echo = 1',
+  '```',
+  '',
+  'Tail para.',
+  '',
+  '- item one',
+  '- item two',
+  '',
+  '  ```mermaid',
+  '  graph LR',
+  '    C --> D',
+  '  ```',
+  '',
+].join('\n')
+const DEFERRAL_KEYS = 6
+const DEFERRAL_RUN = 'x'.repeat(DEFERRAL_KEYS)
+const DEFERRAL_GAP_MS = 40 // under the 220 ms quiet window: the whole run is one typing burst
+const DEFERRAL_SETTLE_MS = 2000
+const DIAGRAM_LANGS = ['mermaid', 'graphviz']
+
+/** Wraps the render hook: counts processCodeRender calls per language, while typing and at the settle. */
+const installRenderCounter = (page: Page) =>
+  page.evaluate(() => {
+    const w = window as any
+    const original = w.__vmdeDeferIrDiagramRender
+    if (!original) throw new Error('no render hook')
+    const stats = {
+      typing: true,
+      whileTyping: {} as Record<string, number>,
+      atSettle: {} as Record<string, number>,
+    }
+    const wrapped = (
+      vditor: unknown,
+      render: (el: HTMLElement, v: unknown) => void,
+    ) =>
+      original(vditor, (el: HTMLElement, v: unknown) => {
+        const lang = (el.firstElementChild?.className ?? '').replace(
+          'language-',
+          '',
+        )
+        const bucket = stats.typing ? stats.whileTyping : stats.atSettle
+        bucket[lang] = (bucket[lang] ?? 0) + 1
+        render(el, v)
+      })
+    ;(wrapped as any).acceptsWysiwyg = original.acceptsWysiwyg
+    w.__vmdeDeferIrDiagramRender = wrapped
+    w.__vmdeRenderCount = stats
+  })
+
+const diagramRenders = (counts: Record<string, number>) =>
+  DIAGRAM_LANGS.reduce((sum, lang) => sum + (counts[lang] ?? 0), 0)
+
+/** Caret at the end of the first paragraph (click at its right edge). */
+async function caretInFirstParagraph(page: Page) {
+  const target = page.locator(`${WYSIWYG_ROOT} > p`).first()
+  const box = await target.boundingBox()
+  if (!box) throw new Error('paragraph has no bounding box')
+  await target.click({
+    position: { x: Math.max(1, box.width - 2), y: box.height / 2 },
+  })
+  await page.waitForTimeout(150)
+}
+
+/** Shows the first mermaid source and puts the caret after `A --> B`. */
+async function caretInMermaidSource(page: Page) {
+  await page
+    .locator(
+      `${WYSIWYG_ROOT} > [data-type="code-block"] .vditor-wysiwyg__preview`,
+    )
+    .first()
+    .click()
+  await page.waitForTimeout(200)
+  const placed = await page.evaluate((root) => {
+    const code = document.querySelector(
+      `${root} > [data-type="code-block"] pre.vditor-wysiwyg__pre > code.language-mermaid`,
+    )
+    const source = code?.closest<HTMLElement>('.vditor-wysiwyg__pre')
+    if (!code || !source) return false
+    source.style.removeProperty('display')
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const at = (node as Text).data.indexOf('A --> B')
+      if (at < 0) continue
+      const range = document.createRange()
+      range.setStart(node, at + 7)
+      range.collapse(true)
+      const selection = window.getSelection()
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+      return true
+    }
+    return false
+  }, WYSIWYG_ROOT)
+  if (!placed) throw new Error('mermaid source not found')
+  await page.waitForTimeout(150)
+}
+
+/** Caret at the end of the first item of the list that holds a mermaid block. */
+async function caretInFirstItem(page: Page) {
+  const item = page.locator(`${WYSIWYG_ROOT} > ul > li`).first()
+  await item.scrollIntoViewIfNeeded()
+  const paragraph = item.locator('p').first()
+  const target = (await paragraph.count()) ? paragraph : item
+  const box = await target.boundingBox()
+  if (!box) throw new Error('item has no bounding box')
+  await target.click({
+    position: {
+      x: Math.max(1, box.width - 2),
+      y: Math.min(box.height / 2, 10),
+    },
+  })
+  await page.waitForTimeout(150)
+}
+
+const DEFERRAL_PLACES = [
+  // Lines are 0-based in the host text; 030-E measured the landing lines 6 and 21.
+  { name: 'mermaid source', caret: caretInMermaidSource, line: 6, renders: 1 },
+  { name: 'list item', caret: caretInFirstItem, line: 21, renders: 1 },
+  { name: 'paragraph', caret: caretInFirstParagraph, line: 2, renders: 0 },
+] as const
+
+for (const set of ['wysiwyg', 'none'] as const) {
+  test.describe(`030: WYSIWYG diagram deferral (${set})`, () => {
+    test.describe.configure({ timeout: 90_000 })
+
+    for (const place of DEFERRAL_PLACES) {
+      test(`${DEFERRAL_KEYS} keys in the ${place.name}: 0 diagram renders while typing, ${place.renders} at the settle`, async ({
+        page,
+      }) => {
+        await openSourceSet(page, set, DEFERRAL_DOC)
+        await switchMode(page, 'wysiwyg')
+        await page.waitForTimeout(2500) // the first renders land before the counter is installed
+        await installRenderCounter(page)
+        await place.caret(page)
+        for (let i = 0; i < DEFERRAL_KEYS; i++) {
+          await page.keyboard.type('x')
+          await page.waitForTimeout(DEFERRAL_GAP_MS)
+        }
+        await page.evaluate(() => {
+          ;(window as any).__vmdeRenderCount.typing = false
+        })
+        await page.waitForTimeout(DEFERRAL_SETTLE_MS)
+        const counts = await page.evaluate(
+          () =>
+            (window as any).__vmdeRenderCount as {
+              whileTyping: Record<string, number>
+              atSettle: Record<string, number>
+            },
+        )
+        expect
+          .soft(diagramRenders(counts.whileTyping), 'renders while typing')
+          .toBe(0)
+        expect
+          .soft(diagramRenders(counts.atSettle), 'renders at the settle')
+          .toBe(place.renders)
+        // No overlay text reaches the bytes: the host text is the document with the run at its line.
+        await expect
+          .poll(async () => (await stubText(page)).includes(DEFERRAL_RUN))
+          .toBe(true)
+        const text = await stubText(page)
+        const at = text.indexOf(DEFERRAL_RUN)
+        expect(text.slice(0, at).split('\n').length - 1, 'landing line').toBe(
+          place.line,
+        )
+        expect(
+          text.slice(0, at) + text.slice(at + DEFERRAL_RUN.length),
+          'host text without the run',
+        ).toBe(DEFERRAL_DOC)
+      })
+    }
+  })
+}

@@ -35,7 +35,18 @@ import {
   type LiveUnit,
   provideUnitFeed,
   type UnitFeed,
+  WYSIWYG_DIAGRAM_DEFERRAL,
 } from '../util/unit-changes'
+
+// Task 733 / 030 (Q-193): `WYSIWYG_DIAGRAM_DEFERRAL` ships true; `deferralOn` turns it off for the
+// 030-A2 case only (reset after each test).
+const deferralOn = vi.hoisted(() => ({ value: true }))
+vi.mock('../util/unit-changes', async (original) => ({
+  ...(await original<typeof import('../util/unit-changes')>()),
+  get WYSIWYG_DIAGRAM_DEFERRAL() {
+    return deferralOn.value
+  },
+}))
 
 // The gate's quiet window is 220 ms (private const in edit-activity.ts); tests advance well under it
 // (100 ms = "still typing") and well over it (300 ms = "settled") so they don't depend on the exact value.
@@ -2077,5 +2088,241 @@ describe('013 renderWysiwygPreviews', () => {
     r.run()
     expect(r.rendered).toEqual(r.previews())
     r.dispose()
+  })
+})
+
+// ---- Task 733 / 030: WYSIWYG diagram deferral (design Q-190, review Q-192) ----
+//
+// While typing, the WYSIWYG branch of the render hook defers every fresh diagram preview, shows the
+// cached overlay of the same mode, and renders it once at the settle, as IR does. The cache key carries
+// the mode. `beginSettleRender()` (called with no argument by the custom diagram settle) covers the
+// measuring previews of the WYSIWYG root (030-A1). `WYSIWYG_DIAGRAM_DEFERRAL` guards the path (030-A2).
+// With no live feed, the first-key snapshot stays inside the caret window (030-A3). Counts and state only.
+describe('WYSIWYG diagram deferral (030)', () => {
+  const block = (lang: string, inner: string, render: '1' | '2') =>
+    `<div class="vditor-wysiwyg__block" data-type="code-block" data-block="0" data-marker="\`\`\`"><pre class="vditor-wysiwyg__pre"><code class="language-${lang}">x</code></pre><pre class="vditor-wysiwyg__preview" data-render="${render}">${inner}</pre></div>`
+  const fresh = (lang: string) =>
+    block(lang, `<div class="language-${lang}"></div>`, '2')
+  const rendered = (lang: string) =>
+    block(lang, `<div class="language-${lang}"><svg></svg></div>`, '1')
+  const irRendered = (lang: string) =>
+    '<div class="vditor-ir__node" data-type="code-block">' +
+    `<pre class="vditor-ir__marker--pre"><code class="language-${lang}">x</code></pre>` +
+    `<div class="vditor-ir__preview" data-render="1"><div class="language-${lang}"><svg></svg></div></div>` +
+    '</div>'
+  type Hook = (
+    vditor: {
+      currentMode: string
+      ir: { element: HTMLElement }
+      wysiwyg: { element: HTMLElement }
+    },
+    processCodeRender: (el: HTMLElement) => void,
+  ) => void
+
+  function rig(
+    html: string,
+    options: { live?: boolean; irHtml?: string } = {},
+  ) {
+    for (const stale of Array.from(
+      document.querySelectorAll('.vditor-ir, .vditor-wysiwyg'),
+    ))
+      stale.remove()
+    const ir = irWithTrailing(options.irHtml ?? '')
+    const root = document.createElement('div')
+    root.className = 'vditor-wysiwyg'
+    root.innerHTML = html
+    document.body.appendChild(root)
+    const dispose = installEditActivity(root)
+    if (options.live !== false) provideUnitFeed(window, fakeFeed(root))
+    const calls: Element[] = []
+    const processCodeRender = (el: HTMLElement) => {
+      calls.push(el)
+      el.setAttribute('data-render', '1')
+    }
+    const hook = (window as unknown as Record<string, unknown>)
+      .__vmdeDeferIrDiagramRender as Hook
+    return {
+      ir,
+      root,
+      calls,
+      previewOf: (index: number) =>
+        root.children[index].querySelector(
+          '.vditor-wysiwyg__preview',
+        ) as HTMLElement,
+      run: () =>
+        hook(
+          {
+            currentMode: 'wysiwyg',
+            ir: { element: ir },
+            wysiwyg: { element: root },
+          },
+          processCodeRender,
+        ),
+      dispose: () => {
+        provideUnitFeed(window, undefined)
+        document.getSelection()?.removeAllRanges()
+        dispose()
+        root.remove()
+        ir.remove()
+      },
+    }
+  }
+
+  test('while typing, a fresh mermaid preview waits for the settle and a js preview renders at once', () => {
+    const r = rig(para('a') + fresh('mermaid') + fresh('js') + para('b'))
+    try {
+      const mermaid = r.previewOf(1)
+      const js = r.previewOf(2)
+      caretIn(r.root.children[1].querySelector('code') as Element)
+      markEditActivity()
+      r.run()
+      expect(r.calls, 'renders while typing').toEqual([js])
+      vi.advanceTimersByTime(300)
+      expect(
+        r.calls.filter((el) => el === mermaid).length,
+        'mermaid renders at the settle',
+      ).toBe(1)
+    } finally {
+      r.dispose()
+    }
+  })
+
+  test('with a WYSIWYG snapshot, the deferred preview holds one overlay and is in the deferred state', () => {
+    const r = rig(para('a') + rendered('mermaid') + para('b') + para('c'))
+    try {
+      caretIn(r.root.children[0])
+      markEditActivity() // idle first key: snapshots the rendered mermaid preview
+      vi.advanceTimersByTime(300)
+      // The spin of the next key replaces the block with a fresh preview.
+      r.root.children[1].outerHTML = fresh('mermaid')
+      const preview = r.previewOf(1)
+      caretIn(r.root.children[1].querySelector('code') as Element)
+      markEditActivity()
+      r.run()
+      expect(r.calls, 'no render while typing').toEqual([])
+      expect(preview.querySelectorAll('.vmde-stale-overlay').length).toBe(1)
+      expect(preview.classList.contains('vmde-deferred')).toBe(true)
+    } finally {
+      r.dispose()
+    }
+  })
+
+  test('an IR snapshot gives no WYSIWYG overlay: the cache keys of the two modes do not collide', () => {
+    // plantuml: no earlier case caches a WYSIWYG plantuml render (the render cache is module state).
+    const r = rig(para('a') + fresh('plantuml') + para('b'), {
+      irHtml: para('a') + irRendered('plantuml') + para('b'),
+    })
+    try {
+      // The IR snapshot of plantuml #0, taken while the IR feed is live and idle.
+      provideUnitFeed(window, fakeFeed(r.ir))
+      caretIn(r.ir.children[0])
+      markEditActivity()
+      vi.advanceTimersByTime(300)
+      provideUnitFeed(window, fakeFeed(r.root))
+      const preview = r.previewOf(1)
+      caretIn(r.root.children[1].querySelector('code') as Element)
+      markEditActivity()
+      r.run()
+      expect(r.calls, 'no render while typing').toEqual([])
+      expect(preview.querySelectorAll('.vmde-stale-overlay').length).toBe(0)
+    } finally {
+      r.dispose()
+    }
+  })
+
+  test('030-A1: beginSettleRender() covers a deferred WYSIWYG echarts preview and leaves graphviz deferred', () => {
+    const deferred = (lang: string) =>
+      block(lang, `<div class="language-${lang}"></div>`, '2').replace(
+        'class="vditor-wysiwyg__preview"',
+        'class="vditor-wysiwyg__preview vmde-deferred"',
+      )
+    const r = rig(deferred('echarts') + para('a') + deferred('graphviz'))
+    try {
+      beginSettleRender()
+      const echarts = r.previewOf(0)
+      const graphviz = r.previewOf(2)
+      expect(echarts.classList.contains('vmde-cover')).toBe(true)
+      expect(echarts.classList.contains('vmde-deferred')).toBe(false)
+      expect(graphviz.classList.contains('vmde-cover')).toBe(false)
+      expect(graphviz.classList.contains('vmde-deferred')).toBe(true)
+    } finally {
+      r.dispose()
+    }
+  })
+
+  test('030-A2: the guard constant WYSIWYG_DIAGRAM_DEFERRAL exists and defaults to true', () => {
+    expect(WYSIWYG_DIAGRAM_DEFERRAL).toBe(true)
+  })
+
+  test('030-A2: with WYSIWYG_DIAGRAM_DEFERRAL false, every WYSIWYG preview renders at once while typing', () => {
+    deferralOn.value = false
+    const r = rig(para('a') + fresh('mermaid') + fresh('js') + para('b'))
+    try {
+      caretIn(r.root.children[1].querySelector('code') as Element)
+      markEditActivity()
+      r.run()
+      expect(r.calls).toEqual([r.previewOf(1), r.previewOf(2)])
+    } finally {
+      deferralOn.value = true
+      r.dispose()
+    }
+  })
+
+  // 030-A3: with no live feed (the shipped WYSIWYG state), the first key of a burst snapshots only the
+  // caret's top-level block and its two neighbours. The hidden IR root keeps the document's IR form, as
+  // after a switch, so a whole-root walk of either root grows with the factor.
+  const a3Nodes = new Map<Factor, number>()
+  const A3_FACTORS: readonly Factor[] = [1, 4]
+  for (const factor of A3_FACTORS) {
+    test(`030-A3: no live feed, factor ${factor}: the first key snapshots the caret window only`, () => {
+      let far = ''
+      let irFar = ''
+      for (let i = 0; i < 20 * factor; i++) {
+        far += para(`p${i}`)
+        irFar += para(`p${i}`)
+        if (i % 5 === 4) {
+          far += rendered('graphviz')
+          irFar += irRendered('graphviz')
+        }
+      }
+      const r = rig(para('a') + rendered('mermaid') + para('b') + far, {
+        live: false,
+        irHtml: para('a') + irRendered('mermaid') + para('b') + irFar,
+      })
+      // With no live feed, the mode root comes from the editor instance: WYSIWYG is the current mode.
+      const win = window as unknown as { vditor?: unknown }
+      win.vditor = {
+        vditor: { currentMode: 'wysiwyg', wysiwyg: { element: r.root } },
+      }
+      const measured: Element[] = []
+      const original = Element.prototype.getBoundingClientRect
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+        function (this: Element) {
+          measured.push(this)
+          return original.call(this)
+        },
+      )
+      try {
+        caretIn(r.root.children[0])
+        const { counts } = countBudget(r.root, () => markEditActivity())
+        a3Nodes.set(factor, counts.queriedNodes)
+        const near = r.root.children[1].querySelector(
+          '.vditor-wysiwyg__preview .language-mermaid',
+        )
+        const farRegion = r.root.querySelector(
+          '.vditor-wysiwyg__block:last-of-type .vditor-wysiwyg__preview .language-graphviz',
+        )
+        expect(measured, 'the near diagram is measured').toContain(near)
+        expect(measured, 'no far diagram is measured').not.toContain(farRegion)
+      } finally {
+        win.vditor = undefined
+        r.dispose()
+      }
+    })
+  }
+
+  test('030-A3: the no-feed first-key snapshot queries the same nodes at factors 1 and 4', () => {
+    expect(a3Nodes.get(1)).toBeDefined()
+    expect(a3Nodes.get(4)).toBe(a3Nodes.get(1))
   })
 })

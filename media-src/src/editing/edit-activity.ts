@@ -27,6 +27,7 @@ import { processAfterRender } from 'vditor/src/ts/ir/process'
 import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import { engineLangSet } from '../diagram-kit/engine-registry'
 import { isCompositionActive } from '../util/caret-gesture'
+import { activeModeElement } from '../util/source-map'
 import {
   isPrimaryPointerHeld,
   requestCaret,
@@ -40,6 +41,7 @@ import {
   type DefinitionContext,
   type LiveUnit,
   unitFeedOf,
+  WYSIWYG_DIAGRAM_DEFERRAL,
 } from '../util/unit-changes'
 import { definitionContextProvider } from './unit-spin'
 
@@ -665,19 +667,52 @@ const OVERLAY_CLASS = 'vmde-stale-overlay'
 // the preview mid-typing → content below jumped up, then back down on swap (user-reported for abc).
 const renderCache = new Map<string, { html: string; h: number }>()
 
-function irRoot(): HTMLElement | null {
-  // Task 733 / 012-15: while the model is live its feed names the IR root, so no document query runs.
-  // `.vditor-ir` is the wrapper of that root; the scoped helpers below compare against the feed root.
+/** Task 733 / 030: the selectors of one editing mode's code blocks. */
+interface ModeShape {
+  readonly mode: 'ir' | 'wysiwyg'
+  readonly block: string
+  readonly source: string
+  readonly preview: string
+}
+const IR_SHAPE: ModeShape = {
+  mode: 'ir',
+  block: '.vditor-ir__node[data-type="code-block"]',
+  source: '.vditor-ir__marker--pre code',
+  preview: '.vditor-ir__preview',
+}
+const WYSIWYG_SHAPE: ModeShape = {
+  mode: 'wysiwyg',
+  block: '.vditor-wysiwyg__block[data-type="code-block"]',
+  source: 'pre.vditor-wysiwyg__pre > code',
+  preview: '.vditor-wysiwyg__preview',
+}
+
+/** The shape of the mode that `root` belongs to; no allocation. */
+const shapeOf = (root: Element): ModeShape =>
+  root.closest('.vditor-wysiwyg') ? WYSIWYG_SHAPE : IR_SHAPE
+
+function modeRoot(): HTMLElement | null {
+  // Task 733 / 012-15: while the model is live its feed names the mode root, so no document query runs.
+  // `.vditor-ir` is the wrapper of the IR root; the scoped helpers below compare against the feed root.
+  // Task 733 / 030: without a live feed, WYSIWYG answers its own element; every other mode keeps IR's.
   const feed = unitFeedOf(window)
   if (feed?.isLive()) return feed.root
+  const vditor = (window as unknown as { vditor?: unknown }).vditor
+  if (
+    (vditor as { vditor?: { currentMode?: string } } | undefined)?.vditor
+      ?.currentMode === 'wysiwyg'
+  ) {
+    const wysiwyg = activeModeElement(vditor)
+    if (wysiwyg) return wysiwyg
+  }
   return document.querySelector('.vditor-ir')
 }
 
-// The language always lives on the editable SOURCE code (`.vditor-ir__marker--pre code.language-X`),
-// which persists whether the preview is raw or rendered — unlike the preview's firstElementChild,
-// which becomes the <svg> once rendered.
-function nodeLang(node: Element): string {
-  const code = node.querySelector('.vditor-ir__marker--pre code')
+// The language always lives on the editable SOURCE code (`.vditor-ir__marker--pre code.language-X`,
+// WYSIWYG `pre.vditor-wysiwyg__pre > code.language-X`), which persists whether the preview is raw or
+// rendered — unlike the preview's firstElementChild, which becomes the <svg> once rendered.
+function nodeLang(node: Element, shape: ModeShape): string {
+  const code = node.querySelector(shape.source)
   const m =
     code && /(?:^|\s)language-([\w-]+)/.exec((code as HTMLElement).className)
   return m ? m[1] : ''
@@ -688,13 +723,11 @@ function nodeLang(node: Element): string {
 // per-node `ordinalOf` was O(n²) in code-block count and ran on the typing-burst critical path on
 // diagram-heavy docs (task 171 item 3). Same semantics as before: count nodes of the SAME lang before
 // each one. Keys the renderCache (`${lang}#${ord}`), so the per-lang counter must stay consistent.
-function ordinalMap(root: HTMLElement): Map<Element, number> {
+function ordinalMap(root: HTMLElement, shape: ModeShape): Map<Element, number> {
   const counts = new Map<string, number>()
   const out = new Map<Element, number>()
-  for (const n of Array.from(
-    root.querySelectorAll('.vditor-ir__node[data-type="code-block"]'),
-  )) {
-    const lang = nodeLang(n)
+  for (const n of Array.from(root.querySelectorAll(shape.block))) {
+    const lang = nodeLang(n, shape)
     const i = counts.get(lang) ?? 0
     out.set(n, i)
     counts.set(lang, i + 1)
@@ -702,9 +735,63 @@ function ordinalMap(root: HTMLElement): Map<Element, number> {
   return out
 }
 
-function previewOf(node: Element): HTMLElement | null {
-  return node.querySelector('.vditor-ir__preview')
+/** The `lang` code blocks of `el`: itself when it is one, else the ones inside it. */
+function langBlocksIn(el: Element, lang: string, shape: ModeShape): number {
+  if (el.matches(shape.block)) return nodeLang(el, shape) === lang ? 1 : 0
+  // A table cell holds inline content only, so a table holds no code block: no query of its rows.
+  if (el.localName === 'table') return 0
+  let count = 0
+  for (const inner of Array.from(el.querySelectorAll(shape.block)))
+    if (nodeLang(inner, shape) === lang) count++
+  return count
 }
+
+/** The `lang` code blocks inside `top` before `node`; -1 when `node` is not inside `top`. */
+function langBlocksBefore(
+  top: Element,
+  node: Element,
+  lang: string,
+  shape: ModeShape,
+): number {
+  let count = 0
+  for (const inner of Array.from(top.querySelectorAll(shape.block))) {
+    if (inner === node) return count
+    if (nodeLang(inner, shape) === lang) count++
+  }
+  return -1
+}
+
+/** The ordinal of `node` among the `lang` code blocks before it, reading only the content before it,
+ * so a snapshot of the caret window does not walk the rest of the root (Task 733 / 030, A3). The
+ * ordinal equals `ordinalMap`'s; -1 when `node` is not in `root`. */
+function ordinalBefore(
+  root: HTMLElement,
+  node: Element,
+  lang: string,
+  shape: ModeShape,
+): number {
+  let top: Element | null = node
+  while (top && top.parentElement !== root) top = top.parentElement
+  if (!top) return -1
+  let ord = 0
+  for (
+    let el = root.firstElementChild;
+    el && el !== top;
+    el = el.nextElementSibling
+  )
+    ord += langBlocksIn(el, lang, shape)
+  if (top === node) return ord
+  const inside = langBlocksBefore(top, node, lang, shape)
+  return inside < 0 ? -1 : ord + inside
+}
+
+function previewOf(node: Element, shape: ModeShape): HTMLElement | null {
+  return node.querySelector(shape.preview)
+}
+
+/** The render cache key: the mode, because the same diagram can lay out at another size in each mode. */
+const cacheKey = (shape: ModeShape, lang: string, ord: number): string =>
+  `${shape.mode}:${lang}#${ord}`
 
 // The diagram render lives INSIDE the `.language-X` wrapper. Scope to that — other svgs in the preview
 // are Vditor UI (the copy-code button is `<svg><use #vditor-icon-copy>`), which must NOT be treated as
@@ -754,15 +841,21 @@ function visualSnapshot(preview: Element): { html: string; h: number } | null {
 // processCodeRender loop (before paint) → no flicker to raw source. The overlay is appended AFTER the
 // source <code> (which stays firstElementChild, so processCodeRender's language switch still works) and
 // carries data-render="1" so Lute never serialises it.
-function restoreOverlay(node: Element, lang: string, ord: number): void {
-  const preview = previewOf(node)
+function restoreOverlay(
+  node: Element,
+  lang: string,
+  ord: number,
+  shape: ModeShape,
+): void {
+  const preview = previewOf(node, shape)
   if (!preview) return
   preview.classList.remove(COVER_CLASS)
   if (preview.querySelector(`.${OVERLAY_CLASS}`)) {
     preview.classList.add(STALE_CLASS)
     return
   }
-  const cached = ord >= 0 ? renderCache.get(`${lang}#${ord}`) : undefined
+  const cached =
+    ord >= 0 ? renderCache.get(cacheKey(shape, lang, ord)) : undefined
   if (!cached) return // nothing cached yet (first keystroke before any render) → raw shows briefly
   const overlay = document.createElement('div')
   overlay.className = OVERLAY_CLASS
@@ -790,15 +883,18 @@ function revealPreview(preview: Element): void {
 // "deferred" state into the "cover" state (source child visible + sized so echarts/three can measure
 // the container and flowchart.js can measure its text; the opaque overlay still hides it). The
 // non-measuring SVG previews stay deferred (they render fine while hidden).
+// Task 733 / 030 (A1): exported with no parameter, because the custom diagram settle calls it; it reads
+// the mode root and its shape. The IR and WYSIWYG settles call `settleMeasuring` directly.
 export function beginSettleRender(): void {
-  const root = irRoot()
-  if (!root) return
-  for (const node of Array.from(
-    root.querySelectorAll('.vditor-ir__node[data-type="code-block"]'),
-  )) {
-    const lang = nodeLang(node)
+  const root = modeRoot()
+  if (root) settleMeasuring(root, shapeOf(root))
+}
+
+function settleMeasuring(root: HTMLElement, shape: ModeShape): void {
+  for (const node of Array.from(root.querySelectorAll(shape.block))) {
+    const lang = nodeLang(node, shape)
     if (!MEASURE_LANGS.has(lang)) continue
-    const preview = previewOf(node)
+    const preview = previewOf(node, shape)
     if (preview?.classList.contains(STALE_CLASS)) {
       preview.classList.remove(STALE_CLASS)
       preview.classList.add(COVER_CLASS)
@@ -812,7 +908,7 @@ let revealRaf = 0
 let revealDeadline = 0
 function revealTick(): void {
   revealRaf = 0
-  const root = irRoot()
+  const root = modeRoot()
   if (!root) return
   if (isTyping()) {
     // a new burst started — don't swap mid-typing; restoreOverlay handles the visuals, just wait.
@@ -844,7 +940,6 @@ export function scheduleReveal(): void {
 // Task 733 / 013: a mode root holds the previews of its own mode only, so both mode classes match.
 const FRESH_PREVIEW =
   ".vditor-ir__preview[data-render='2'], .vditor-wysiwyg__preview[data-render='2']"
-const CODE_BLOCK = '.vditor-ir__node[data-type="code-block"]'
 const NO_PREVIEWS: readonly HTMLElement[] = Object.freeze([])
 // Previews skipped while typing; rendered at settle. Pruned when rendered, disconnected or no
 // longer fresh (scopedPreviews), and cleared at settle.
@@ -979,16 +1074,39 @@ function deferPreview(
   node: Element | null,
   lang: string,
   ords: () => Map<Element, number>,
+  shape: ModeShape,
 ): void {
-  if (node) restoreOverlay(node, lang, ords().get(node) ?? -1)
+  if (node) restoreOverlay(node, lang, ords().get(node) ?? -1, shape)
   deferredPreviews.add(preview)
+}
+
+/** The settle of a typing burst in `element` (re-read by the caller at the settle, R-1): the measuring
+ * previews go to the cover state, then each deferred preview renders once, then the overlays swap out. */
+function settleDeferred(
+  element: HTMLElement,
+  shape: ModeShape,
+  render: (el: HTMLElement) => void,
+): void {
+  settleMeasuring(element, shape) // canvas previews → cover mode (visible+sized under the overlay)
+  // Live, the deferred previews; otherwise the whole root as before.
+  const settled = liveFeedOf(element)
+    ? Array.from(deferredPreviews).filter(
+        (it) =>
+          it.isConnected && element.contains(it) && it.matches(FRESH_PREVIEW),
+      )
+    : Array.from(element.querySelectorAll<HTMLElement>(FRESH_PREVIEW))
+  deferredPreviews.clear()
+  for (const it of settled) render(it)
+  scheduleReveal() // swap each overlay out when its new render lands
 }
 
 /**
  * Task 733 / 013 (Q-122): the WYSIWYG branch, called from the patched wysiwyg/input.ts preview loop
- * (V-W4). While the feed is live it renders only the fresh previews of the spun window and the ones
- * still pending, else every fresh preview of the root, as the stock loop does. It defers nothing:
- * the cached overlay that hides a skipped render is built for the IR node shape.
+ * (V-W4). While the feed is live it looks only at the fresh previews of the spun window and the ones
+ * still pending, else at every fresh preview of the root, as the stock loop does.
+ * Task 733 / 030 (Q-190): while typing, a diagram preview is deferred as in IR: the cached WYSIWYG
+ * overlay shows, and the native engines render once at the settle. `WYSIWYG_DIAGRAM_DEFERRAL` false
+ * renders every preview at once.
  */
 function renderWysiwygPreviews(
   vditor: { wysiwyg?: { element?: HTMLElement } },
@@ -999,10 +1117,34 @@ function renderWysiwygPreviews(
   const previews =
     scopedPreviews(root) ??
     Array.from(root.querySelectorAll<HTMLElement>(FRESH_PREVIEW))
+  const typing = WYSIWYG_DIAGRAM_DEFERRAL && isTyping()
+  // The ordinal walk and its closure exist only once a preview is deferred.
+  let ordinals: Map<Element, number> | undefined
+  let ords: (() => Map<Element, number>) | undefined
+  let deferredNative = false
   for (const preview of previews) {
+    const node = typing ? preview.closest(WYSIWYG_SHAPE.block) : null
+    const lang = node ? nodeLang(node, WYSIWYG_SHAPE) : ''
+    if (typing && CACHED.has(lang)) {
+      ords ??= () => {
+        ordinals ??= ordinalMap(root, WYSIWYG_SHAPE)
+        return ordinals
+      }
+      deferPreview(preview, node, lang, ords, WYSIWYG_SHAPE)
+      if (NATIVE_DEFER.has(lang)) deferredNative = true
+      continue
+    }
     deferredPreviews.delete(preview)
     processCodeRender(preview, vditor)
   }
+  if (deferredNative)
+    deferUntilSettle('wysiwyg-native-diagrams', () => {
+      const element = vditor.wysiwyg?.element
+      if (element)
+        settleDeferred(element, WYSIWYG_SHAPE, (it) =>
+          processCodeRender(it, vditor),
+        )
+    })
 }
 
 function deferIrDiagramRender(
@@ -1026,15 +1168,15 @@ function deferIrDiagramRender(
   // and only when a preview is actually deferred (task 733 / 009)
   let ordinals: Map<Element, number> | undefined
   const ords = (): Map<Element, number> => {
-    if (!ordinals) ordinals = ordinalMap(root)
+    if (!ordinals) ordinals = ordinalMap(root, IR_SHAPE)
     return ordinals
   }
   let deferredNative = false
   for (const preview of previews) {
     const node = preview.closest('.vditor-ir__node')
-    const lang = node ? nodeLang(node) : ''
+    const lang = node ? nodeLang(node, IR_SHAPE) : ''
     if (isTyping() && CACHED.has(lang)) {
-      deferPreview(preview, node, lang, ords)
+      deferPreview(preview, node, lang, ords, IR_SHAPE)
       if (NATIVE_DEFER.has(lang)) deferredNative = true
       continue // skip the heavy render this keystroke
     }
@@ -1043,36 +1185,30 @@ function deferIrDiagramRender(
   }
   if (deferredNative) {
     deferUntilSettle('ir-native-diagrams', () => {
-      beginSettleRender() // canvas previews → cover mode (visible+sized under the overlay)
-      const element = vditor.ir.element
-      // Re-read at settle (R-1): live, the deferred previews; otherwise the whole root as before.
-      const settled = liveFeedOf(element)
-        ? Array.from(deferredPreviews).filter(
-            (it) =>
-              it.isConnected &&
-              element.contains(it) &&
-              it.matches(FRESH_PREVIEW),
-          )
-        : Array.from(element.querySelectorAll<HTMLElement>(FRESH_PREVIEW))
-      deferredPreviews.clear()
-      for (const it of settled) processCodeRender(it, vditor)
-      scheduleReveal() // swap each overlay out when its new render lands
+      // Re-read at settle (R-1).
+      settleDeferred(vditor.ir.element, IR_SHAPE, (it) =>
+        processCodeRender(it, vditor),
+      )
     })
   }
 }
 
 /** Live: the code blocks the coming spin can replace (the caret's top-level element and its two
- * neighbours); undefined: every code block of the root. */
-function codeBlocksNearCaret(root: HTMLElement): Element[] | undefined {
-  if (!liveFeedOf(root)) return undefined
+ * neighbours); undefined: every code block of the root. Task 733 / 030 (A3): WYSIWYG keeps the caret
+ * window with no live feed too, so the first-key snapshot stays bounded in the shipped state. */
+function codeBlocksNearCaret(
+  root: HTMLElement,
+  shape: ModeShape,
+): Element[] | undefined {
+  if (shape !== WYSIWYG_SHAPE && !liveFeedOf(root)) return undefined
   const top = caretTopOf(root)
   if (!top) return undefined
   const found: Element[] = []
   for (const el of [top.previousElementSibling, top, top.nextElementSibling]) {
     // A table cell holds inline content only, so a table holds no code block: no query of its rows.
     if (!el || el.localName === 'table') continue
-    if (el.matches(CODE_BLOCK)) found.push(el)
-    for (const node of Array.from(el.querySelectorAll(CODE_BLOCK)))
+    if (el.matches(shape.block)) found.push(el)
+    for (const node of Array.from(el.querySelectorAll(shape.block)))
       found.push(node)
   }
   return found
@@ -1082,27 +1218,39 @@ function codeBlocksNearCaret(root: HTMLElement): Element[] | undefined {
 // isn't typing AND the preview isn't one of our overlays (so we never cache the stale image we
 // injected). Read-only — it can't loop the observer. rAF-coalesced so the open-time render burst
 // doesn't pay per-mutation.
+/** The snapshot of a preview that shows its own render (not one of our deferred or cover states). */
+function idleSnapshot(
+  preview: HTMLElement | null,
+): { html: string; h: number } | null {
+  if (
+    !preview ||
+    preview.classList.contains(STALE_CLASS) ||
+    preview.classList.contains(COVER_CLASS)
+  )
+    return null
+  return visualSnapshot(preview)
+}
+
 function snapshotRenders(): void {
-  const root = irRoot()
+  const root = modeRoot()
   if (!root || isTyping()) return
-  const nodes =
-    codeBlocksNearCaret(root) ?? Array.from(root.querySelectorAll(CODE_BLOCK))
+  const shape = shapeOf(root)
+  const near = codeBlocksNearCaret(root, shape)
+  const nodes = near ?? Array.from(root.querySelectorAll(shape.block))
   let ords: Map<Element, number> | undefined // one walk, not one per node (task 171 item 3)
   for (const node of nodes) {
-    const lang = nodeLang(node)
+    const lang = nodeLang(node, shape)
     if (!CACHED.has(lang)) continue
-    const preview = previewOf(node)
-    if (
-      !preview ||
-      preview.classList.contains(STALE_CLASS) ||
-      preview.classList.contains(COVER_CLASS)
-    )
-      continue
-    const snap = visualSnapshot(preview)
+    const snap = idleSnapshot(previewOf(node, shape))
     if (!snap) continue
-    ords ??= ordinalMap(root)
-    const ord = ords.get(node) ?? -1
-    if (ord >= 0) renderCache.set(`${lang}#${ord}`, snap)
+    // The caret window holds at most three blocks: each reads only the content before it (A3).
+    let ord: number
+    if (near) ord = ordinalBefore(root, node, lang, shape)
+    else {
+      ords ??= ordinalMap(root, shape)
+      ord = ords.get(node) ?? -1
+    }
+    if (ord >= 0) renderCache.set(cacheKey(shape, lang, ord), snap)
   }
 }
 
