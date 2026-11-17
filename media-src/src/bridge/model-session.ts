@@ -975,6 +975,13 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         const unit = built.unitOf(el)
         return unit ? built.text.slice(unit.start, unit.end) : undefined
       },
+      // Task 733 / 021: the kind of the unit whose element is `el` (a row has no live kind).
+      kindOf: (el) => {
+        const unit = built.unitOf(el)
+        if (!unit || (unit.el ?? unit.members[0]) !== el || unit.kind === 'row')
+          return undefined
+        return unit.kind
+      },
       rerender: (el, context) =>
         rerenderUnit(built, unitDom, root, el, context),
       setFootnoteTooltip: (el, label, tooltip) => {

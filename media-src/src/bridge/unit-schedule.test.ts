@@ -96,6 +96,7 @@ interface Rig {
     active: boolean
     viewportCalls: number
     serialized: Map<U, string>
+    opaque: Set<U>
   }
   deps: UnitScheduleDeps
 }
@@ -149,6 +150,8 @@ function rig(count: number): Rig {
     active: true,
     viewportCalls: 0,
     serialized: new Map<U, string>(),
+    /** Task 733 / 021: units whose proof finds a different serialized text (the model's `opaque`). */
+    opaque: new Set<U>(),
   }
   const deps: UnitScheduleDeps = {
     model: {
@@ -157,6 +160,10 @@ function rig(count: number): Rig {
       prove: (unit) => {
         clock.t += 1
         if (!options.luteReady) return 'none'
+        if (options.opaque.has(unit)) {
+          unit.proof = 'opaque'
+          return 'opaque'
+        }
         unit.proof = 'proven'
         unit.html = unit.el?.outerHTML
         unit.canon = `canon ${unit.el?.textContent ?? ''}`
@@ -464,12 +471,15 @@ describe('pre-touch proof', () => {
     expect(r.schedule.lastFallbackReason()).toBe('unproven-selection')
   })
 
+  // Task 733 / 021 (Q-187): a dirty unit is refused only when its serialized text changed.
   it('falls back for a dirty unit that is not proven', () => {
     const r = rig(4)
     r.units[2].dirty = true
+    r.options.opaque.add(r.units[2])
     expect(r.schedule.proveForSelection(select(r.units[2].el as Element))).toBe(
       'fallback',
     )
+    expect(r.schedule.lastFallbackReason()).toBe('unproven-selection')
     expect(r.proofs).toHaveLength(0)
   })
 
@@ -1316,5 +1326,20 @@ describe('013 B-09 WYSIWYG proofs in frame slices', () => {
       for (const unit of whole.model.units) whole.model.prove(unit)
       expect(canons(sliced.model.units)).toEqual(canons(whole.model.units))
     }, 120_000)
+  })
+})
+
+// Task 733 / 021 (Q-187, D-4): the first key's caret text split (the first-position record) marks an
+// unproven unit dirty before the pre-touch proof runs. A dirty unit whose serialized text is unchanged
+// is proven, so the edit that follows publishes a delta. Fails before the repair: `fallback`.
+describe('021: pre-touch proof of a dirty unit', () => {
+  it('proves a dirty unit whose serialized text is unchanged, and that unit only', () => {
+    const r = rig(4)
+    r.units[2].dirty = true
+    const range = document.createRange()
+    range.selectNodeContents(r.units[2].el as Element)
+    expect(r.schedule.proveForSelection(range)).toBe('proven')
+    expect(r.units[2].proof).toBe('proven')
+    expect(r.proofs).toEqual([r.units[2]])
   })
 })

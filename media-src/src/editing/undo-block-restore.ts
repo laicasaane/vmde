@@ -114,8 +114,10 @@ function attributeShape(el: Element, history = false): string {
 // The semantic wrapper the inline-HTML presentation (editing/html-subscript.ts) puts around an
 // authored `<sub>`, `<sup>`, `<ins>` or `<a>` body while the caret is elsewhere. Lute never sees it
 // (it is stripped before every Lute call), so the unit history's projection reads through it.
+// Task 733 / 021 (Q-187): the bare-URL span (links/bare-url-decorate.ts) is a decoration Lute
+// serializes through; a decoration written after an Undo must not refuse the Redo.
 const PRESENTATION_WRAPPER =
-  '[data-vmde-html-subscript],[data-vmde-html-superscript],[data-vmde-html-underline],[data-vmde-html-link]'
+  '[data-vmde-html-subscript],[data-vmde-html-superscript],[data-vmde-html-underline],[data-vmde-html-link],span.vmde-bare-url'
 
 // The Lute-visible shape of a node, in document order. Adjacent text is concatenated, so a text node
 // split by a wrap-hint span or a removed marker projects the same as the unsplit one. `presentation`

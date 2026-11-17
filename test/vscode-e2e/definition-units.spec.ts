@@ -214,15 +214,18 @@ test.describe('definition units (task 733 / 017)', () => {
     expect((await modelStats(frame))?.offReason).toBeUndefined()
   })
 
-  for (const [name, selector, needle] of [
-    ['a referencing paragraph', '.vditor-reset > p', 'First paragraph'],
-    ['a table cell', 'td', 'see '],
-    ['a list item', 'li', 'list item 1 with'],
-    ['a definition', '[data-type="link-ref-defs-block"]', '[guide]'],
+  // Task 733 / 021 (S-1): `shift` is how far the typing moves `[guide]: `. Only the first paragraph comes
+  // before that definition; the needle cannot tell (the definition's needle also occurs in that paragraph).
+  for (const [name, selector, needle, shift] of [
+    ['a referencing paragraph', '.vditor-reset > p', 'First paragraph', 3],
+    ['a table cell', 'td', 'see ', 0],
+    ['a list item', 'li', 'list item 1 with', 0],
+    ['a definition', '[data-type="link-ref-defs-block"]', '[guide]', 0],
     [
       'a footnote definition',
       '[data-type="footnotes-def"] p',
       'The first note.',
+      0,
     ],
   ] as const) {
     test(`typing in ${name} publishes deltas without whole-document work`, async ({
@@ -261,7 +264,9 @@ test.describe('definition units (task 733 / 017)', () => {
       expect(saved.length).toBe(FIXTURE.length + 3)
       expect(saved).toContain('qrs')
       expect(saved).toContain(DEFINITION_LINES.spec)
-      expect(saved.indexOf('[guide]: ')).toBe(FIXTURE.indexOf('[guide]: '))
+      expect(saved.indexOf('[guide]: ')).toBe(
+        FIXTURE.indexOf('[guide]: ') + shift,
+      )
       expect((await modelStats(frame))?.state).toBe('live')
     })
   }

@@ -1609,3 +1609,38 @@ describe('020 WYSIWYG code highlight spans are no source', () => {
     expect(restored.textContent).toBe('const a = 1\n')
   })
 })
+
+// Task 733 / 021 (Q-187, D-3a): after an Undo the bare-URL decorator (links/bare-url-decorate.ts) wraps
+// a URL of the restored block in `span.vmde-bare-url`. Lute serializes through that span, so the
+// history key reads through it as it does through a wrap-hint span, and the Redo is not refused.
+// Fails before the repair: the Redo restore answers false.
+describe('021: a bare-URL decoration written after the Undo', () => {
+  it('Redo restores the block whose URL was decorated', () => {
+    const doc = 'See https://example.com/x here.\n\nbeta\n'
+    const r = open(doc)
+    expect(r.port.capture()).toBeUndefined()
+    const p = r.root.querySelector('p') as HTMLElement
+    typeInto(p, 'Saw https://example.com/x here.')
+    const capture = r.port.capture() as HistoryCapture
+    expect(capture).toBeDefined()
+    const edited = r.sync()
+    expect(edited).toContain('Saw https://example.com/x')
+    expect(r.port.restore(capture, 'before')).toBe(true)
+    expect(r.sync()).toBe(doc)
+    // The decorator's write: the URL text split out into its own span.
+    writeQuietly(() => {
+      const block = r.root.querySelector('p') as HTMLElement
+      const text = block.firstChild as Text
+      const url = text.splitText('See '.length)
+      url.splitText('https://example.com/x'.length)
+      const span = document.createElement('span')
+      span.className = 'vmde-bare-url'
+      span.setAttribute('data-bare-url', '1')
+      span.setAttribute('data-bare-url-href', 'https://example.com/x')
+      url.replaceWith(span)
+      span.append(url)
+    })
+    expect(r.port.restore(capture, 'after')).toBe(true)
+    expect(r.sync()).toBe(edited)
+  })
+})

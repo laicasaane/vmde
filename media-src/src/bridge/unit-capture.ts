@@ -472,6 +472,15 @@ function elementsFrom(
   return out
 }
 
+/**
+ * Task 733 / 021 (D-3a, D-3c): a footnote definition lives in its footnotes block as an item lives in
+ * its list, so the capture treats both kinds as items of a top-level container.
+ */
+const isItemKind = (kind: U['kind']): boolean =>
+  kind === 'list-item' || kind === 'footnote'
+const isFootnotesBlock = (el: Element): boolean =>
+  el.getAttribute('data-type') === 'footnotes-block'
+
 /** True when every child node of `list` is an `li` element (no text, no other element). */
 function onlyItems(list: HTMLElement): boolean {
   if (list.childNodes.length !== list.children.length) return false
@@ -677,23 +686,39 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
    */
   function listsOf(units: readonly U[]): Array<HTMLElement | undefined> {
     const lists: Array<HTMLElement | undefined> = units.map((unit) =>
-      unit.kind === 'list-item'
-        ? (unit.el?.parentElement ?? undefined)
-        : undefined,
+      isItemKind(unit.kind) ? (unit.el?.parentElement ?? undefined) : undefined,
     )
-    let carried: HTMLElement | undefined
-    for (let at = 0; at < units.length; at += 1) {
-      if (units[at].kind !== 'list-item') carried = undefined
-      else if (lists[at]) carried = lists[at]
-      else lists[at] = carried
-    }
-    carried = undefined
-    for (let at = units.length - 1; at >= 0; at -= 1) {
-      if (units[at].kind !== 'list-item') carried = undefined
-      else if (lists[at]) carried = lists[at]
-      else lists[at] = carried
-    }
+    carryLists(units, lists, 1)
+    carryLists(units, lists, -1)
     return lists
+  }
+
+  /**
+   * Gives each removed item the container of its nearest item in `step` direction; the carry holds
+   * only between items of the same kind (a list's items, a footnotes block's definitions).
+   */
+  function carryLists(
+    units: readonly U[],
+    lists: Array<HTMLElement | undefined>,
+    step: 1 | -1,
+  ): void {
+    let carried: HTMLElement | undefined
+    const first = step === 1 ? 0 : units.length - 1
+    for (let at = first; at >= 0 && at < units.length; at += step) {
+      if (!continuesRun(units, at, step)) carried = undefined
+      if (lists[at]) carried = lists[at]
+      else if (isItemKind(units[at].kind)) lists[at] = carried
+    }
+  }
+
+  /** The unit at `at` is an item of the same kind as the one before it in `step` direction. */
+  function continuesRun(
+    units: readonly U[],
+    at: number,
+    step: 1 | -1,
+  ): boolean {
+    const kind = units[at].kind
+    return isItemKind(kind) && units[at - step]?.kind === kind
   }
 
   function snapTable(
@@ -789,17 +814,17 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     // The model's text holds no bytes for a state it never synced: the model reads them from the DOM.
     if (entry.items.some((su) => su.ahead) || successors.has(entry.el))
       return undefined
-    if (first.kind === 'list-item') return entry.items.map(formOf)
+    if (isItemKind(first.kind)) return entry.items.map(formOf)
     return first.members.length === 1 ? formOf(first) : undefined
   }
 
   function entriesOf(snap: readonly SnapUnit[]): Entry[] | undefined {
     const entries: Entry[] = []
     for (const su of snap) {
-      const el = su.kind === 'list-item' ? su.list : su.members[0]
+      const el = isItemKind(su.kind) ? su.list : su.members[0]
       if (!el) return undefined
       const last = entries.at(-1)
-      if (su.kind === 'list-item' && last?.el === el) last.items.push(su)
+      if (isItemKind(su.kind) && last?.el === el) last.items.push(su)
       else entries.push({ el, items: [su] })
     }
     return entries
@@ -821,7 +846,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
 
   /** A list as it was: its shell and the HTML of each item that lived in it. */
   function thenOfEntry(entry: Entry): string | undefined {
-    if (entry.items[0].kind !== 'list-item') return thenOfSnap(entry.items[0])
+    if (!isItemKind(entry.items[0].kind)) return thenOfSnap(entry.items[0])
     const succeeded = successors.get(entry.el)
     if (succeeded !== undefined) return succeeded
     let html = openTag(entry.el)
@@ -879,7 +904,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     // Flatten to elements: a multi-member unit contributes every member.
     const flat: Array<{ el: HTMLElement; entry: Entry }> = []
     for (const entry of entries) {
-      if (entry.items[0].kind === 'list-item') {
+      if (isItemKind(entry.items[0].kind)) {
         flat.push({ el: entry.el, entry })
       } else {
         for (const member of entry.items[0].members)
@@ -888,8 +913,11 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     }
     const live = liveTop(root)
     // A list with a structure notice is part of the window even when its element is the same one.
+    // Task 733 / 021: a footnotes block sends no item-scoped notice; its definitions are compared.
     const same = (i: number, j: number): boolean =>
-      flat[i].el === live[j] && !changedLists.has(flat[i].el)
+      flat[i].el === live[j] &&
+      !changedLists.has(flat[i].el) &&
+      sameFootnotes(flat[i].entry)
     let start = 0
     while (start < flat.length && start < live.length && same(start, start)) {
       start += 1
@@ -907,7 +935,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     const unchanged = (i: number, j: number): boolean => {
       const entry = flat[i].entry
       const first = entry.items[0]
-      if (first.kind !== 'list-item' && first.members.length !== 1) return false
+      if (!isItemKind(first.kind) && first.members.length !== 1) return false
       const was = thenOfEntry(entry)
       if (was === undefined) return false
       const el = live[j]
@@ -999,7 +1027,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         forms,
       }
     }
-    if (unit.kind === 'list-item') {
+    if (isItemKind(unit.kind)) {
       return {
         kind: 'item',
         a: index,
@@ -1207,7 +1235,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     const next = nodes.length === 1 ? nodes[0] : undefined
     if (
       next instanceof HTMLElement &&
-      next.localName === 'li' &&
+      next.localName === li.localName &&
       deps.model()?.unitOf(li)?.proof === 'proven'
     ) {
       for (const name of li.getAttributeNames()) {
@@ -1361,7 +1389,11 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       return { kind: unit.kind, bytes: model.text.slice(unit.start, unit.end) }
     }
     return nodes.map((node) => {
-      if (node.localName !== 'ul' && node.localName !== 'ol')
+      if (
+        node.localName !== 'ul' &&
+        node.localName !== 'ol' &&
+        !isFootnotesBlock(node)
+      )
         return formOf(node)
       const items: Form[] = []
       for (const li of Array.from(node.children) as HTMLElement[]) {
@@ -1371,6 +1403,38 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       }
       return items
     })
+  }
+
+  /**
+   * Task 733 / 021 (D-3a): one form hand-over. A throw (a Lute failure) is reported and the form is
+   * skipped, so the restore finishes; the next sync serializes the element again and either syncs or
+   * falls back with `sync-error`.
+   */
+  function rememberForm(
+    model: TextModel<HTMLElement>,
+    el: HTMLElement,
+    kind: U['kind'],
+    bytes: string,
+  ): void {
+    try {
+      model.rememberElement(el, kind, bytes)
+    } catch (error) {
+      reportError(error, 'unit-history restore form')
+    }
+  }
+
+  /**
+   * Task 733 / 021: a footnotes entry is unchanged only when its block holds the same definitions, by
+   * count and identity; any other entry passes.
+   */
+  function sameFootnotes(entry: Entry): boolean {
+    const first = entry.items[0]
+    if (first.kind !== 'footnote') return true
+    const children = entry.el.children
+    if (children.length !== entry.items.length) return false
+    for (let k = 0; k < children.length; k += 1)
+      if (children[k] !== entry.items[k].members[0]) return false
+    return true
   }
 
   /**
@@ -1393,11 +1457,11 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         form.forEach((item, j) => {
           // An item a list restore kept in place (012-11) holds its bytes already: no item serialize.
           if (items[j] && !keptInPlace.has(items[j]))
-            model.rememberElement(items[j], 'list-item', item.bytes)
+            rememberForm(model, items[j], item.kind, item.bytes)
         })
       } else {
         const single = form as Form
-        model.rememberElement(el, single.kind, single.bytes)
+        rememberForm(model, el, single.kind, single.bytes)
       }
     })
   }

@@ -42,6 +42,11 @@ export interface DefinitionIndex {
 export interface DefinitionIndexDeps {
   units(): readonly LiveUnit[] | undefined
   bytesOf(el: HTMLElement): string | undefined
+  /**
+   * Task 733 / 021: the kind of the live unit whose element (first member, cell, item or footnote
+   * definition) is `el`; undefined for any other element. O(1), no allocation.
+   */
+  kindOf(el: HTMLElement): LiveUnit['kind'] | undefined
   /** A drained write of the unit's rendering; false when the unit is gone or dirty (R-1). */
   rerender(el: HTMLElement, context: DefinitionContext | undefined): boolean
   setFootnoteTooltip(el: HTMLElement, label: string, tooltip: string): void
@@ -110,6 +115,8 @@ export function createDefinitionIndex(
 
   const pendingLinks = new Set<string>()
   const pendingFootnotes = new Set<string>()
+  /** Task 733 / 021: footnote labels whose number stayed and whose tooltip changed. */
+  const pendingTooltips = new Set<string>()
   let dependents: HTMLElement[] = []
   let dependentCursor = 0
   let disposed = false
@@ -146,15 +153,20 @@ export function createDefinitionIndex(
     references.delete(el)
   }
 
-  const indexReferences = (unit: LiveUnit): void => {
-    forget(unit.el)
-    if (isDefinitionKind(unit.kind)) return
-    const found = referencedLabels(deps.bytesOf(unit.el) ?? '') ?? NO_REFERENCES
+  const indexReferences = (el: HTMLElement, kind: LiveUnit['kind']): void => {
+    forget(el)
+    if (isDefinitionKind(kind)) return
+    const found = referencedLabels(deps.bytesOf(el) ?? '') ?? NO_REFERENCES
     if (found === NO_REFERENCES) return
-    references.set(unit.el, found)
-    for (const label of found.links) addTo(byLink, label, unit.el)
-    for (const label of found.footnotes) addTo(byFootnote, label, unit.el)
+    references.set(el, found)
+    for (const label of found.links) addTo(byLink, label, el)
+    for (const label of found.footnotes) addTo(byFootnote, label, el)
   }
+
+  const hasPending = (): boolean =>
+    pendingLinks.size > 0 ||
+    pendingFootnotes.size > 0 ||
+    pendingTooltips.size > 0
 
   const referenceJob: BackgroundJob = {
     name: 'definition-references',
@@ -168,11 +180,11 @@ export function createDefinitionIndex(
       if (!units) return false
       while (referenceCursor < units.length) {
         if (budget.spent()) return true
-        indexReferences(units[referenceCursor++])
+        const unit = units[referenceCursor++]
+        indexReferences(unit.el, unit.kind)
       }
       referencesComplete = true
-      if (pendingLinks.size || pendingFootnotes.size)
-        deps.scheduler.post(dependentJob)
+      if (hasPending()) deps.scheduler.post(dependentJob)
       return false
     },
   }
@@ -195,6 +207,7 @@ export function createDefinitionIndex(
         deps.scheduler.post(referenceJob)
         return false
       }
+      if (pendingTooltips.size) retitlePending()
       if (pendingLinks.size || pendingFootnotes.size) collectDependents()
       return renderDependents(budget)
     },
@@ -204,24 +217,37 @@ export function createDefinitionIndex(
     while (dependentCursor < dependents.length) {
       if (budget.spent()) return true
       const el = dependents[dependentCursor++]
-      // R-1: a dependent that left the document is skipped; `rerender` refuses a dirty one.
+      // R-1: a dependent that left the document leaves the reference index; `rerender` refuses a
+      // dirty one.
       if (el.isConnected)
         deps.rerender(el, index.contextFor(deps.bytesOf(el) ?? ''))
+      else forget(el)
     }
     dependents = []
     dependentCursor = 0
     return false
   }
 
+  /** Task 733 / 021: writes the tooltip of every connected reference of each pending label. */
+  const retitlePending = (): void => {
+    for (const label of pendingTooltips) {
+      const info = footnoteInfo.get(label)
+      if (!info) continue
+      for (const ref of byFootnote.get(label) ?? [])
+        if (ref.isConnected) deps.setFootnoteTooltip(ref, label, info.tooltip)
+    }
+    pendingTooltips.clear()
+  }
+
   const queueDependents = (): void => {
-    if (pendingLinks.size === 0 && pendingFootnotes.size === 0) return
+    if (!hasPending()) return
     deps.scheduler.post(referencesComplete ? dependentJob : referenceJob)
   }
 
   const rebuild = (): void => {
     const units = deps.units()
     if (!units) return
-    indexDefinitions(units)
+    reindex()
     references.clear()
     byLink.clear()
     byFootnote.clear()
@@ -238,7 +264,7 @@ export function createDefinitionIndex(
       if (old.tooltip !== note.tooltip) retitle(el, note)
       return
     }
-    renumber()
+    reindex()
   }
 
   /** Only the text of a footnote changed: its references get the new tooltip. */
@@ -251,15 +277,84 @@ export function createDefinitionIndex(
       deps.setFootnoteTooltip(ref, note.label, note.tooltip)
   }
 
-  /** A footnote label or the order changed: every label whose number changed has stale references. */
-  const renumber = (): void => {
+  /**
+   * Definitions or footnotes may have moved (a label or the order changed, a whole change, a replaced
+   * element): everything is indexed again from the unit list, and the differences are queued. A
+   * definition label added or removed goes to `pendingLinks`; a footnote label added, removed or
+   * renumbered to `pendingFootnotes`; a footnote with the same number and a new tooltip to
+   * `pendingTooltips`.
+   */
+  const reindex = (): void => {
     const before = footnoteInfo
+    const labels = new Set(definitions.keys())
     const units = deps.units()
     if (units) indexDefinitions(units)
-    for (const [label, info] of footnoteInfo)
-      if (before.get(label)?.number !== info.number) pendingFootnotes.add(label)
+    queueLinkDifference(labels)
+    queueFootnoteDifference(before)
+  }
+
+  /** `labels` (the definition labels before, consumed): every label added or removed is pending. */
+  const queueLinkDifference = (labels: Set<string>): void => {
+    for (const label of definitions.keys())
+      if (!labels.delete(label)) pendingLinks.add(label)
+    for (const label of labels) pendingLinks.add(label)
+  }
+
+  const queueFootnoteDifference = (
+    before: ReadonlyMap<string, FootnoteInfo>,
+  ): void => {
+    for (const [label, info] of footnoteInfo) {
+      const old = before.get(label)
+      if (old?.number !== info.number) pendingFootnotes.add(label)
+      else if (old.tooltip !== info.tooltip) pendingTooltips.add(label)
+    }
     for (const label of before.keys())
       if (!footnoteInfo.has(label)) pendingFootnotes.add(label)
+  }
+
+  /** Task 733 / 021: an element in `labelOf` or `footnotes` left the document (removed or replaced). */
+  const hasDetached = (): boolean => {
+    for (const el of labelOf.keys()) if (!el.isConnected) return true
+    for (const note of footnotes) if (!note.el.isConnected) return true
+    return false
+  }
+
+  /** One scope of a structural change: true when it holds a definition or footnote. */
+  const rescanOne = (el: HTMLElement): boolean => {
+    const kind = deps.kindOf(el)
+    if (kind === 'definition' || kind === 'footnote') return true
+    if (kind !== undefined) {
+      if (referencesComplete) indexReferences(el, kind)
+      return false
+    }
+    if (el.getAttribute('data-type') === 'footnotes-block') return true
+    return referencesComplete && rescanChildren(el)
+  }
+
+  /** The children of a container scope (a list, a table row), one level down. */
+  const rescanChildren = (el: HTMLElement): boolean => {
+    let moved = false
+    for (
+      let child = el.firstElementChild;
+      child;
+      child = child.nextElementSibling
+    ) {
+      const kind = deps.kindOf(child as HTMLElement)
+      if (kind === 'definition' || kind === 'footnote') moved = true
+      else if (kind !== undefined) indexReferences(child as HTMLElement, kind)
+    }
+    return moved
+  }
+
+  /**
+   * Task 733 / 021 (D-3b): the scopes of a structural change (a restore, a spin, an Enter). A replaced
+   * referencing element is indexed under its new element; a replaced, added or removed definition or
+   * footnote re-indexes all of them.
+   */
+  const rescan = (scopes: readonly HTMLElement[]): void => {
+    let moved = hasDetached()
+    for (const el of scopes) if (rescanOne(el)) moved = true
+    if (moved) reindex()
   }
 
   const definitionChanged = (el: HTMLElement): void => {
@@ -308,6 +403,14 @@ export function createDefinitionIndex(
     return out
   }
 
+  const applyChanged = (changed: readonly LiveUnit[]): void => {
+    for (const unit of changed) {
+      if (unit.kind === 'definition') definitionChanged(unit.el)
+      else if (unit.kind === 'footnote') footnoteChanged(unit.el)
+      else if (referencesComplete) indexReferences(unit.el, unit.kind)
+    }
+  }
+
   const index: DefinitionIndex = {
     contextFor(source) {
       const labels = referencedLabels(source)
@@ -326,11 +429,9 @@ export function createDefinitionIndex(
         rebuild()
         return
       }
-      for (const unit of change.changed) {
-        if (unit.kind === 'definition') definitionChanged(unit.el)
-        else if (unit.kind === 'footnote') footnoteChanged(unit.el)
-        else if (referencesComplete) indexReferences(unit)
-      }
+      applyChanged(change.changed)
+      if (change.structural.length > 0)
+        rescan(change.scopes ?? change.structural)
       queueDependents()
     },
     dispose() {

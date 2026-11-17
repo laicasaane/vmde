@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import { definitionHeavyMarkdown } from '../../test/vscode-e2e/definition-heavy-markdown'
 import { expect, test } from './coverage-fixture'
 import { selectEditorText } from './editor-selection'
 import { hostStubState, installHostStub } from './helpers/host-stub'
@@ -919,4 +920,247 @@ test.describe('WYSIWYG, WYSIWYG_UNITS on', () => {
       await expect.poll(() => stubText(page)).toBe(CODE_END_EXPECTED)
       expect(CODE_END_EXPECTED).toHaveLength(39)
     })
+})
+
+// Task 733 / 021 (design 021 section 7.4): definition units on `definitionHeavyMarkdown(1)` with the ToC
+// option on. "The click" at (4, 4) of the IR surface is the first step of the real-VS-Code spec's caret
+// placement; above the front matter it adds and removes a view-only gap paragraph, which makes the next
+// sync a whole change (021-E T-1), so both paths stay covered.
+test.describe('Definitions, DEFINITION_UNITS on', () => {
+  test.describe.configure({ timeout: 90_000 })
+  const FIXTURE = definitionHeavyMarkdown(1)
+
+  async function openDefinitions(page: Page): Promise<void> {
+    await openSourceSet(page, 'definition', FIXTURE, { markdownToc: true })
+    await expect
+      .poll(async () => (await shadow(page))?.state, { timeout: 30_000 })
+      .toBe('live')
+  }
+
+  const proofsDone = (page: Page) =>
+    expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const s = (window as any).__vmdeModelShadowStats
+            return s.proven === s.units
+          }),
+        { timeout: 30_000, message: 'every unit proven' },
+      )
+      .toBe(true)
+
+  // Before the period: at the end of the text the caret resolves to the start of the next definition.
+  const NOTE_CARET = 14
+
+  const theClick = (page: Page) =>
+    page
+      .locator('.vditor-ir')
+      .first()
+      .click({ position: { x: 4, y: 4 } })
+
+  const resetFixtureCounters = (page: Page) =>
+    page.evaluate(
+      (length) => (window as any).__vmdeEditCounters.reset(length),
+      FIXTURE.length,
+    )
+
+  const modelInfo = (page: Page) =>
+    page.evaluate(() => {
+      const s = (window as any).__vmdeModelShadowStats
+      return {
+        state: s.state as string,
+        offReason: s.offReason as string | undefined,
+        unprovenFallbacks: (s.fallbacks?.['unproven-unit'] ?? 0) as number,
+        proven: s.proven as number,
+        units: s.units as number,
+      }
+    })
+
+  /** Rendered link references in the top-level block that holds `First paragraph`. */
+  const linkRefs = (page: Page) =>
+    page.evaluate(() => {
+      const root = document.querySelector('.vditor-ir .vditor-reset')
+      const block = Array.from(root?.children ?? []).find((el) =>
+        (el.textContent ?? '').includes('First paragraph'),
+      )
+      return block?.querySelectorAll('[data-type="link-ref"]').length ?? -1
+    })
+
+  const footnoteRef = (page: Page, label: string) =>
+    page.evaluate((l) => {
+      const sup = document.querySelector(
+        `.vditor-ir sup[data-footnotes-label="${l}"]`,
+      )
+      return {
+        tooltip: sup?.getAttribute('aria-label') ?? '',
+        number: sup?.querySelector('[data-render]')?.textContent ?? '',
+      }
+    }, label)
+
+  const footnoteDefinitions = (page: Page) =>
+    page.evaluate(
+      () =>
+        document.querySelector('.vditor-ir [data-type="footnotes-block"]')
+          ?.children.length ?? -1,
+    )
+
+  /** Renames `[guide]` to `[guidex]` with one key before its closing bracket. */
+  async function renameGuide(page: Page): Promise<void> {
+    await caretIn(page, '[guide]: https', 6)
+    await page.keyboard.type('x', { delay: 80 })
+    await expect
+      .poll(() => stubText(page))
+      .toContain('[guidex]: https://example.com/guide')
+  }
+
+  test('the live DOM holds the definition, footnote and toc blocks in source order (guard)', async ({
+    page,
+  }) => {
+    await openDefinitions(page)
+    const types = await page.evaluate(() =>
+      Array.from(
+        document.querySelector('.vditor-ir .vditor-reset')?.children ?? [],
+        (el) => el.getAttribute('data-type') ?? el.tagName.toLowerCase(),
+      ),
+    )
+    expect(types).toContain('toc-block')
+    expect(types.filter((t) => t === 'footnotes-block')).toHaveLength(2)
+    const defs = types.flatMap((t, i) =>
+      t === 'link-ref-defs-block' ? [i] : [],
+    )
+    expect(defs).toHaveLength(2)
+    expect(defs[0]).toBeLessThan(types.indexOf('table'))
+    expect((await modelInfo(page)).offReason).toBeUndefined()
+  })
+
+  for (const place of [
+    { name: 'the first paragraph', needle: 'First paragraph', offset: 5 },
+    { name: 'the see cell', needle: 'see [spec]', offset: 4 },
+    { name: 'a list item', needle: 'list item 1 with', offset: 4 },
+    { name: 'the guide definition', needle: '[guide]: https', offset: 10 },
+  ] as const) {
+    test(`one key in ${place.name} posts a delta the host accepts (guard)`, async ({
+      page,
+    }) => {
+      await openDefinitions(page)
+      await caretIn(page, place.needle, place.offset)
+      await resetFixtureCounters(page)
+      await page.keyboard.type('Q')
+      const typed =
+        place.needle.slice(0, place.offset) +
+        'Q' +
+        place.needle.slice(place.offset)
+      await expect.poll(() => stubText(page)).toContain(typed)
+      await page.waitForTimeout(SETTLE_MS)
+      const counters = await readCounters(page)
+      expect(counters.legacyEditPosts, 'legacyEditPosts').toBe(0)
+      expect(counters.luteDocument, 'luteDocument').toBe(0)
+      expect(counters.deltaPosts, 'deltaPosts').toBeGreaterThanOrEqual(1)
+      expect((await stubText(page)).length).toBe(FIXTURE.length + 1)
+      expect((await modelInfo(page)).state).toBe('live')
+    })
+  }
+
+  test('a label rename after the click re-renders the referencing paragraph (D-1)', async ({
+    page,
+  }) => {
+    await openDefinitions(page)
+    await proofsDone(page)
+    expect(await linkRefs(page)).toBe(1)
+    await theClick(page)
+    await renameGuide(page)
+    await expect.poll(() => linkRefs(page)).toBe(0)
+    expect((await fullCounters(page)).fallbackPublications).toBe(0)
+  })
+
+  test('a footnote edit after the click updates its tooltip and keeps its number (D-2)', async ({
+    page,
+  }) => {
+    await openDefinitions(page)
+    await proofsDone(page)
+    const before = await footnoteRef(page, '^note')
+    await theClick(page)
+    await caretIn(page, 'The first note.', NOTE_CARET)
+    await page.keyboard.type(' More', { delay: 80 })
+    await expect.poll(() => stubText(page)).toContain('The first note More.')
+    await expect
+      .poll(async () => (await footnoteRef(page, '^note')).tooltip)
+      .toContain('More')
+    expect((await footnoteRef(page, '^note')).number).toBe(before.number)
+  })
+
+  test('a footnote key right after the model goes live publishes a delta (D-4)', async ({
+    page,
+  }) => {
+    await openDefinitions(page)
+    await caretIn(page, 'The first note.', NOTE_CARET)
+    const atKey = await modelInfo(page)
+    test.info().annotations.push({
+      type: 'proven / units at the key',
+      description: `${atKey.proven} / ${atKey.units}`,
+    })
+    await resetFixtureCounters(page)
+    await page.keyboard.type('M')
+    await expect.poll(() => stubText(page)).toContain('The first noteM.')
+    await page.waitForTimeout(SETTLE_MS)
+    const info = await modelInfo(page)
+    expect(info.state, `model state (${info.offReason ?? ''})`).toBe('live')
+    expect(info.unprovenFallbacks, 'unproven-unit fallbacks').toBe(0)
+    expect((await readCounters(page)).deltaPosts).toBeGreaterThanOrEqual(1)
+  })
+
+  for (const click of [true, false]) {
+    test(`Undo and Redo of a rename ${click ? 'after the click (D-3a)' : 'with no click (D-3b)'} restore text and rendering`, async ({
+      page,
+    }) => {
+      await openDefinitions(page)
+      await proofsDone(page)
+      if (click) await theClick(page)
+      await renameGuide(page)
+      await page.waitForTimeout(SETTLE_MS)
+      await page.keyboard.press('Control+KeyZ')
+      await expect.poll(() => stubText(page)).toBe(FIXTURE)
+      expect(
+        (await fullCounters(page)).historyDeltaPosts,
+        'historyDeltaPosts',
+      ).toBeGreaterThanOrEqual(1)
+      await expect.poll(() => linkRefs(page)).toBe(1)
+      await page.waitForTimeout(SETTLE_MS)
+      await page.keyboard.press('Control+KeyY')
+      await expect.poll(() => stubText(page)).toContain('[guidex]: ')
+      await expect.poll(() => linkRefs(page)).toBe(0)
+      expect((await modelInfo(page)).state).toBe('live')
+    })
+  }
+
+  test('Undo and Redo of a footnote edit keep the footnotes block and the tooltip (D-3c)', async ({
+    page,
+  }) => {
+    await openDefinitions(page)
+    await proofsDone(page)
+    await caretIn(page, 'The first note.', NOTE_CARET)
+    await page.keyboard.type(' More', { delay: 80 })
+    await expect.poll(() => stubText(page)).toContain('The first note More.')
+    await page.waitForTimeout(SETTLE_MS)
+    await page.keyboard.press('Control+KeyZ')
+    await page.waitForTimeout(SETTLE_MS)
+    const afterUndo = await modelInfo(page)
+    test.info().annotations.push({
+      type: 'after Undo: model state, definitions in the first footnotes block',
+      description: `${afterUndo.state} ${afterUndo.offReason ?? ''} ${await footnoteDefinitions(page)}`,
+    })
+    await expect.poll(() => stubText(page)).toBe(FIXTURE)
+    expect(await footnoteDefinitions(page)).toBe(2)
+    await expect
+      .poll(async () => (await footnoteRef(page, '^note')).tooltip)
+      .toBe('The first note.')
+    expect((await modelInfo(page)).state).toBe('live')
+    await page.waitForTimeout(SETTLE_MS)
+    await page.keyboard.press('Control+KeyY')
+    await expect.poll(() => stubText(page)).toContain('The first note More.')
+    await expect
+      .poll(async () => (await footnoteRef(page, '^note')).tooltip)
+      .toContain('More')
+    expect((await modelInfo(page)).state).toBe('live')
+  })
 })

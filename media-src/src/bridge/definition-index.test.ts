@@ -35,6 +35,8 @@ interface DefinitionIndex {
 interface IndexDeps {
   units(): readonly LiveUnit[] | undefined
   bytesOf(el: HTMLElement): string | undefined
+  /** Task 733 / 021: the kind of the live unit whose element is `el`. */
+  kindOf(el: HTMLElement): LiveUnit['kind'] | undefined
   rerender(el: HTMLElement, context: DefinitionContext | undefined): boolean
   setFootnoteTooltip(el: HTMLElement, label: string, tooltip: string): void
   scheduler: unknown
@@ -84,6 +86,8 @@ interface Rig {
   contexts: Array<DefinitionContext | undefined>
   skip: Set<HTMLElement>
   tooltips: Array<[string, string]>
+  /** Task 733 / 021: calls of `units()` so far. */
+  unitCalls: { count: number }
   clock: ReturnType<typeof costClock>
   lanes: ReturnType<typeof fakeLanes>
   index: DefinitionIndex
@@ -125,9 +129,14 @@ function rig(sources: readonly string[]): Rig {
   const contexts: Array<DefinitionContext | undefined> = []
   const skip = new Set<HTMLElement>()
   const tooltips: Array<[string, string]> = []
+  const unitCalls = { count: 0 }
   const index = createDefinitionIndex({
-    units: () => units,
+    units: () => {
+      unitCalls.count++
+      return units
+    },
     bytesOf: (el) => bytes.get(el),
+    kindOf: (el) => units.find((unit) => unit.el === el)?.kind,
     rerender(el, context) {
       // One render costs one Lute call on the cost clock (the default charge).
       clock.advance(0.5)
@@ -148,6 +157,7 @@ function rig(sources: readonly string[]): Rig {
     contexts,
     skip,
     tooltips,
+    unitCalls,
     clock,
     lanes,
     index,
@@ -279,5 +289,103 @@ describe.each<Factor>([1, 4, 16])('B-D2: contextFor at factor %i', (factor) => {
     // Bounded by the source and the two referenced definitions, independent of the factor.
     expect(counts.nodesWalked + counts.queriedNodes).toBeLessThanOrEqual(16)
     expect(r.index.contextFor('Plain text.')).toBeUndefined()
+  })
+})
+
+// Task 733 / 021 (design 021 sections 3.1 and 7.1): a `whole` change (a gap click, a build, a rebind, a
+// fallback publication) and a structural change (a restore replacing an element) keep the index and the
+// rendering of references current. Fails before 021-I: `rebuild` queues nothing and `structural` is ignored.
+describe('021: whole and structural changes (D-1, D-2, D-3b)', () => {
+  const GUIDE = '[guide]: https://example.com/guide'
+  const GUIDEX = '[guidex]: https://example.com/guide'
+  const WHOLE: UnitsChange = {
+    cause: 'sync',
+    whole: true,
+    changed: [],
+    structural: [],
+    scopes: [],
+  }
+
+  const runFrames = (r: Rig, frames = 50): void => {
+    for (let frame = 0; frame < frames; frame++) r.lanes.runFrame()
+  }
+
+  /** Replaces the unit at `at` by a freshly rendered element of `source` (the old one leaves the root). */
+  const replaceUnit = (r: Rig, at: number, source: string): HTMLElement => {
+    const old = r.units[at]
+    const template = document.createElement('template')
+    template.innerHTML = real.render(source)
+    const next = template.content.firstElementChild as HTMLElement
+    old.el.replaceWith(next)
+    r.units[at] = { el: next, members: [next], kind: old.kind, top: next }
+    r.bytes.delete(old.el)
+    r.bytes.set(next, source)
+    return next
+  }
+
+  const structuralOf = (next: HTMLElement): UnitsChange => ({
+    cause: 'sync',
+    whole: false,
+    changed: [],
+    structural: [next],
+    scopes: [next],
+  })
+
+  it('a whole change after a label rename re-renders the referencing unit', () => {
+    const r = rig(['See [the guide][guide].', GUIDE])
+    drainIdle(r)
+    r.bytes.set(r.units[1].el, GUIDEX)
+    r.index.onUnitsChange(WHOLE)
+    drainIdle(r)
+    runFrames(r)
+    expect(r.rerendered).toEqual([r.units[0].el])
+  })
+
+  it('a whole change after a footnote text change writes the tooltip of its references', () => {
+    const r = rig(['A note[^n].', '[^n]: Old text.'])
+    drainIdle(r)
+    r.bytes.set(r.units[1].el, '[^n]: New text.')
+    r.index.onUnitsChange(WHOLE)
+    drainIdle(r)
+    runFrames(r)
+    expect(r.tooltips).toEqual([['n', 'New text.']])
+    expect(r.rerendered).toEqual([])
+  })
+
+  it('a replaced definition element in scopes re-renders the references of both labels', () => {
+    const r = rig(['See [the guide][guide].', GUIDE])
+    drainIdle(r)
+    const next = replaceUnit(r, 1, GUIDEX)
+    r.index.onUnitsChange(structuralOf(next))
+    runFrames(r)
+    expect(r.rerendered).toEqual([r.units[0].el])
+    expect(r.index.contextFor('[a][guidex]')?.html).toContain(next.outerHTML)
+    expect(r.index.contextFor('[a][guide]')).toBeUndefined()
+  })
+
+  it('a replaced referencing paragraph in scopes is indexed', () => {
+    const r = rig(['See [the guide][guide].', GUIDE])
+    drainIdle(r)
+    const next = replaceUnit(r, 0, 'See [the guide][guide].')
+    r.index.onUnitsChange(structuralOf(next))
+    runFrames(r)
+    r.bytes.set(r.units[1].el, GUIDEX)
+    r.index.onUnitsChange(changeOf(r.units[1]))
+    runFrames(r)
+    expect(r.rerendered).toEqual([next])
+  })
+
+  it('a structural change with no definition in its scopes reads no unit list (guard)', () => {
+    const r = rig(['See [the guide][guide].', GUIDE, 'Tail.'])
+    drainIdle(r)
+    const template = document.createElement('template')
+    template.innerHTML = real.render('A new paragraph.')
+    const next = template.content.firstElementChild as HTMLElement
+    r.units[2].el.after(next)
+    r.units.push({ el: next, members: [next], kind: 'paragraph', top: next })
+    r.bytes.set(next, 'A new paragraph.')
+    const before = r.unitCalls.count
+    r.index.onUnitsChange(structuralOf(next))
+    expect(r.unitCalls.count - before).toBe(0)
   })
 })

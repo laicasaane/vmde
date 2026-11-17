@@ -88,6 +88,10 @@ export interface UnitSchedule {
 const isList = (element: Element): boolean =>
   element.tagName === 'UL' || element.tagName === 'OL'
 
+/** Task 733 / 021 (D-4): a footnotes block holds its footnote definition units as a list holds items. */
+const isFootnotesBlock = (element: Element): boolean =>
+  element.getAttribute('data-type') === 'footnotes-block'
+
 const isBlockKind = (kind: UnitKind): boolean =>
   kind !== 'cell' && kind !== 'row' && kind !== 'table'
 
@@ -200,8 +204,7 @@ function preTouchRefusal(
   htmlLength: (unit: U) => number,
 ): ScheduleFallbackReason | undefined {
   // The count comes first: it costs nothing, while the oversize test reads each unit's HTML.
-  if (todo.length > PRE_TOUCH_LIMIT || todo.some((u) => u.dirty))
-    return 'unproven-selection'
+  if (todo.length > PRE_TOUCH_LIMIT) return 'unproven-selection'
   if (todo.some((u) => isBlockKind(u.kind) && htmlLength(u) > OVERSIZE_HTML))
     return 'oversize-unit'
   return undefined
@@ -227,7 +230,7 @@ function addBlockUnits(
   range: Range,
   out: Set<U>,
 ): void {
-  if (isList(block)) {
+  if (isList(block) || isFootnotesBlock(block)) {
     for (const item of Array.from(block.children)) {
       const unit = range.intersectsNode(item)
         ? model.unitOf(item as HTMLElement)
@@ -589,7 +592,7 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
 
   /** The unit of a top-level block; a list block resolves to the item that holds `inner`. */
   const unitOfBlock = (block: HTMLElement, inner: Element): U | undefined => {
-    if (!isList(block)) return model.unitOf(block)
+    if (!isList(block) && !isFootnotesBlock(block)) return model.unitOf(block)
     let item: Element = inner
     while (item.parentElement !== block && item.parentElement)
       item = item.parentElement
@@ -678,7 +681,7 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
       idleTimer = undefined
     },
     proveForSelection(range) {
-      // Pending records first: a unit that is already dirty must not be proven from its new DOM.
+      // Pending records first: the dirty flags are current before the proof (see the loop below).
       deps.drain()
       noteInput()
       const todo: U[] = []
@@ -688,9 +691,14 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
       if (refusal) return fallback(refusal)
       // A table is checked as always spent: the pre-touch proves the touched cells and rows only,
       // never every row of a partly proven table in one call; the idle slices finish the table.
-      for (const unit of todo)
-        if (model.prove(unit, ALWAYS_SPENT) === 'none')
+      // Task 733 / 021 (Q-187): a dirty unit (the first key's caret text split) is proven from its
+      // DOM only when that DOM still serializes to its bytes: anything else is refused.
+      for (const unit of todo) {
+        const dirty = unit.dirty
+        const proof = model.prove(unit, ALWAYS_SPENT)
+        if (proof === 'none' || (dirty && proof !== 'proven'))
           return fallback('unproven-selection')
+      }
       return 'proven'
     },
     requestAudit,
