@@ -4077,3 +4077,98 @@ describe('020 WYSIWYG delta then a post without user input', () => {
     expect(session.onModeChange).not.toHaveBeenCalled()
   })
 })
+
+// Task 733 / 022 (Q-183): while the model session holds a history transition (a whole post awaits its
+// rebind answer), the whole-text post sites serialize nothing and post nothing: Vditor's restore
+// would otherwise go out as the normalized whole text before the answer.
+describe('022 whole-text posts while a history transition is held', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function heldBoot(held: { value: boolean }) {
+    const getValue = vi.fn(() => 'RESTORED')
+    const beforeWholeTextPost = vi.fn(() => ({ rebind: true as const }))
+    const booted = boot({
+      getValue,
+      modelSession: {
+        beforeWholeTextPost,
+        onModeChange: vi.fn(),
+        turnOff: vi.fn(),
+        publicationHeld: () => held.value,
+      } as any,
+    })
+    return { ...booted, getValue, beforeWholeTextPost }
+  }
+
+  it('an idle post serializes nothing and posts nothing while held', () => {
+    const held = { value: true }
+    const t = heldBoot(held)
+    t.es.markUserInput()
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.edits()).toHaveLength(0)
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.beforeWholeTextPost).not.toHaveBeenCalled()
+  })
+
+  it('a flush and an exact post post nothing while held', () => {
+    const held = { value: true }
+    const t = heldBoot(held)
+    t.es.markUserInput()
+    t.es.flush()
+    t.es.postExact('exact text', { before: 'host' })
+    expect(t.edits()).toHaveLength(0)
+    expect(t.beforeWholeTextPost).not.toHaveBeenCalled()
+  })
+
+  // Q-191: the unit engine's Undo publishes through `publishHistory`, whose awaiting fallback is
+  // `publishWhole` (the fifth post site).
+  it('a history publication that falls back to the whole text posts nothing while held', () => {
+    const held = { value: true }
+    const port = {
+      prepareDelta: vi.fn(() => ({ kind: 'nothing' as const })),
+      epoch: () => 3,
+      awaiting: () => true,
+      hasDirty: () => false,
+      modelText: () => 'kept\n',
+      rebind: vi.fn(),
+      markPublishedWhole: vi.fn(),
+      clearForms: vi.fn(),
+    }
+    const getValue = vi.fn(() => 'RESTORED')
+    const onWholeTextPublished = vi.fn()
+    const rig = boot({
+      getValue,
+      modelSession: {
+        beforeWholeTextPost: vi.fn(() => ({ rebind: true as const })),
+        onModeChange: vi.fn(),
+        turnOff: vi.fn(),
+        deltaPort: () => port,
+        canPublishDelta: () => true,
+        ownsText: () => false,
+        onWholeTextPublished,
+        recordFallback: vi.fn(),
+        publicationHeld: () => held.value,
+      } as any,
+    })
+    rig.es.deltaSync?.publishHistory('undo', 1)
+    expect(rig.edits()).toHaveLength(0)
+    expect(getValue).not.toHaveBeenCalled()
+    expect(onWholeTextPublished).not.toHaveBeenCalled()
+  })
+
+  it('reserveSequence takes the next whole-text sequence', () => {
+    const held = { value: false }
+    const t = heldBoot(held)
+    const reserved = (t.es as any).reserveSequence() as number
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.edits()[0][0].sequence).toBe(reserved + 1)
+  })
+})

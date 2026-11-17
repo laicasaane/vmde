@@ -58,6 +58,8 @@ export interface EditSync {
   noteModeSwitch(): void
   /** Resume an ordinary typing post held for an automatic exact-source attempt. */
   resumeDeferredInput(): void
+  /** Task 733 / 022 (Q-183): the next whole-text `edit.sequence`, taken by a held history transition. */
+  reserveSequence(): number
   /** Mark that the pending schedule came from a real DOM input. */
   markUserInput(isTrusted?: boolean): void
   /** Flush the pending edit synchronously (the host's will-save `flush-for-save`). */
@@ -207,6 +209,7 @@ interface EditSyncDeps {
         | 'markExplicitAtCaret'
         | 'applyText'
         | 'rebuildAfterExact'
+        | 'publicationHeld'
       >
     >
   /** An IME composition is running (the delta publisher publishes nothing then, except for a flush). */
@@ -1320,6 +1323,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       return undefined
     }
   }
+  /** Task 733 / 022 (Q-183): a held history transition owns the next publication. O(1). */
+  const publicationHeld = (): boolean =>
+    shadowCall(() => deps.modelSession?.publicationHeld?.()) === true
   const shadowPost = (
     sequence: number,
     options?: { predict: boolean; requestId?: string },
@@ -1351,6 +1357,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     _reason: DeltaFallbackReason,
     perf?: RendererEditPerf,
   ): void => {
+    // Task 733 / 022 (Q-191): the unit engine's Undo falls back here while the answer is awaited.
+    if (publicationHeld()) return
     const content = preserveAutomaticInput(serializeForHost())
     if (perf) perf.payloadBytes = new TextEncoder().encode(content).length
     const postStarted = performance.now()
@@ -1551,6 +1559,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       cancelTakenRendererPerf(perf)
       return
     }
+    // Task 733 / 022: the held transition publishes the restored text with exact bytes at the answer.
+    if (publicationHeld()) {
+      cancelTakenRendererPerf(perf)
+      return
+    }
     if (postEditLive(cause, perf)) return
     const explicitBlock = takeExplicitBlock()
     const serializeStarted = performance.now()
@@ -1654,7 +1667,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
 
   // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: authoritative save auditing and E2E-only timing must cover the same indivisible flush branches.
   function flushEdit(rewrapDocument = false, perf?: RendererEditPerf): void {
-    if (isSuppressed()) {
+    if (isSuppressed() || publicationHeld()) {
       cancelTakenRendererPerf(perf)
       return
     }
@@ -2004,6 +2017,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
 
   /** Today's whole-text exact post (Task 607): the host writes it only while it holds `before`. */
   const postWholeExact = (content: string, opts?: PostExactOptions): void => {
+    // Task 733 / 022: nothing is posted while a held transition waits for its answer.
+    if (publicationHeld()) return
     // Task 607 rule 7: the host writes the edit only while it still holds `before`. Pending
     // typing is cancelled, not flushed, so a rebased action (D3) posts its typing with it.
     const before = opts?.before ?? ownedBase
@@ -2100,6 +2115,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   }
   const sync: EditSync = {
     deltaSync,
+    reserveSequence: () => ++plainSequence,
     resumeDeferredInput: () => {
       if (!deferredPlainPost) return
       if (userInputPending) pendingEdit.schedule()

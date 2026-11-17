@@ -2255,3 +2255,105 @@ describe('020 IR and WYSIWYG switch keeps the owned text', () => {
     expect(r.session.canPublishDelta()).toBe(false)
   })
 })
+
+// Task 733 / 022 (Q-183): Vditor's engine runs an Undo while a whole post awaits its rebind answer. The
+// session keeps the text from before that post and publishes the transition with exact host bytes at
+// the answer, then builds the model from the kept text with no `rebind` pairing.
+describe('022: history during a pending rebind', () => {
+  type HoldApi = {
+    holdHistoryTransition(
+      kind: 'undo' | 'redo',
+      publish: (transition: {
+        kind: 'undo' | 'redo'
+        before: string
+        after: string
+      }) => number | undefined,
+    ): boolean
+    publicationHeld(): boolean
+  }
+  const REPLACED = 'ZZZZ\n\nbeta\n'
+  const holdApi = (r: Rig) => r.session as unknown as HoldApi
+
+  /** A live model over DOC, then a root rewrite to REPLACED published as an unshadowed whole post 1. */
+  function replaceAll() {
+    const r = open()
+    r.runFrames()
+    r.render(REPLACED)
+    expect(r.session.beforeWholeTextPost(1, { predict: false })).toEqual({
+      rebind: true,
+    })
+    const causes: string[] = []
+    r.session.onUnitsChanged((change) => causes.push(change.cause))
+    return { r, causes }
+  }
+  const answer = (r: Rig, content: string, editSequence: number) =>
+    r.session.onRebind({
+      command: 'rebind',
+      epoch: 3,
+      afterSequence: 0,
+      content,
+      editSequence,
+    })
+
+  it('holds an Undo after an unshadowed whole post with the model live', () => {
+    const { r } = replaceAll()
+    const publish = vi.fn(() => 2)
+    expect(holdApi(r).holdHistoryTransition('undo', publish)).toBe(true)
+    expect(holdApi(r).publicationHeld()).toBe(true)
+    expect(publish).not.toHaveBeenCalled()
+  })
+
+  it('publishes the exact texts at the answer and builds the kept text with no rebind', () => {
+    const { r, causes } = replaceAll()
+    const publish = vi.fn(() => 2)
+    holdApi(r).holdHistoryTransition('undo', publish)
+    // Vditor's restore of the DOM, at once.
+    r.render(DOC)
+    answer(r, REPLACED, 1)
+    expect(publish).toHaveBeenCalledTimes(1)
+    expect(publish).toHaveBeenCalledWith({
+      kind: 'undo',
+      before: REPLACED,
+      after: DOC,
+    })
+    expect(holdApi(r).publicationHeld()).toBe(false)
+    r.runFrames()
+    expect(r.stats().state).toBe('live')
+    expect(causes).not.toContain('rebind')
+    // The host answers the sequenced transition once with its bytes: the kept model stays live.
+    answer(r, DOC, 2)
+    expect(r.session.confirmedSnapshot()).toEqual({ text: DOC, epoch: 3 })
+  })
+
+  it('holds nothing when no answer is awaited, and nothing a second time', () => {
+    const r = open()
+    r.runFrames()
+    expect(holdApi(r).holdHistoryTransition('undo', vi.fn())).toBe(false)
+    const { r: held } = replaceAll()
+    expect(holdApi(held).holdHistoryTransition('undo', vi.fn())).toBe(true)
+    expect(holdApi(held).holdHistoryTransition('redo', vi.fn())).toBe(false)
+  })
+
+  it('a mode switch while held clears the hold and publishes nothing', () => {
+    const { r } = replaceAll()
+    const publish = vi.fn(() => 2)
+    holdApi(r).holdHistoryTransition('undo', publish)
+    r.mode.value = 'wysiwyg'
+    r.session.onModeChange('wysiwyg')
+    expect(holdApi(r).publicationHeld()).toBe(false)
+    answer(r, REPLACED, 1)
+    expect(publish).not.toHaveBeenCalled()
+  })
+
+  it('a build that fails pairing still publishes, and the model ends off', () => {
+    const { r } = replaceAll()
+    const publish = vi.fn(() => 2)
+    holdApi(r).holdHistoryTransition('undo', publish)
+    // The user typed after the Undo: the DOM no longer renders the kept text.
+    r.render('other\n\ntext\n\nmore\n')
+    answer(r, REPLACED, 1)
+    expect(publish).toHaveBeenCalledTimes(1)
+    r.runFrames()
+    expect(r.stats().state).toBe('off')
+  })
+})

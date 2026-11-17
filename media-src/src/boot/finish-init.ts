@@ -507,6 +507,14 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
         flushHistoryInput?.({ recordedEntry: true }) !== 'deferred',
       onHistoryBase: (mode, baseId) =>
         postHistoryBase(editViewDeferred, hostRevision, mode, baseId),
+      // Task 733 / 022 (Q-183): an Undo or Redo while a whole post awaits its rebind answer is held by
+      // the model session and posted with exact host bytes at the answer.
+      holdTransition: (kind, publish) =>
+        sessionState.modelSession?.holdHistoryTransition(kind, publish) ??
+        false,
+      reserveSequence: () => sessionState.editSync?.reserveSequence(),
+      transitionHeld: () =>
+        sessionState.modelSession?.publicationHeld() ?? false,
     },
   )
   installScreenReaderSemantics(msg.documentName)

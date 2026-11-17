@@ -7,6 +7,7 @@ import type { Page } from '@playwright/test'
 // Task 733 / 019 (Q-161): a `history-transition` whose `before` is the host text makes `after` the host
 // text, as the host's history coupling does; any other `before` resynchronizes. `holdRebind` records a
 // rebind request and leaves it unanswered, so the model stays waiting.
+// Task 733 / 022: `releaseRebind` sends the held answer, with the host text of the held request.
 // Not modelled: save, `exact-authority`, epochs across a reload, restart memory (run 1 covers them).
 // Every other post is recorded by its kind only; no text is kept beyond the host text.
 
@@ -123,16 +124,28 @@ export async function installHostStub(
         state.accepted++
         if (posted.rebind !== true) return
         state.rebinds++
-        if (setup.holdRebind) return
         const editSequence =
           typeof posted.sequence === 'number' ? posted.sequence : undefined
-        answer({
+        const rebind = {
           command: 'rebind',
           epoch: state.epoch,
           afterSequence: lastSequence,
           content: state.text,
           ...(editSequence === undefined ? {} : { editSequence }),
-        })
+        }
+        if (setup.holdRebind) {
+          heldRebind = rebind
+          return
+        }
+        answer(rebind)
+      }
+      // Task 733 / 022: the held answer, sent by `releaseRebind`.
+      let heldRebind: unknown
+      ;(window as any).__vmdeHostStubReleaseRebind = (): boolean => {
+        if (heldRebind === undefined) return false
+        answer(heldRebind)
+        heldRebind = undefined
+        return true
       }
 
       // An `edit-delta` or `history-delta`: accepted on the current epoch and the next sequence when
@@ -164,6 +177,16 @@ export async function installHostStub(
         }
         state.text = posted.after
         state.transitions++
+        // Task 733 / 022: a transition that carries a sequence is answered once with the host bytes,
+        // as the host's `answerRebind` (src/session/editor-session.ts).
+        if (typeof posted.sequence === 'number')
+          answer({
+            command: 'rebind',
+            epoch: state.epoch,
+            afterSequence: lastSequence,
+            content: state.text,
+            editSequence: posted.sequence,
+          })
       }
 
       const handlers: Record<string, (posted: any) => void> = {
@@ -200,4 +223,11 @@ export function hostStubState(page: Page): Promise<HostStubState> {
     if (!state) throw new Error('host stub not installed')
     return { ...state, kinds: [...state.kinds] }
   })
+}
+
+/** Task 733 / 022: sends the rebind answer that `holdRebind` held; false when none is held. */
+export function releaseRebind(page: Page): Promise<boolean> {
+  return page.evaluate(
+    () => (window as any).__vmdeHostStubReleaseRebind() as boolean,
+  )
 }

@@ -510,7 +510,11 @@ test('large document keeps warmed block-handle pointer moves off the serializer 
     blockTransformCaptureCalls: (window as any).__vmdeBlockHandleCacheMetrics
       .blockTransformCaptureCalls as number,
   }))
-  expect(cold.blockHandleSnapshotCalls).toBeGreaterThan(0)
+  // Task 733 / 022 (Q-182): the cold hover is served by the model's index or deferred while the units are
+  // unconfirmed (no snapshot), or by one snapshot when the units are confirmed but unusable; either way the
+  // handle shows and the source stays the same.
+  expect(cold.blockHandleSnapshotCalls).toBeLessThanOrEqual(1)
+  await expect(frame.locator('.vmde-block-handle')).toBeVisible()
   expect(
     (await frame
       .locator('body')

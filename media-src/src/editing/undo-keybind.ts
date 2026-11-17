@@ -33,6 +33,8 @@ type HistoryPost = (message: {
   after: string
   beforeBaseId?: string
   afterBaseId?: string
+  /** Task 733 / 022: only on a held transition; the host answers it once with its bytes. */
+  sequence?: number
 }) => void
 
 /** Task 602 hooks; boot/finish-init.ts injects them from edit-sync. */
@@ -49,6 +51,23 @@ export interface HistoryCouplingOptions {
    * `historySnapshotText`), in the form `readText` returns. Called lazily, at most once per base,
    * only from an Undo/Redo that cannot reach the base entry directly. */
   snapshotText?: (mode: string, html: string) => string | undefined
+  /**
+   * Task 733 / 022 (Q-183): asked when the unit engine does not claim the history. True when the
+   * model session holds the transition (a whole post awaits its rebind answer): the engine restores
+   * the DOM at once and nothing is posted until the session calls `publish` with the exact texts.
+   */
+  holdTransition?: (
+    kind: 'undo' | 'redo',
+    publish: (transition: {
+      kind: 'undo' | 'redo'
+      before: string
+      after: string
+    }) => number | undefined,
+  ) => boolean
+  /** Task 733 / 022: the sequence of a held transition, from the whole-text `edit.sequence` counter. */
+  reserveSequence?: () => number | undefined
+  /** Task 733 / 022: a transition is held; a second history command is refused (its `before` is unknown). */
+  transitionHeld?: () => boolean
 }
 
 /** A registered history base: the first entry array of a mode's stack and what is known of it. */
@@ -217,6 +236,22 @@ export function installVditorHistoryCoupling(
       ids.beforeBaseId = start.tag.id
     return ids
   }
+  // Task 733 / 022: the held transition, posted with the session's exact texts at the rebind answer.
+  const publishHeld = (transition: {
+    kind: 'undo' | 'redo'
+    before: string
+    after: string
+  }): number | undefined => {
+    const sequence = options.reserveSequence?.()
+    post({
+      command: 'history-transition',
+      kind: transition.kind,
+      before: transition.before,
+      after: transition.after,
+      ...(sequence === undefined ? {} : { sequence }),
+    })
+    return sequence
+  }
   store.onEntryRecorded(onRecorded)
   store.aroundTransition((kind, run) => {
     // Every caller of the engine's Undo and Redo passes this same editor object.
@@ -228,6 +263,15 @@ export function installVditorHistoryCoupling(
     // so the engine undoes only that edit and the host sees the same transition.
     // A refused transition (IME composition) makes no engine call and posts nothing.
     if (!prepare(inner)) return
+    // Task 733 / 022 (Q-191): asked before the unit engine's claim. While a whole post awaits its
+    // rebind answer the unit engine may claim the history; the engine that claims it restores the DOM
+    // at once, and the session publishes the transition with exact host bytes at the answer.
+    if (options.holdTransition?.(kind, publishHeld)) {
+      run()
+      return
+    }
+    // A second step while one is held: no engine call, nothing posted (the session counted it).
+    if (options.transitionHeld?.()) return
     if (unitClaims(inner)) {
       run()
       return

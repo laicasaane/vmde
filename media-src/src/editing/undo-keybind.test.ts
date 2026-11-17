@@ -899,3 +899,93 @@ describe('undo-keybind module surface', () => {
     expect(Object.keys(mod)).toEqual(['installVditorHistoryCoupling'])
   })
 })
+
+// Task 733 / 022 (Q-183): while a whole post awaits its rebind answer, the session holds the
+// transition. Vditor restores the DOM at once and nothing is posted until the session publishes the
+// exact texts; a second history command while held is refused.
+describe('installVditorHistoryCoupling held transition (022)', () => {
+  type Publish = (transition: {
+    kind: 'undo' | 'redo'
+    before: string
+    after: string
+  }) => number | undefined
+  function held() {
+    let value = 'replaced'
+    const undo = vi.fn((_inner: unknown) => {
+      value = 'restored'
+    })
+    const redo = vi.fn((_inner: unknown) => undefined)
+    const inner = { undo: { undo, redo } }
+    const post = vi.fn()
+    const win = { vditor: { vditor: inner, getValue: () => value } } as any
+    const state = { held: false, publish: undefined as Publish | undefined }
+    const holdTransition = vi.fn((_kind: 'undo' | 'redo', publish: Publish) => {
+      if (state.held) return false
+      state.held = true
+      state.publish = publish
+      return true
+    })
+    const reserveSequence = vi.fn(() => 7)
+    installVditorHistoryCoupling(win, post, () => true, {
+      holdTransition,
+      reserveSequence,
+      transitionHeld: () => state.held,
+    })
+    return { inner, undo, redo, post, state, holdTransition, reserveSequence }
+  }
+
+  it('runs the restore at once and posts nothing until publish', () => {
+    const h = held()
+    h.inner.undo.undo(h.inner)
+    expect(h.undo).toHaveBeenCalledTimes(1)
+    expect(h.holdTransition).toHaveBeenCalledTimes(1)
+    expect(h.post).not.toHaveBeenCalled()
+  })
+
+  it('publish posts one history-transition with the given texts and the reserved sequence', () => {
+    const h = held()
+    h.inner.undo.undo(h.inner)
+    const sequence = h.state.publish?.({
+      kind: 'undo',
+      before: 'host bytes',
+      after: 'kept text',
+    })
+    expect(sequence).toBe(7)
+    expect(h.post.mock.calls.map(([message]) => message)).toEqual([
+      {
+        command: 'history-transition',
+        kind: 'undo',
+        before: 'host bytes',
+        after: 'kept text',
+        sequence: 7,
+      },
+    ])
+  })
+
+  // Q-191: while the answer is awaited the unit engine can claim the history; the hold is asked first,
+  // so the unit engine restores the DOM and nothing is posted here.
+  it('asks the hold before the unit engine claim, and runs the restore once', () => {
+    const claims = vi.fn(() => true)
+    const previous = (globalThis as any).window
+    ;(globalThis as any).window = { __vmdeUnitHistory: { claims } }
+    try {
+      const h = held()
+      h.inner.undo.undo(h.inner)
+      expect(h.holdTransition).toHaveBeenCalledTimes(1)
+      expect(h.undo).toHaveBeenCalledTimes(1)
+      expect(h.post).not.toHaveBeenCalled()
+    } finally {
+      ;(globalThis as any).window = previous
+    }
+  })
+
+  it('a second press while held calls neither the engine nor post', () => {
+    const h = held()
+    h.inner.undo.undo(h.inner)
+    h.inner.undo.redo(h.inner)
+    h.inner.undo.undo(h.inner)
+    expect(h.undo).toHaveBeenCalledTimes(1)
+    expect(h.redo).not.toHaveBeenCalled()
+    expect(h.post).not.toHaveBeenCalled()
+  })
+})

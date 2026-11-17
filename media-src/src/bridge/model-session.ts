@@ -128,6 +128,13 @@ const AGREEMENT_MAX_CHARS = 100_000
 /** Task 733 / 015: the modes a model serves: IR and WYSIWYG units (013) and the Source model. */
 type ServedMode = UnitMode | 'sv'
 
+/** Task 733 / 022 (Q-183): a history transition the session publishes with exact host bytes at the answer. */
+interface HeldTransition {
+  kind: 'undo' | 'redo'
+  before: string
+  after: string
+}
+
 export interface ModelSessionDeps {
   win: Window
   /** The IR edit root, or null while it does not exist. */
@@ -212,6 +219,17 @@ export interface ModelSession {
     sequence: number,
     options?: { predict: boolean; requestId?: string },
   ): { rebind: true } | undefined
+  /**
+   * Task 733 / 022 (Q-183): Vditor's engine moved the history while a whole post awaits its rebind
+   * answer. True when the session keeps the text from before that post and takes over the
+   * publication; false keeps today's path.
+   */
+  holdHistoryTransition(
+    kind: 'undo' | 'redo',
+    publish: (transition: HeldTransition) => number | undefined,
+  ): boolean
+  /** True while a held transition waits for the answer: the whole-text post sites post nothing. O(1). */
+  publicationHeld(): boolean
   /**
    * An Undo or Redo transition changed the document by the editor's history engine. The host is told
    * without a sequence (a sequenced transition that the host declines is answered by an `update` that
@@ -643,6 +661,22 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   let awaitingWrite = false
   /** An Undo or Redo changed the DOM and no answer brought the new bytes: the model text is not trusted. */
   let stale = false
+  /**
+   * Task 733 / 022 (Q-183): the model text when the last unshadowed whole post went out (kept by
+   * reference, no copy), and the transition held until that post's answer.
+   */
+  let keptBeforePost: string | undefined
+  /** Task 733 / 022: history commands refused while a transition was held (a count only, SR-5). */
+  let heldHistoryRefusals = 0
+  const countHeldRefusal = (): void => {
+    heldHistoryRefusals++
+  }
+  let held:
+    | {
+        kind: 'undo' | 'redo'
+        publish: (transition: HeldTransition) => number | undefined
+      }
+    | undefined
   /** Entering IR again: the first IR post asks for the host bytes, and its rebind builds the model (3.6). */
   let modeReentry = false
   /** Task 733 / 013: the mode the current model was built for (shared rules 3.12); 015: `sv` for Source. */
@@ -1017,6 +1051,9 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     preTouchFallback = false
     exactSequences.clear()
     stale = false
+    // Task 733 / 022: ending the wait ends the hold; nothing is published for it.
+    held = undefined
+    keptBeforePost = undefined
   }
 
   const cancelBuild = (): void => {
@@ -1195,6 +1232,19 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   const finishAnswer = (content: string, epoch: number): void => {
     host = { text: content, epoch }
     stale = false
+    if (held && keptBeforePost !== undefined) {
+      // Task 733 / 022 (Q-183): the restored DOM renders the kept text, not `content`. The transition
+      // goes out with the host bytes; the model builds from the kept text with no `rebind` pairing.
+      const { kind, publish } = held
+      const after = keptBeforePost
+      held = undefined
+      keptBeforePost = undefined
+      const sequence = publish({ kind, before: content, after })
+      if (sequence !== undefined) awaited = sequence
+      cancelBuild()
+      buildKept({ text: after, epoch })
+      return
+    }
     if (model?.state === 'live') {
       model.rebind(content)
       if (model.state === 'live') {
@@ -1225,6 +1275,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       ...shadow,
       fallbacks: { ...fallbacks },
       auditMismatch: treeStats?.auditMismatch ?? 0,
+      heldHistoryRefusals,
     }
   }
 
@@ -1255,6 +1306,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     awaited = sequence
     confirmed = false
     prediction = undefined
+    keptBeforePost = undefined
   }
 
   /** A whole-text publication that is not predicted: the model clears its flags and awaits the host bytes. */
@@ -1265,8 +1317,11 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     if (preTouchFallback)
       countFallback(schedule?.lastFallbackReason() ?? 'unproven-selection')
     preTouchFallback = false
+    // Task 733 / 022: read before the post marks the model; the text is still the one from before it.
+    const kept = confirmed && !stale ? current.text : undefined
     current.markPublishedWhole()
     publicationBase(sequence)
+    keptBeforePost = kept
     schedule?.restart()
     return { rebind: true }
   }
@@ -1674,6 +1729,15 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       emitPublished(result)
       return { rebind: true }
     },
+    holdHistoryTransition(kind, publish) {
+      if (!awaitingNow() || keptBeforePost === undefined || held) {
+        if (held) countHeldRefusal()
+        return false
+      }
+      held = { kind, publish }
+      return true
+    },
+    publicationHeld: () => held !== undefined,
     onHistoryTransition() {
       if (!live() || !model || !servesBuiltMode()) return
       dom?.drain()

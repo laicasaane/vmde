@@ -1,8 +1,14 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import type { Page } from '@playwright/test'
 import { definitionHeavyMarkdown } from '../../test/vscode-e2e/definition-heavy-markdown'
 import { expect, test } from './coverage-fixture'
 import { selectEditorText } from './editor-selection'
-import { hostStubState, installHostStub } from './helpers/host-stub'
+import {
+  hostStubState,
+  installHostStub,
+  releaseRebind,
+} from './helpers/host-stub'
 import { tableHeavyMarkdown } from '../../test/vscode-e2e/table-heavy-markdown'
 
 // Task 733 / 024 (plan D-14 section 4.1): the smoke stage. The page runs the real webview entry
@@ -1162,5 +1168,90 @@ test.describe('Definitions, DEFINITION_UNITS on', () => {
       .poll(async () => (await footnoteRef(page, '^note')).tooltip)
       .toContain('More')
     expect((await modelInfo(page)).state).toBe('live')
+  })
+})
+
+// Task 733 / 022 (Q-183): Replace All on the large fixture publishes a whole post that asks for a
+// rebind; the stub holds the answer. An Undo in that window shows at once (Vditor's restore), and the
+// session publishes it as one `history-transition` with exact host bytes when the answer arrives.
+test.describe('022: history during a pending rebind', () => {
+  test.describe.configure({ timeout: 120_000 })
+  const LARGE = readFileSync(
+    path.join(
+      __dirname,
+      '../../test/vscode-e2e/fixtures/large-observable-models-synthetic.md',
+    ),
+    'utf8',
+  )
+
+  test('an Undo while the Replace All answer is held restores the host bytes after the answer', async ({
+    page,
+  }) => {
+    await openSourceSet(page, 'none', LARGE, {}, true)
+    await expect
+      .poll(() => shadow(page), { timeout: 30_000 })
+      .toEqual({ state: 'live', mode: 'ir' })
+    await page.evaluate(() =>
+      window.postMessage(
+        { command: 'open-find-replace', mode: 'replace' },
+        '*',
+      ),
+    )
+    const widget = page.locator('.vmde-find-replace')
+    await expect(widget.locator('[data-replace]')).toBeVisible()
+    await widget.locator('[data-find]').fill('ncjw')
+    await widget.locator('[data-replace]').fill('ZZZZ')
+    await widget.locator('[data-action="replace-all"]').click()
+    await expect.poll(async () => (await hostStubState(page)).rebinds).toBe(1)
+    expect((await stubText(page)).includes('ZZZZ')).toBe(true)
+    await widget.locator('[data-find]').click()
+    await page.keyboard.press('Escape')
+    await expect(widget).toBeHidden()
+    // The time from the key to the first DOM change of the editor (the 50 ms rule).
+    await page.evaluate(() => {
+      const win = window as any
+      const root = win.vditor.vditor.ir.element as HTMLElement
+      win.__undoShown = undefined
+      win.__undoKeyAt = performance.now()
+      const observer = new MutationObserver(() => {
+        win.__undoShown ??= performance.now() - win.__undoKeyAt
+        observer.disconnect()
+      })
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      })
+    })
+    await page.keyboard.press('Control+KeyZ')
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (
+            (window as any).vditor.vditor.ir.element.textContent as string
+          ).includes('ZZZZ'),
+        ),
+      )
+      .toBe(false)
+    const shownMs = await page.evaluate(
+      () => (window as any).__undoShown as number | undefined,
+    )
+    test.info().annotations.push({
+      type: 'undo-key-to-dom-ms',
+      description: String(shownMs === undefined ? -1 : Math.round(shownMs)),
+    })
+    expect(shownMs).toBeDefined()
+    const editsBefore = (await hostStubState(page)).kinds.filter(
+      (kind) => kind === 'edit',
+    ).length
+    expect(await releaseRebind(page)).toBe(true)
+    await expect.poll(async () => (await stubText(page)) === LARGE).toBe(true)
+    const state = await hostStubState(page)
+    expect(state.transitions).toBe(1)
+    expect(state.resyncs).toBe(0)
+    expect(state.kinds.filter((kind) => kind === 'edit').length).toBe(
+      editsBefore,
+    )
+    await expect.poll(() => shadow(page)).toEqual({ state: 'live', mode: 'ir' })
   })
 })

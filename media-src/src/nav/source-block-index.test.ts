@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BlockHandleUnit } from './block-handle'
 import { applyCaretInside } from '../links/caret-link'
 import { clearWrapHints, insertWrapHint } from '../util/wrap-hint-mark'
@@ -1149,4 +1149,67 @@ it('does not confirm inside a source-neutral scope', () => {
 
   expect(confirmNow).not.toHaveBeenCalled()
   index.dispose()
+})
+
+// Task 733 / 022 (Q-182): the cold block-handle hover of `large-document-interaction.spec.ts` is served
+// without a snapshot when the model answers or is still proving, and with exactly one counted
+// snapshot when the units are confirmed but unusable. The spec accepts at most one snapshot; this
+// block keeps the counter shown to work on the path that still takes it.
+describe('cold hover read paths of the large document (022)', () => {
+  type Metrics = { blockHandleSnapshotCalls?: number }
+  const metrics = (): Metrics => {
+    const value: Metrics = {}
+    ;(window as any).__vmdeBlockHandleCacheMetrics = value
+    return value
+  }
+  // The counted pair of `boot/finish-init.ts` (`countedSnapshotPair`): one count per snapshot.
+  const countedPair = () => {
+    const win = window as { __vmdeBlockHandleCacheMetrics?: Metrics }
+    const counter = win.__vmdeBlockHandleCacheMetrics
+    if (counter)
+      counter.blockHandleSnapshotCalls =
+        (counter.blockHandleSnapshotCalls ?? 0) + 1
+    return { exact: 'A\n\nB\n' as string | null, rendered: 'A\n\nB\n' }
+  }
+  const HOVER_READ = { deferUnconfirmed: true } as const
+
+  it('a hover read while the units are unconfirmed takes no snapshot', () => {
+    const counter = metrics()
+    const snapshotPair = vi.fn(countedPair)
+    const ctx = feedSetup(publishUnits, { snapshotPair })
+    const entry = ctx.index.read(HOVER_READ)
+    expect(entry).not.toBeNull()
+    expect(snapshotPair).not.toHaveBeenCalled()
+    expect(counter.blockHandleSnapshotCalls ?? 0).toBe(0)
+    ctx.index.dispose()
+  })
+
+  it('a hover read with confirmed units is served by the model with no snapshot', () => {
+    const counter = metrics()
+    const snapshotPair = vi.fn(countedPair)
+    const ctx = feedSetup(publishUnits, { snapshotPair })
+    publishUnits(ctx)
+    const entry = ctx.index.read(HOVER_READ)
+    expect(entry?.units).toEqual(ctx.modelUnits)
+    expect(snapshotPair).not.toHaveBeenCalled()
+    expect(counter.blockHandleSnapshotCalls ?? 0).toBe(0)
+    ctx.index.dispose()
+  })
+
+  it('a hover read with confirmed but unusable units counts one snapshot', () => {
+    const counter = metrics()
+    const snapshotPair = vi.fn(countedPair)
+    const ctx = feedSetup(publishUnits, { snapshotPair })
+    provideUnitFeed(window, {
+      ...ctx.feed,
+      confirmedLines: () => [{ el: ctx.root, startLine: 0, endLine: 0 }],
+    })
+    const entry = ctx.index.read(HOVER_READ)
+    expect(snapshotPair).toHaveBeenCalledTimes(1)
+    expect(counter.blockHandleSnapshotCalls).toBe(1)
+    // The entry is cached: a second hover counts nothing more.
+    expect(ctx.index.read(HOVER_READ)).toBe(entry)
+    expect(counter.blockHandleSnapshotCalls).toBe(1)
+    ctx.index.dispose()
+  })
 })
