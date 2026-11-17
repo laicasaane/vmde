@@ -168,7 +168,7 @@ export function onSourceUnitFeed(
 
 /** Task 733 / 015 (D-1 to D-8): Source mode has its own text model, published by units; false restores
  *  today's Source path (model off in Source with reason 'mode', whole-text posts, old history engine). */
-export const SOURCE_UNITS: boolean = false
+export const SOURCE_UNITS: boolean = true
 
 /** Task 733 / 013 (D-13): the text model, unit spin, unit history and the unit feed serve WYSIWYG. false
  *  restores today's WYSIWYG path (model off with reason 'mode', hooks refuse, old history engine). */

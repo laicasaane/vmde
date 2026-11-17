@@ -364,12 +364,14 @@ function installUnitHistoryHook(): () => void {
     return session &&
       session === sessionAtInit &&
       sessionState.deltaSync &&
-      unitModeOf(innerVditor()?.currentMode) !== undefined
+      (unitModeOf(innerVditor()?.currentMode) !== undefined ||
+        (SOURCE_UNITS && innerVditor()?.currentMode === 'sv'))
       ? session
       : undefined
   }
   return installUnitHistory(window, {
     port: () => liveSession()?.historyPort(),
+    liveMode: () => liveSession()?.liveMode(),
     publishHistory: (kind, steps) =>
       sessionState.deltaSync?.publishHistory(kind, steps) ?? 'nothing',
     lastPostedSequence: () => sessionState.deltaSync?.lastPostedSequence() ?? 0,

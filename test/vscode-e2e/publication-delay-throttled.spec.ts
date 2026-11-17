@@ -40,10 +40,29 @@ const FRAME_MS = 50
 const GRID_MS = 1000
 const LAST_KEY_BOUND_MS = 250 + GRID_MS + FRAME_MS
 
-function installThrottle(_body: Element): boolean {
+function installThrottle(_body: Element, opened: string): boolean {
   const w = window as any
   if (w.__t624) return true
   const t: any = { keys: [], inputs: [], posts: [], throttled: 0 }
+  // Task 733 / 019 (Q-159, 019-A5): the model publishes `edit-delta` posts. Each one is applied to a copy
+  // of the host text (its ranges are of the pre-edit text, in order), and the copy is recorded as the
+  // post's content, so a delta is judged as a whole-text post is.
+  let hostText = opened
+  const offsetOf = (text: string, line: number, character: number): number => {
+    let offset = 0
+    for (let i = 0; i < line; i++) offset = text.indexOf('\n', offset) + 1
+    return offset + character
+  }
+  const applyDelta = (changes: any[]): string => {
+    let out = hostText
+    for (let i = changes.length - 1; i >= 0; i--) {
+      const change = changes[i]
+      const from = offsetOf(hostText, change.start.line, change.start.character)
+      const to = offsetOf(hostText, change.end.line, change.end.character)
+      out = out.slice(0, from) + change.text + out.slice(to)
+    }
+    return out
+  }
   const trusted = (list: any[], event: Event, extra: object = {}) => {
     if (event.isTrusted) list.push({ t: Date.now(), ...extra })
   }
@@ -59,8 +78,17 @@ function installThrottle(_body: Element): boolean {
   Object.defineProperty(wrapper, 'postMessage', {
     enumerable: true,
     value: (message: any, ...rest: unknown[]) => {
-      if (message?.command === 'edit' && typeof message.content === 'string')
+      if (message?.command === 'edit' && typeof message.content === 'string') {
+        hostText = message.content
         t.posts.push({ t: Date.now(), content: message.content })
+      } else if (
+        (message?.command === 'edit-delta' ||
+          message?.command === 'history-delta') &&
+        Array.isArray(message.changes)
+      ) {
+        hostText = applyDelta(message.changes)
+        t.posts.push({ t: Date.now(), content: hostText })
+      }
       return post.call(api, message, ...rest)
     },
   })
@@ -105,7 +133,8 @@ type Page = ReturnType<typeof readThrottle>
 const containsKeys = (page: Page, count: number) =>
   page.posts.find((p) => p.content.includes(ANCHOR + KEYS.slice(0, count)))
 
-// The keys whose first containing `edit` came after their limit (or never).
+// The keys whose first containing post (`edit`, or an `edit-delta` applied to the host text) came after
+// their limit (or never).
 function lateKeys(page: Page): string[] {
   const late: string[] = []
   for (let index = 0; index < KEYS.length; index++) {
@@ -176,7 +205,7 @@ test.describe('Task 624 S4 publication under throttled timers', () => {
       const ctx = await openDocument(kit, `t624-${mode}.md`, DOC, mode)
       try {
         await waitForInitialUndoSnapshot(kit.frame())
-        expect(await evalFrame(kit, installThrottle, 0), 'probe').toBe(true)
+        expect(await evalFrame(kit, installThrottle, DOC), 'probe').toBe(true)
         await select(ctx, ANCHOR, { collapsed: true, offset: ANCHOR.length })
         await typeKeys(kit)
         const page = await readWhenPublished(kit)

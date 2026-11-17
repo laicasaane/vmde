@@ -136,11 +136,55 @@ export function previewUnitCount(pane: HTMLElement): number | undefined {
   return unitCounts.get(pane)?.length
 }
 
-/** The top-level element nodes of `html`, parsed in `pane`'s document. */
-function elementsOf(pane: HTMLElement, html: string): Element[] {
+/**
+ * Task 733 / 019 (C5, Q-157): the top-level elements of `html`, parsed in `pane`'s document, each followed
+ * by the whitespace Text node `Md2HTML` writes after it (the `\n` between blocks), so a unit render gives
+ * the same pane DOM as a whole render. `elements` counts the elements only (the baseline unit).
+ */
+export function previewNodesOf(
+  pane: HTMLElement,
+  html: string,
+): { nodes: Node[]; elements: number } {
   const template = pane.ownerDocument.createElement('template')
   template.innerHTML = html
-  return Array.from(template.content.children)
+  const nodes: Node[] = []
+  let elements = 0
+  let afterElement = false
+  for (const node of Array.from(template.content.childNodes)) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      nodes.push(node)
+      elements++
+      afterElement = true
+    } else if (afterElement && isSeparator(node)) {
+      nodes.push(node)
+      afterElement = false
+    } else afterElement = false
+  }
+  return { nodes, elements }
+}
+
+/** Removes `count` elements from `start`, each with the separator after it (019 C5). */
+function removeElements(
+  children: HTMLCollection,
+  start: number,
+  count: number,
+): void {
+  for (let i = 0; i < count; i++) {
+    const element = children[start]
+    if (!element) return
+    const next = element.nextSibling
+    if (isSeparator(next)) next?.remove()
+    element.remove()
+  }
+}
+
+/** A whitespace-only Text node: the separator a whole render writes between top-level blocks. */
+function isSeparator(node: Node | null): boolean {
+  return (
+    node !== null &&
+    node.nodeType === Node.TEXT_NODE &&
+    (node.textContent ?? '').trim() === ''
+  )
 }
 
 /**
@@ -168,12 +212,12 @@ export function morphPreviewUnits(
   let removedElements = 0
   for (let i = from; i < from + removed; i++) removedElements += counts[i]
   const stopAt = children[start + removedElements] ?? null
-  for (let i = 0; i < removedElements; i++) children[start]?.remove()
+  removeElements(children, start, removedElements)
   const fresh: number[] = []
   for (const html of htmls) {
-    const elements = elementsOf(pane, html)
-    for (const element of elements) pane.insertBefore(element, stopAt)
-    fresh.push(elements.length)
+    const { nodes, elements } = previewNodesOf(pane, html)
+    for (const node of nodes) pane.insertBefore(node, stopAt)
+    fresh.push(elements)
   }
   counts.splice(from, removed, ...fresh)
   // The raw cache of `morphPreviewInto` no longer describes the pane: its next morph sets it whole.

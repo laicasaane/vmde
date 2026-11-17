@@ -212,3 +212,33 @@ describe.each([1, 4, 16] as const)(
     })
   },
 )
+
+// Task 733 / 019 (C5, Q-157): a unit morph gives the same pane DOM as a whole render. `Md2HTML` writes
+// one `\n` Text node after each top-level element; the morph keeps it with its element.
+describe('019 morphPreviewUnits keeps the block separators (C5)', () => {
+  const whole = (...blocks: string[]) => blocks.map((b) => `${b}\n`).join('')
+  let pane: HTMLElement
+  beforeEach(() => {
+    document.body.innerHTML = ''
+    pane = document.createElement('div')
+    pane.innerHTML = whole('<p>a</p>', '<p>b</p>', '<p>c</p>')
+    document.body.appendChild(pane)
+    unitMorph.setPreviewUnitBaseline?.(pane, [1, 1, 1])
+  })
+
+  test('a replaced unit leaves the pane equal to a whole render', () => {
+    expect(unitMorph.morphPreviewUnits?.(pane, 1, 1, ['<p>bx</p>\n'])).toBe(
+      true,
+    )
+    expect(pane.innerHTML).toBe(whole('<p>a</p>', '<p>bx</p>', '<p>c</p>'))
+  })
+
+  test('an inserted and a removed unit keep one separator per element', () => {
+    expect(unitMorph.morphPreviewUnits?.(pane, 1, 0, ['<p>n</p>\n'])).toBe(true)
+    expect(pane.innerHTML).toBe(
+      whole('<p>a</p>', '<p>n</p>', '<p>b</p>', '<p>c</p>'),
+    )
+    expect(unitMorph.morphPreviewUnits?.(pane, 2, 1, [])).toBe(true)
+    expect(pane.innerHTML).toBe(whole('<p>a</p>', '<p>n</p>', '<p>c</p>'))
+  })
+})

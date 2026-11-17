@@ -2113,3 +2113,55 @@ describe.each([1, 4, 16] as const)(
     )
   },
 )
+
+// Task 733 / 019 (Q-154, D-7 of the Source design): with the Source model built, the session's history
+// port is the Source port; in IR it stays the IR port. 019-A3: a Text split in a Source unit (the unit
+// engine's `splitAtCaret`, Vditor's caret marker) changes no text, so the session still owns the text.
+describe('019 Source history port and owned text', () => {
+  let sv: ReturnType<typeof createRealLute>
+  beforeAll(() => {
+    sv = createRealLute('sv')
+  })
+  const toSource = (r: Rig, text: string) => {
+    r.mode.value = 'sv'
+    r.sourceRoot.innerHTML = svBlocksHtml(sv.render(text))
+    r.session.onModeChange('sv')
+    r.session.onEditDomComplete()
+    r.runFrames()
+  }
+  const toIr = (r: Rig, text: string) => {
+    r.mode.value = 'ir'
+    r.render(text)
+    r.session.onModeChange('ir')
+    r.session.onEditDomComplete()
+    r.runFrames()
+  }
+
+  it('serves the Source port while the Source model is built and the IR port in IR', () => {
+    const r = open(DOC, 3)
+    const irPort = r.session.historyPort()
+    expect(irPort).toBeDefined()
+    toSource(r, DOC)
+    expect(sourceApi(r).liveMode?.()).toBe('sv')
+    const sourcePort = r.session.historyPort()
+    expect(sourcePort).toBeDefined()
+    expect(sourcePort).not.toBe(irPort)
+    expect(sourcePort?.claimable()).toBe(true)
+    expect(sourcePort?.ready()).toBe(true)
+    toIr(r, DOC)
+    expect(sourceApi(r).liveMode?.()).toBe('ir')
+    expect(r.session.historyPort()).toBe(irPort)
+  })
+
+  it('owns the text after a Text node of a Source unit is split (019-A3)', () => {
+    const r = open(DOC, 3)
+    toSource(r, DOC)
+    expect(sourceApi(r).modeSwitchText?.()).toBe(DOC)
+    const walker = document.createTreeWalker(r.sourceRoot, NodeFilter.SHOW_TEXT)
+    let text = walker.nextNode() as Text | null
+    while (text && text.data.length < 2) text = walker.nextNode() as Text | null
+    expect(text).not.toBeNull()
+    text?.splitText(1)
+    expect(sourceApi(r).modeSwitchText?.()).toBe(DOC)
+  })
+})

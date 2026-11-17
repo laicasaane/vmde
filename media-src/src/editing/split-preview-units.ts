@@ -13,6 +13,7 @@ import {
 } from '../util/unit-changes'
 import {
   morphPreviewUnits,
+  previewNodesOf,
   previewUnitCount,
   setPreviewUnitBaseline,
 } from './preview-morph'
@@ -41,6 +42,16 @@ const DEFINITION_LINE = /(?:^|\n) {0,3}\[\^?[^\]\n]+\]:/u
 const unitText = (unit: LiveUnit): string => {
   let text = ''
   for (const member of unit.members) text += member.textContent ?? ''
+  return text
+}
+
+/** `text` without its trailing line breaks and zero-width spaces (Vditor's editable last line). */
+const trimTail = (text: string): string => text.replace(/[\n\u200B]+$/u, '')
+
+/** The Source text of `units`: their members' text in order (O(document); a pane opening only). */
+const sourceTextOf = (units: readonly LiveUnit[]): string => {
+  let text = ''
+  for (const unit of units) text += unitText(unit)
   return text
 }
 
@@ -75,13 +86,6 @@ function rangeOf(
     if (index > last) last = index
   }
   return { first, last }
-}
-
-/** Parses `html` and returns its top-level elements. */
-function elementsOf(pane: HTMLElement, html: string): HTMLElement[] {
-  const holder = pane.ownerDocument.createElement('template')
-  holder.innerHTML = html
-  return Array.from(holder.content.children) as HTMLElement[]
 }
 
 /** Renders units `range` alone into the pane by unit morph; false when the pane cannot be morphed. */
@@ -130,13 +134,19 @@ function wholeRenderJob(owner: Owner, win: Window) {
         counts = []
       }
       while (cursor < units.length && !budget.spent()) {
-        const elements = elementsOf(
+        // Each element keeps the separator a whole render writes after it (019 C5).
+        const { nodes, elements } = previewNodesOf(
           pane,
           renderPreviewHtml(owner.lute, unitText(units[cursor])),
         )
-        pane.append(...elements)
-        renderPreviewBlocks(owner, elements)
-        counts.push(elements.length)
+        pane.append(...nodes)
+        renderPreviewBlocks(
+          owner,
+          nodes.filter(
+            (node): node is HTMLElement => node instanceof HTMLElement,
+          ),
+        )
+        counts.push(elements)
         cursor++
       }
       if (cursor < units.length) return true
@@ -163,6 +173,7 @@ export function installSplitPreviewRoute(owner: Owner): () => void {
       whole = true
       definitions = undefined
       scoped.clear()
+      openBaseline()
       return
     }
     for (const el of change.scopes ?? change.changed.map((unit) => unit.el))
@@ -176,11 +187,35 @@ export function installSplitPreviewRoute(owner: Owner): () => void {
   }
 
   const routes = (vditor: unknown, value?: string): boolean => {
-    if (!SOURCE_UNITS || value !== undefined || vditor !== owner) return false
+    if (!SOURCE_UNITS || vditor !== owner) return false
     const mode = (owner.options?.preview as { mode?: string } | undefined)?.mode
     if (owner.currentMode !== 'sv' || mode !== 'both') return false
     const feed = sourceUnitFeedOf(win)
-    return !!feed?.isLive() && !holdsDefinitions(feed)
+    if (!feed?.isLive() || holdsDefinitions(feed)) return false
+    if (value === undefined) return true
+    // Task 733 / 019 (C6, Q-158): the render that opens the pane carries the Source text. It is rendered
+    // whole by the job, which sets the unit baseline, so the next key morphs only its units. One string
+    // comparison per pane opening; any other given value (HTML) stays Vditor's.
+    if (trimTail(value) !== trimTail(sourceTextOf(feed.liveUnits() ?? [])))
+      return false
+    whole = true
+    return true
+  }
+
+  /**
+   * Task 733 / 019 (C6, Q-158): Vditor renders the Split pane whole when Source opens, before the Source
+   * model is built, so the pane has no unit baseline and the first key would render it whole again. When
+   * the model is built (a whole feed change) with the pane shown, the pane is rendered once by the job,
+   * which sets the baseline: later keys morph only their units.
+   */
+  const openBaseline = (): void => {
+    const pane = owner.preview.previewElement
+    const shown =
+      (owner.preview as { element?: HTMLElement }).element?.style.display !==
+      'none'
+    if (!shown || previewUnitCount(pane) !== undefined || !routes(owner)) return
+    clearTimeout(timer)
+    timer = setTimeout(render, owner.options.preview.delay ?? 0)
   }
 
   const renderWhole = (): void => {

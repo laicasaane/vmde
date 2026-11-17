@@ -3900,3 +3900,114 @@ describe('createEditSync with a live text model (007-B)', () => {
     expect(t.es.historyText()).toBe('FULL')
   })
 })
+
+// Task 733 / 019 (C3 Q-155, C4 Q-156, 019-A1): Source with a live Source model. The Source DOM is split
+// per chunk, so its text is not the host bytes: while the session owns the text, the whole-DOM readers
+// return the model text (after publishing a pending key). After a Source delta, a post without user input
+// (the post after Undo, a Rewrap) publishes instead of being taken for a mode switch.
+describe('019 Source with a live model', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function liveSv() {
+    const results: PrepareResult[] = []
+    const state = { owns: true, dirty: false, text: 'alpha\n' }
+    const port: DeltaSessionPort = {
+      prepareDelta: vi.fn((): PrepareResult => {
+        const next = results.shift()
+        if (next?.kind === 'changes') {
+          state.text = 'alphaX\n'
+          state.dirty = false
+        }
+        return next ?? { kind: 'nothing' }
+      }),
+      epoch: () => 3,
+      awaiting: () => false,
+      hasDirty: () => state.dirty,
+      modelText: () => state.text,
+      rebind: vi.fn(),
+      markPublishedWhole: vi.fn(),
+      clearForms: vi.fn(),
+    }
+    const session = {
+      beforeWholeTextPost: vi.fn(() => undefined),
+      onModeChange: vi.fn(),
+      turnOff: vi.fn(),
+      deltaPort: () => port,
+      canPublishDelta: () => true,
+      ownsText: () => state.owns,
+      modeSwitchText: () => (state.dirty ? undefined : state.text),
+      onWholeTextPublished: vi.fn(),
+      recordFallback: vi.fn(),
+      markExplicitAtCaret: vi.fn(),
+      applyText: vi.fn((): ApplyOutcome => ({ kind: 'applied' })),
+      rebuildAfterExact: vi.fn(),
+    }
+    const rig = boot({
+      mode: 'sv',
+      getValue: () => 'FULL',
+      modelSession: session,
+    })
+    // The Source root as the per-chunk spin leaves it: its text differs from the host bytes.
+    const root = document.createElement('pre')
+    root.innerHTML = '<div data-block="0">DOM TEXT\n</div>'
+    h.activeEl = root as unknown as { textContent: string }
+    const deltas = () =>
+      rig.post.mock.calls.filter((c) => c[0]?.command === 'edit-delta')
+    return { ...rig, results, state, port, session, deltas }
+  }
+  const typed = {
+    kind: 'changes' as const,
+    before: 'alpha\n',
+    changes: [{ from: 5, to: 5, insert: 'X' }],
+  }
+
+  /** One key typed and published as a delta. */
+  const typeAndPublish = (t: ReturnType<typeof liveSv>) => {
+    t.results.push(typed)
+    t.es.markUserInput()
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.deltas()).toHaveLength(1)
+  }
+
+  it('the post after an Undo, with no user input, publishes after a Source delta (C4)', () => {
+    const t = liveSv()
+    typeAndPublish(t)
+    t.results.push({ ...typed, before: 'alphaX\n' })
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.deltas()).toHaveLength(2)
+  })
+
+  it('a Rewrap post (invalidate, then schedule) publishes after a Source delta (C4)', () => {
+    const t = liveSv()
+    typeAndPublish(t)
+    t.results.push({ ...typed, before: 'alphaX\n' })
+    t.es.invalidate()
+    t.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(t.deltas()).toHaveLength(2)
+  })
+
+  it('historyText and the rendered snapshot are the model text while the session owns it (C3)', () => {
+    const t = liveSv()
+    expect(t.es.historyText()).toBe('alpha\n')
+    expect(t.es.snapshotPair().rendered).toBe('alpha\n')
+  })
+
+  it('a key typed without a sync is published first and is in the Source text (019-A1)', () => {
+    const t = liveSv()
+    t.state.dirty = true
+    t.results.push(typed)
+    t.es.markUserInput()
+    expect(t.es.historyText()).toBe('alphaX\n')
+    expect(t.deltas()).toHaveLength(1)
+  })
+})

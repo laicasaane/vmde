@@ -577,9 +577,49 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       : false
     return el && enabled ? el : undefined
   }
-  const serializeSvForHost = (
-    editor = activeModeElement(window.vditor),
-  ): string => {
+  /** True while `sourceModelText` publishes, so a whole-text fallback it posts reads the DOM. */
+  let readingSourceModel = false
+  /** Set once the live publisher below is defined: a read during construction takes the DOM. */
+  let sourceModelReady = false
+  /**
+   * Task 733 / 019 (C3, Q-155, 019-A1): the model text while the session owns the Source text. The
+   * Source DOM is split per chunk and its separators are not the host bytes, so a whole-DOM read is
+   * not the host text. A unit dirty since the last post is published first; undefined (read the DOM)
+   * when the model does not own the text, during a composition or a rebuild, or when that post could
+   * not be a delta.
+   */
+  const sourceModelText = (): string | undefined => {
+    if (
+      !sourceModelReady ||
+      readingSourceModel ||
+      !deltaPort ||
+      !liveSession?.ownsText?.() ||
+      composing()
+    )
+      return undefined
+    if (deltaPort.hasDirty() && !publishDirtySource()) return undefined
+    return deltaPort.modelText() ?? undefined
+  }
+  /** Publishes the dirty Source units as a delta; false when that could not post a delta. */
+  const publishDirtySource = (): boolean => {
+    if (actionApplying || isSuppressed()) return false
+    readingSourceModel = true
+    let result: ReturnType<typeof publishLive>
+    try {
+      result = publishLive('exact')
+    } finally {
+      readingSourceModel = false
+    }
+    if (result === undefined || result === 'fallback') return false
+    return deltaPort?.hasDirty() === false
+  }
+  const serializeSvForHost = (editor?: Element | null): string => {
+    // An explicit element (a hidden mode's DOM, a history snapshot) is read as it is.
+    if (editor === undefined) {
+      const modelText = sourceModelText()
+      if (modelText !== undefined) return modelText
+      editor = activeModeElement(window.vditor)
+    }
     if (!editor) return vditor.getValue()
     // Vditor always appends one editable newline span to SV. Remove that DOM node, rather than
     // trimming text: authored terminal blank lines are their preceding sibling spans and remain.
@@ -1373,7 +1413,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     exactTransactionMarkdown = null
     exactTransactionRendered = null
     if (latestExact) latestExact.plainAfter = true
-    if (lastSerializeMode !== 'ir-incremental') lastSerializeMode = 'ir'
+    // Task 733 / 019 (C4, Q-156): the mode the delta was published in. A Source delta recorded as 'ir'
+    // made the next post without user input (the post after Undo, a Rewrap) look like a switch into
+    // Source, and `postEdit` returned without publishing.
+    if (lastSerializeMode !== 'ir-incremental')
+      lastSerializeMode = window.vditor.getCurrentMode?.() ?? 'ir'
     if (perf)
       vscode.postMessage({
         command: 'edit-perf-renderer',
@@ -1417,6 +1461,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     if (result !== undefined) afterLivePublish(result, perf, started)
     return result
   }
+  sourceModelReady = true
   /** The model text while it owns the host bytes plus typing (published first); null otherwise. */
   const liveExactText = (): string | null => {
     if (!liveSession?.ownsText?.() || composing()) return null

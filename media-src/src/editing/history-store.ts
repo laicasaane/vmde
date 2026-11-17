@@ -114,12 +114,11 @@ type SnapshotScope = Parameters<
 export const IR_HISTORY_ENGINE: 'unit' | 'vditor' = 'unit'
 
 /**
- * Task 733 / 015 (D-7): the engine of Source history. The unit engine can hold Source history (it claims
- * Source while the Source model is live), but the Source model has no history port of its own yet: its
- * capture of changed-unit DOM windows (`bridge/unit-capture.ts`) is IR-shaped (preview, list and table
- * restores). Until a Source port lands, Source keeps Vditor's `Undo` (follow-up recorded by 015-I4).
+ * Task 733 / 015 (D-7), 019 (Q-154): the engine of Source history. The unit engine claims Source while
+ * Source units are on and the Source model is live, through the Source history port
+ * (`bridge/sv-units.ts` `createSourceHistoryCapture`); otherwise Vditor's `Undo` keeps Source.
  */
-export const SOURCE_HISTORY_ENGINE: 'unit' | 'vditor' = 'vditor'
+export const SOURCE_HISTORY_ENGINE: 'unit' | 'vditor' = 'unit'
 
 const MODES: readonly HistoryMode[] = ['ir', 'wysiwyg', 'sv']
 

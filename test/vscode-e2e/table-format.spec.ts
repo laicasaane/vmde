@@ -5,6 +5,7 @@ import {
   docText,
   reopenVmdeFixture,
   settle,
+  shippedSwitches,
   waitForE2EReadiness,
   wf,
 } from './webview-helpers'
@@ -254,11 +255,16 @@ for (const padding of PADDING_CASES) {
     const after = ['before', '', ...PADDED_TABLE, '', 'after', ''].join('\r\n')
     writeFileSync(file, before)
     const frame = await openInSource(evaluateInVSCode, workbox, file)
-    // The switch itself padded the editor text; the host bytes are still raw.
+    // The switch itself padded the editor text; the host bytes are still raw. Task 733 / 019 (Q-159):
+    // with Source units on, the switch shows the host bytes, so the editor holds the raw table.
     const shown = await frame
       .locator('body')
       .evaluate(() => (window as any).vditor.vditor.sv.element.textContent)
-    expect(shown).toContain(PADDED_TABLE.join('\n'))
+    if ((await shippedSwitches(frame)).sourceUnits)
+      expect(shown).toContain(
+        ['|a|longer|', '|-|-|', '|wide text||'].join('\n'),
+      )
+    else expect(shown).toContain(PADDED_TABLE.join('\n'))
     expect(await docText(evaluateInVSCode, file)).toBe(before)
     const placed = await frame
       .locator('body')

@@ -586,3 +586,57 @@ describe('013 WYSIWYG delegation', () => {
     }
   })
 })
+
+// Task 733 / 019 (Q-154, 019-A4): Source history follows the unit engine while it claims Source. The unit
+// engine claims Source only when `SOURCE_UNITS` is on and the Source model is live (`holdsSource` in
+// `unit-history.ts`); the fake delegate's `claims` stands for that condition, so the case tests the
+// store's behaviour and not the value of `SOURCE_HISTORY_ENGINE`.
+describe('019 Source delegation', () => {
+  function sourceDelegate(sourceUnitsLive: boolean) {
+    const entry = { id: 'unit-sv-top' } as unknown as HistoryEntryToken
+    return {
+      entry,
+      delegate: {
+        claims: () => sourceUnitsLive,
+        top: () => entry,
+        redoTop: () => undefined,
+        base: () => entry,
+        slot: () => undefined,
+        isEmpty: () => false,
+        revision: () => 11,
+        savepoint: () => undefined,
+        restore: () => undefined,
+        amendTopCaret: () => 'unchanged' as const,
+        isSourceNeutral: () => true,
+      },
+    }
+  }
+
+  it('reads the Source history from the unit engine while Source units are on and the Source model is live', () => {
+    const f = fakeInner()
+    f.inner.currentMode = 'sv'
+    const store = storeOf(f)
+    const { entry, delegate } = sourceDelegate(true)
+    provideUnitHistoryDelegate(delegate)
+    try {
+      expect(store.top('sv')).toBe(entry)
+      expect(store.revision('sv')).toBe(11)
+      expect(store.isEmpty('sv')).toBe(false)
+    } finally {
+      provideUnitHistoryDelegate(undefined)
+    }
+  })
+
+  it("keeps Vditor's engine in Source while Source units are off", () => {
+    const f = fakeInner()
+    f.inner.currentMode = 'sv'
+    const store = storeOf(f)
+    const { entry, delegate } = sourceDelegate(false)
+    provideUnitHistoryDelegate(delegate)
+    try {
+      expect(store.top('sv')).not.toBe(entry)
+    } finally {
+      provideUnitHistoryDelegate(undefined)
+    }
+  })
+})

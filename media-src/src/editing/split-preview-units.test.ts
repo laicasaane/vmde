@@ -200,3 +200,69 @@ describe('S-10 routes', () => {
     expect(hookOf()?.(defs.vditor)).toBe(false)
   })
 })
+
+// Task 733 / 019 (C5, Q-157; C6, Q-158): the pane a unit render leaves equals a whole render of the
+// same text, and the render that opens the pane gives it the unit baseline, so the next key morphs.
+describe('019 Split separators and the pane-open baseline', () => {
+  beforeEach(() => {
+    sourceUnitsOn.value = true
+  })
+  afterEach(() => {
+    sourceUnitsOn.value = false
+  })
+  const markdown = 'alpha\n\nbravo\n\ncharlie\n'
+  /** Replaces the rig's pane by an empty one with no unit baseline. */
+  const freshPane = (r: Rig): HTMLElement => {
+    const pane = document.createElement('div')
+    r.pane.replaceWith(pane)
+    ;(r.vditor.preview as { previewElement: HTMLElement }).previewElement = pane
+    return pane
+  }
+  const previewMorphModule = previewMorph as unknown as {
+    previewUnitCount?(pane: HTMLElement): number | undefined
+  }
+
+  it('a key morph leaves the pane equal to a whole render (C5)', async () => {
+    vi.useFakeTimers()
+    const r = await rig(markdown)
+    const div = divStarting(r.root, 'bravo')
+    div.firstElementChild?.append('x')
+    r.emit(unitChange(div))
+    expect(hookOf()?.(r.vditor)).toBe(true)
+    vi.runOnlyPendingTimers()
+    expect(r.pane.innerHTML).toBe(lute.Md2HTML('alpha\n\nbravox\n\ncharlie\n'))
+  })
+
+  it('the whole render job keeps the separators (C5)', async () => {
+    vi.useFakeTimers()
+    const r = await rig(markdown)
+    // A pane without a unit baseline is rendered whole, unit by unit, by the background job.
+    const pane = freshPane(r)
+    const div = divStarting(r.root, 'bravo')
+    r.emit(unitChange(div))
+    expect(hookOf()?.(r.vditor)).toBe(true)
+    vi.runAllTimers()
+    expect(pane.innerHTML).toBe(lute.Md2HTML(markdown))
+  })
+
+  it('the pane-open render sets the baseline and the next key morphs one unit (C6)', async () => {
+    vi.useFakeTimers()
+    const r = await rig(markdown)
+    // The pane as Vditor's own render opens it: whole HTML, no unit baseline. Its render arrives with
+    // the model text as `value` (Q-158).
+    const pane = freshPane(r)
+    pane.innerHTML = lute.Md2HTML(markdown)
+    expect(hookOf()?.(r.vditor, markdown)).toBe(true)
+    vi.runAllTimers()
+    expect(previewMorphModule.previewUnitCount?.(pane)).toBe(3)
+    const div = divStarting(r.root, 'charlie')
+    div.firstElementChild?.append('x')
+    r.emit(unitChange(div))
+    const { counts } = countBudget(r.root, () => {
+      hookOf()?.(r.vditor)
+      vi.runOnlyPendingTimers()
+    })
+    expect(counts.luteCalls).toBe(1)
+    expect(pane.textContent).toContain('charliex')
+  })
+})

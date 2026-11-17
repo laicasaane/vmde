@@ -1,4 +1,4 @@
-import { wf } from './webview-helpers'
+import { shippedSwitches, wf } from './webview-helpers'
 // sv (split view) mode polish — task 187. Real-VS-Code-only: mode switching drives the
 // real toolbar + custom-editor pipeline, and the assertions cover behaviour the harness
 // can't reproduce (custom renderers in the split preview, the preview morph across an
@@ -218,7 +218,11 @@ test('sv split: renders the battery, morph keeps diagram DOM, scroll + mode repo
   })
   console.log(`[sv-section-sync] ${JSON.stringify(sectionSync)}`)
   expect(sectionSync.error).toBeUndefined()
-  expect(sectionSync.sourceChildren).toBe(1)
+  // Task 733 / 019 (Q-159): with Source units on, Source `setValue` builds one `data-block` div per
+  // chunk (patch V-S3); off, Vditor's one-div build stays.
+  if ((await shippedSwitches(frame)).sourceUnits)
+    expect(sectionSync.sourceChildren).toBeGreaterThan(1)
+  else expect(sectionSync.sourceChildren).toBe(1)
   expect(sectionSync.previewCount).toBe(22)
   expect(sectionSync.nearest?.text).toBe('12. WaveDrom — timing diagrams')
   expect(Math.abs(sectionSync.sourceOffset ?? 999)).toBeLessThan(8)

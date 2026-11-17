@@ -4,6 +4,9 @@ import type { Page } from '@playwright/test'
 // stage. It keeps the host text, applies the webview's `edit`, `edit-delta` and `history-delta` posts
 // as the host does, answers an `edit` with `rebind: true` once (the host's `answerRebind`), and
 // resynchronizes with one `update` of a new epoch when a delta does not match (shared rules 3.6).
+// Task 733 / 019 (Q-161): a `history-transition` whose `before` is the host text makes `after` the host
+// text, as the host's history coupling does; any other `before` resynchronizes. `holdRebind` records a
+// rebind request and leaves it unanswered, so the model stays waiting.
 // Not modelled: save, `exact-authority`, epochs across a reload, restart memory (run 1 covers them).
 // Every other post is recorded by its kind only; no text is kept beyond the host text.
 
@@ -13,13 +16,20 @@ export interface HostStubState {
   accepted: number
   resyncs: number
   rebinds: number
+  /** Task 733 / 019: `history-transition` posts the stub applied. */
+  transitions: number
   kinds: string[]
 }
 
 /** Installs the stub's `acquireVsCodeApi` before the page's scripts run; `ready` gets the `init` update. */
 export async function installHostStub(
   page: Page,
-  init: { content: string; options?: Record<string, unknown> },
+  init: {
+    content: string
+    options?: Record<string, unknown>
+    /** Task 733 / 019 (Q-161): record a rebind request and leave it unanswered. */
+    holdRebind?: boolean
+  },
 ): Promise<void> {
   await page.addInitScript(
     (setup) => {
@@ -36,6 +46,7 @@ export async function installHostStub(
         accepted: 0,
         resyncs: 0,
         rebinds: 0,
+        transitions: 0,
         kinds: [] as string[],
       }
       // The last accepted delta sequence of the current epoch (the host's `acceptedSequence`).
@@ -112,6 +123,7 @@ export async function installHostStub(
         state.accepted++
         if (posted.rebind !== true) return
         state.rebinds++
+        if (setup.holdRebind) return
         const editSequence =
           typeof posted.sequence === 'number' ? posted.sequence : undefined
         answer({
@@ -140,13 +152,31 @@ export async function installHostStub(
         state.accepted++
       }
 
+      // A `history-transition`: applied when `before` is the host text, else answered by a resync.
+      const onTransition = (posted: any) => {
+        if (
+          typeof posted.before !== 'string' ||
+          typeof posted.after !== 'string' ||
+          posted.before !== state.text
+        ) {
+          resync()
+          return
+        }
+        state.text = posted.after
+        state.transitions++
+      }
+
+      const handlers: Record<string, (posted: any) => void> = {
+        ready: onReady,
+        edit: onEdit,
+        'edit-delta': onDelta,
+        'history-delta': onDelta,
+        'history-transition': onTransition,
+      }
       const receive = (posted: any) => {
         const kind = typeof posted?.command === 'string' ? posted.command : '?'
         state.kinds.push(kind)
-        if (kind === 'ready') onReady()
-        else if (kind === 'edit') onEdit(posted)
-        else if (kind === 'edit-delta' || kind === 'history-delta')
-          onDelta(posted)
+        if (Object.hasOwn(handlers, kind)) handlers[kind](posted)
       }
 
       ;(window as any).acquireVsCodeApi = () => ({
@@ -155,7 +185,11 @@ export async function installHostStub(
         setState: () => undefined,
       })
     },
-    { content: init.content, options: init.options ?? {} },
+    {
+      content: init.content,
+      options: init.options ?? {},
+      holdRebind: init.holdRebind === true,
+    },
   )
 }
 

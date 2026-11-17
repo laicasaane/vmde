@@ -46,7 +46,11 @@ import {
   stripDefinitionContext,
 } from './definition-units'
 import { scanSourceChunks } from './sv-chunks'
-import { createSourceUnitDom } from './sv-units'
+import {
+  createSourceHistoryCapture,
+  createSourceUnitDom,
+  sourceUnitText,
+} from './sv-units'
 import { createUnitCapture } from './unit-capture'
 import {
   type ModeLute,
@@ -574,6 +578,17 @@ function pushConnected(
   for (const member of members) if (member.isConnected) out.push(member)
 }
 
+/** Task 733 / 019: a Source unit still sits in `root` and its members' text is its proven text. */
+function sourceUnitKeepsText(
+  unit: Unit<HTMLElement>,
+  root: HTMLElement | null | undefined,
+): boolean {
+  if (unit.canon === undefined) return false
+  for (const member of unit.members)
+    if (member.parentElement !== root) return false
+  return sourceUnitText(unit.members) === unit.canon
+}
+
 /** Adds every element of `source` to `target` (the adapter's batch sets are reused, so they are copied). */
 function addAll(target: Set<HTMLElement>, source: Iterable<HTMLElement>): void {
   for (const el of source) target.add(el)
@@ -838,8 +853,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     model: () => model,
     root: () => modelRoot() ?? undefined,
     drain: () => dom?.drain(),
-    // Task 733 / 015 (D-7): this capture is IR-shaped; a Source model offers no history port (the unit
-    // engine leaves Source to Vditor's Undo, SOURCE_HISTORY_ENGINE).
+    // Task 733 / 015 (D-7): this capture is IR-shaped; the Source model has its own port below (019).
     ready: () =>
       live() &&
       servesBuiltMode() &&
@@ -858,6 +872,28 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       builtMode === undefined || builtMode === 'sv' ? 'ir' : builtMode,
   })
 
+  /** Task 733 / 019 (D-7, Q-154): the history port of the Source model, served while it is built. */
+  const sourceCapture = createSourceHistoryCapture({
+    model: () => (builtMode === 'sv' ? model : undefined),
+    root: () =>
+      builtMode === 'sv' ? (deps.getSourceRoot?.() ?? undefined) : undefined,
+    drain: () => dom?.drain(),
+    ready: () =>
+      live() &&
+      servesBuiltMode() &&
+      builtMode === 'sv' &&
+      !awaitingNow() &&
+      !stale,
+    claimable: () =>
+      (serving() && builtMode === 'sv') || buildFrame !== undefined,
+  })
+
+  /** Both history captures lose what they hold (the text or the DOM behind them is gone). */
+  const invalidateCaptures = (): void => {
+    capture.invalidate()
+    sourceCapture.invalidate()
+  }
+
   /** One mutation change per animation frame, after the last batch of the frame. */
   const onBatch = (
     changed: ReadonlySet<Unit<HTMLElement>>,
@@ -865,7 +901,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     inserted?: ReadonlySet<HTMLElement>,
   ): void => {
     // The history capture reads the units before a sync can overwrite their HTML.
-    capture.onBatch(changed, structure)
+    if (builtMode === 'sv') sourceCapture.onBatch(changed, structure)
+    else capture.onBatch(changed, structure)
     pending.changed = mergeBatch(pending.changed, changed)
     if (inserted) addAll(pending.inserted, inserted)
     pending.structure = mergeBatch(pending.structure, structure)
@@ -1003,6 +1040,8 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     }
     dom = sourceDom
     sourceDom.attach(built)
+    // The Source DOM as built is the base of the first Source history capture (019).
+    sourceCapture.invalidate()
     confirmed = true
     emitWhole('build')
   }
@@ -1254,7 +1293,27 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     if (!model || !live() || awaitingNow() || stale || !confirmed)
       return undefined
     dom?.drain()
-    return model.hasDirty() ? undefined : model.text
+    if (!model.hasDirty()) return model.text
+    return builtMode === 'sv' && sourceDirtyKeepsText(model)
+      ? model.text
+      : undefined
+  }
+
+  /**
+   * Task 733 / 019 (019-A3): a Text split in a Source unit (the unit engine's caret split) changes no text
+   * but dirties the unit. True when at least one top unit is dirty and each dirty one still sits in the
+   * Source root with its proven text; a structure change (a div replaced or inserted) dirties no unit and
+   * answers false. O(units) flag reads; a text read for dirty units only.
+   */
+  const sourceDirtyKeepsText = (built: TextModel<HTMLElement>): boolean => {
+    const root = deps.getSourceRoot?.()
+    let dirtyUnits = 0
+    for (const unit of built.units) {
+      if (!unit.dirty) continue
+      dirtyUnits++
+      if (!sourceUnitKeepsText(unit, root)) return false
+    }
+    return dirtyUnits > 0
   }
 
   /**
@@ -1374,7 +1433,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       // whose rewrite a checkpoint already captured: that capture matches the DOM and the text, so
       // it stays restorable, as after an outline move (`onHostWriteOutcome`). A rewrite left pending
       // is an update no checkpoint took (an outside change in place of the answer).
-      if (!answersWrite || capture.port.pending()) capture.invalidate()
+      if (!answersWrite || capture.port.pending()) invalidateCaptures()
       // The DOM is about to be (or was) rebuilt by `setValue`; with no complete edit DOM there is
       // nothing to build yet and `onEditDomComplete()` will.
       if (domComplete) buildSoon()
@@ -1533,7 +1592,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       schedule?.requestAudit(false)
     },
     turnOff(reason) {
-      capture.invalidate()
+      invalidateCaptures()
       modeReentry = false
       cancelBuild()
       teardown()
@@ -1553,7 +1612,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       }
       // Task 733 / 015 (D-5): read before the teardown (R-1).
       const kept = keptAcrossSwitch(next)
-      capture.invalidate()
+      invalidateCaptures()
       modeReentry = false
       host = undefined
       cancelBuild()
@@ -1635,7 +1694,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
         : undefined
     },
     deltaPort: () => port,
-    historyPort: () => capture.port,
+    historyPort: () => (builtMode === 'sv' ? sourceCapture.port : capture.port),
     canPublishDelta: () => live() && servesBuiltMode(),
     ownsText: () =>
       live() && servesBuiltMode() && !awaitingNow() && !stale && confirmed,
@@ -1705,7 +1764,7 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
       }
     },
     dispose() {
-      capture.invalidate()
+      invalidateCaptures()
       cancelBuild()
       teardown()
       listeners.clear()
