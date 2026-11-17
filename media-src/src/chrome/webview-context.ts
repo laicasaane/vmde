@@ -111,13 +111,126 @@ function stampWebviewContexts(root: HTMLElement, scope = root): void {
   })
 }
 
-function stampMutationRecord(root: HTMLElement, record: MutationRecord): void {
-  if (record.type === 'attributes' && record.target instanceof HTMLElement) {
-    stampWebviewContexts(root, record.target)
+// The context `element` alone wants, by the rules of `desiredContexts` in the same order (a later
+// rule wins); reads only the element and its ancestors, never its subtree.
+function desiredContextOf(
+  root: HTMLElement,
+  element: HTMLElement,
+): Record<string, string> | null {
+  let context: Record<string, string> | null =
+    element === root ? { webviewSection: 'editor' } : null
+  if (element.matches('.vditor-sv')) context = { webviewSection: 'editor' }
+  if (
+    element.matches('[data-type="code-block"], pre:not(.vditor-reset)') &&
+    !element.closest('svg')
+  )
+    context = { webviewSection: 'code' }
+  if (element.matches('[class*="language-"]'))
+    context = diagramContextOf(element) ?? context
+  if (element.localName === 'img')
+    context = diagramContextOf(element) ?? { webviewSection: 'image' }
+  if (element.matches('[data-wiki-link="1"]'))
+    context = { webviewSection: 'wiki' }
+  return context
+}
+
+function stampElement(root: HTMLElement, element: HTMLElement): void {
+  const context = desiredContextOf(root, element)
+  writeQuietly(() => {
+    if (context) setContext(element, context)
+    else if (element.hasAttribute(CONTEXT_ATTRIBUTE)) clearOwnedContext(element)
+  })
+}
+
+const PANE_CLASSES = new Set([
+  'vditor-ir__preview',
+  'vditor-wysiwyg__preview',
+  'vditor-preview',
+  'vmde-diagram-fullscreen-stage',
+])
+
+function movesDescendantContexts(token: string): boolean {
+  return token.startsWith('language-') || PANE_CLASSES.has(token)
+}
+
+// Task 733 / 031: only a rendered pane or a `language-` element decides its descendants' contexts
+// (`diagramContextOf` walks up to them), so an attribute change restamps the subtree only when the
+// target is, or was before this class change, one of them; any other attribute change restamps the
+// target alone, so a class toggle on the edit surface queries nothing.
+function attributeMovesSubtree(record: MutationRecord): boolean {
+  const target = record.target as HTMLElement
+  if (target.matches(RENDERED_PANE_SELECTOR)) return true
+  for (const token of target.classList)
+    if (movesDescendantContexts(token)) return true
+  if (record.attributeName !== 'class' || !record.oldValue) return false
+  for (const token of record.oldValue.split(/\s+/))
+    if (movesDescendantContexts(token)) return true
+  return false
+}
+
+// Task 733 / 031: one observer batch stamps each scope once. Subtree scopes are the added elements and
+// the attribute targets that move descendant contexts; a scope inside another subtree scope, or seen
+// twice, is dropped. The arrays are allocated only for a batch that names an element.
+interface BatchScopes {
+  subtrees: HTMLElement[] | undefined
+  singles: HTMLElement[] | undefined
+}
+
+function collectRecordScopes(
+  record: MutationRecord,
+  scopes: BatchScopes,
+): void {
+  if (record.type === 'attributes') {
+    if (!(record.target instanceof HTMLElement)) return
+    if (attributeMovesSubtree(record)) {
+      scopes.subtrees ??= []
+      scopes.subtrees.push(record.target)
+    } else {
+      scopes.singles ??= []
+      scopes.singles.push(record.target)
+    }
+    return
   }
   if (record.type !== 'childList') return
-  for (const node of record.addedNodes) {
-    if (node instanceof HTMLElement) stampWebviewContexts(root, node)
+  for (const node of record.addedNodes)
+    if (node instanceof HTMLElement) {
+      scopes.subtrees ??= []
+      scopes.subtrees.push(node)
+    }
+}
+
+// Whether `element` is held by a subtree scope: one that contains it, or the same element earlier
+// than `upTo` (a duplicate).
+function coveredBySubtree(
+  subtrees: readonly HTMLElement[] | undefined,
+  element: HTMLElement,
+  upTo: number,
+): boolean {
+  if (!subtrees) return false
+  for (let i = 0; i < subtrees.length; i++) {
+    const scope = subtrees[i]
+    if (scope === element ? i < upTo : scope.contains(element)) return true
+  }
+  return false
+}
+
+function stampMutationBatch(
+  root: HTMLElement,
+  records: readonly MutationRecord[],
+): void {
+  const scopes: BatchScopes = { subtrees: undefined, singles: undefined }
+  for (const record of records) collectRecordScopes(record, scopes)
+  const { subtrees, singles } = scopes
+  if (subtrees)
+    for (let i = 0; i < subtrees.length; i++)
+      if (!coveredBySubtree(subtrees, subtrees[i], i))
+        stampWebviewContexts(root, subtrees[i])
+  if (!singles) return
+  for (let i = 0; i < singles.length; i++) {
+    const element = singles[i]
+    if (singles.indexOf(element) < i) continue
+    if (coveredBySubtree(subtrees, element, Number.POSITIVE_INFINITY)) continue
+    stampElement(root, element)
   }
 }
 
@@ -130,14 +243,14 @@ export function installWebviewContext(root: HTMLElement | null): () => void {
   if (!root) return () => undefined
   stampWebviewContexts(root)
   const observer = new MutationObserver((records) =>
-    records.forEach((record) => {
-      stampMutationRecord(root, record)
-    }),
+    stampMutationBatch(root, records),
   )
   observer.observe(root, {
     childList: true,
     subtree: true,
     attributes: true,
+    // The old class value tells whether a removed `language-` or pane class moved descendant contexts.
+    attributeOldValue: true,
     attributeFilter: ['class', 'data-type', 'data-wiki-link'],
   })
   return () => observer.disconnect()

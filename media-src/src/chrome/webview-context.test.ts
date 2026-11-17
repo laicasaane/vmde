@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest'
-import { installWebviewContext } from './webview-context'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 import { applyCaretInside } from '../links/caret-link'
+import {
+  type BudgetCounts,
+  countBudget,
+  type Factor,
+  irFixture,
+} from '../testing/budget-harness'
+import { installWebviewContext } from './webview-context'
 
 const context = (element: Element | null) =>
   element?.getAttribute('data-vscode-context')
@@ -202,5 +209,139 @@ describe('installWebviewContext', () => {
     )
     watcher.disconnect()
     dispose()
+  })
+})
+
+// Task 733 / 031 (F-7): an attribute record restamps its target alone unless the target is (or was)
+// a rendered pane or a `language-` element, and one batch stamps each scope once. The observer is
+// replaced by a fake that keeps its callback, so a batch runs synchronously inside `countBudget`.
+// Building the factor 16 fixture with the real Lute can pass 5 s under a full parallel run.
+describe('scoped budgets (Task 733 / 031, F-7)', { timeout: 60_000 }, () => {
+  const FACTORS: readonly Factor[] = [1, 4, 16]
+  let deliver: ((records: MutationRecord[]) => void) | undefined
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      'MutationObserver',
+      class {
+        constructor(callback: (records: MutationRecord[]) => void) {
+          deliver = callback
+        }
+        observe() {
+          /* the fake observer delivers only what the test passes */
+        }
+        disconnect() {
+          /* the fake observer delivers only what the test passes */
+        }
+        takeRecords() {
+          return []
+        }
+      },
+    )
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    deliver = undefined
+  })
+
+  const attributeRecord = (target: HTMLElement, oldValue: string) =>
+    ({
+      type: 'attributes',
+      target,
+      attributeName: 'class',
+      oldValue,
+      addedNodes: [] as unknown as NodeList,
+      removedNodes: [] as unknown as NodeList,
+    }) as unknown as MutationRecord
+  const addedRecord = (parent: HTMLElement, node: HTMLElement) =>
+    ({
+      type: 'childList',
+      target: parent,
+      attributeName: null,
+      oldValue: null,
+      addedNodes: [node] as unknown as NodeList,
+      removedNodes: [] as unknown as NodeList,
+    }) as unknown as MutationRecord
+
+  const contexts = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll('[data-vscode-context]'), (element) => [
+      element,
+      element.getAttribute('data-vscode-context'),
+    ])
+
+  // Delivers `records` to an observer installed on `root` and counts the batch; `full` is the result
+  // of a fresh full stamp of the same DOM, for comparison with what the batch left.
+  function deliverCounted(
+    root: HTMLElement,
+    records: () => MutationRecord[],
+  ): { counts: BudgetCounts; stamped: unknown[]; full: unknown[] } {
+    if (!root.isConnected) document.body.append(root.parentElement ?? root)
+    const dispose = installWebviewContext(root)
+    let counts: BudgetCounts
+    try {
+      const batch = records()
+      counts = countBudget(root, () => deliver?.(batch)).counts
+    } finally {
+      dispose()
+    }
+    const stamped = contexts(root)
+    installWebviewContext(root)()
+    return { counts, stamped, full: contexts(root) }
+  }
+
+  const cost = (counts: BudgetCounts) =>
+    counts.queriedNodes + counts.nodesWalked
+
+  function rootClassToggle(factor: Factor) {
+    const { root } = irFixture(tableHeavyMarkdown(factor))
+    return deliverCounted(root, () => {
+      const oldValue = root.className
+      root.classList.toggle('vmde-test-toggle')
+      return [attributeRecord(root, oldValue)]
+    })
+  }
+
+  it.each(FACTORS)(
+    'a class toggle on the editor root restamps only the root at factor %i',
+    (factor) => {
+      const { counts, stamped, full } = rootClassToggle(factor)
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes).toBe(0)
+      expect(stamped).toEqual(full)
+    },
+  )
+
+  it('costs the same at every factor', () => {
+    const costs = FACTORS.map((factor) => cost(rootClassToggle(factor).counts))
+    expect(new Set(costs).size).toBe(1)
+  })
+
+  it('a batch with the same block added twice stamps it once', () => {
+    const { root } = irFixture(tableHeavyMarkdown(1))
+    const block = root.querySelector<HTMLElement>('[data-type="code-block"]')!
+    const once = deliverCounted(root, () => [addedRecord(root, block)])
+    const twice = deliverCounted(root, () => [
+      addedRecord(root, block),
+      addedRecord(root, block),
+    ])
+    expect(cost(twice.counts)).toBe(cost(once.counts))
+    expect(twice.stamped).toEqual(twice.full)
+  })
+
+  it('a removed language- class restamps the subtree', () => {
+    const root = document.createElement('div')
+    root.className = 'vditor-reset'
+    root.innerHTML =
+      '<div class="vditor-ir__preview"><div id="chart" class="language-mermaid"><img id="out" src="data:,"></div></div>'
+    document.body.replaceChildren(root)
+    const chart = root.querySelector<HTMLElement>('#chart')!
+    const result = deliverCounted(root, () => {
+      chart.classList.remove('language-mermaid')
+      return [attributeRecord(chart, 'language-mermaid')]
+    })
+    expect(
+      root.querySelector('#out')?.getAttribute('data-vscode-context'),
+    ).toBe('{"webviewSection":"image"}')
+    expect(result.stamped).toEqual(result.full)
   })
 })

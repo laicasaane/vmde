@@ -1,5 +1,15 @@
 // @vitest-environment jsdom
-import { test, expect, beforeEach, describe, vi } from 'vitest'
+import { afterEach, test, expect, beforeEach, describe, vi } from 'vitest'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  type BudgetCounts,
+  cellUnit,
+  countBudget,
+  type Factor,
+  fakeUnitFeed,
+  irFixture,
+} from '../testing/budget-harness'
+import { provideUnitFeed, type UnitsChange } from '../util/unit-changes'
 import { ENGINES } from '../diagram-kit/engine-registry'
 import {
   CUSTOM_DIAGRAM_ADAPTERS,
@@ -188,6 +198,161 @@ describe('customDiagramRenderers (task 404 phase 2)', () => {
   test("each entry's render is the SAME function reference as CUSTOM_DIAGRAM_ADAPTERS[lang].render", () => {
     for (const { lang, render } of customDiagramRenderers()) {
       expect(render, lang).toBe(CUSTOM_DIAGRAM_ADAPTERS[lang].render)
+    }
+  })
+})
+
+// Task 733 / 031 (F-7): while the unit feed is live, records inside its root are left to the feed and
+// its change scopes are queued; only render subtrees, which the feed never reports, still come from
+// the observer. Building the factor 16 fixture with the real Lute can pass 5 s under a full run.
+describe('scoped budgets (Task 733 / 031, F-7)', { timeout: 60_000 }, () => {
+  const FACTORS: readonly Factor[] = [1, 4, 16]
+  // Only the presence of the readiness object turns the statistics on; its fields are never read here.
+  type StatsWindow = Omit<Window, '__vmdeE2EReadiness'> & {
+    __vmdeE2EReadiness?: unknown
+    __vmdeMutationImpactStats?: {
+      helpers: Record<string, { full: number; local: number; skipped: number }>
+    }
+  }
+  const win = window as unknown as StatsWindow
+  let frames: FrameRequestCallback[] = []
+  const runFrames = () => {
+    while (frames.length > 0) frames.shift()?.(0)
+  }
+  // Lets the render loop finish its pass (it awaits between roots) so the next change starts a new one.
+  const settle = () => new Promise<void>((done) => setTimeout(done, 0))
+
+  beforeEach(() => {
+    frames = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    win.__vmdeE2EReadiness = {}
+  })
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+    vi.unstubAllGlobals()
+    delete win.__vmdeE2EReadiness
+    delete win.__vmdeMutationImpactStats
+  })
+
+  // The observer on the factor's fixture, after its opening full pass, with a live feed over the root.
+  async function observed(factor: Factor) {
+    const { root } = irFixture(tableHeavyMarkdown(factor))
+    if (!root.isConnected) document.body.append(root.parentElement!)
+    const feed = fakeUnitFeed<UnitsChange>(root)
+    provideUnitFeed(window, feed)
+    const dispose = observeCustomDiagrams(root.parentElement)
+    runFrames()
+    await settle()
+    delete win.__vmdeMutationImpactStats
+    return { root, feed, dispose }
+  }
+
+  const cellChange = (cell: HTMLElement): UnitsChange => ({
+    cause: 'mutation',
+    whole: false,
+    changed: [cellUnit(cell)],
+    structural: [],
+    scopes: [cell],
+  })
+  const helperStats = () =>
+    win.__vmdeMutationImpactStats?.helpers['custom-diagrams']
+
+  async function cellKey(factor: Factor): Promise<{
+    counts: BudgetCounts
+    subtree: number
+  }> {
+    const { root, feed, dispose } = await observed(factor)
+    try {
+      const cell = root.querySelector<HTMLElement>('table tbody td')!
+      const subtree = cell.getElementsByTagName('*').length + 1
+      // The key's DOM write, then the feed's change for it; the observer sees the write a microtask later.
+      const text = document.createTextNode('x')
+      cell.append(text)
+      feed.emit(cellChange(cell))
+      await Promise.resolve()
+      const { counts } = countBudget(root, runFrames)
+      await settle()
+      text.remove()
+      await settle()
+      return { counts, subtree }
+    } finally {
+      dispose()
+    }
+  }
+
+  test.each(FACTORS)(
+    'a cell change in a live feed queues the cell scope only at factor %i',
+    async (factor) => {
+      const { counts, subtree } = await cellKey(factor)
+      expect(counts.tableQueries).toBe(0)
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.queriedNodes).toBeLessThanOrEqual(subtree)
+    },
+  )
+
+  test('costs the same at every factor', async () => {
+    const costs: number[] = []
+    for (const factor of FACTORS) {
+      const { counts } = await cellKey(factor)
+      costs.push(counts.queriedNodes + counts.nodesWalked)
+    }
+    expect(new Set(costs).size).toBe(1)
+  })
+
+  test('a feed cell change records a local pass', async () => {
+    const { root, feed, dispose } = await observed(1)
+    try {
+      feed.emit(cellChange(root.querySelector<HTMLElement>('table tbody td')!))
+      expect(helperStats()).toMatchObject({ full: 0, local: 1 })
+    } finally {
+      dispose()
+    }
+  })
+
+  test('a whole feed change records a full pass', async () => {
+    const { feed, dispose } = await observed(1)
+    try {
+      feed.emit({ cause: 'build', whole: true, changed: [], structural: [] })
+      expect(helperStats()).toMatchObject({ full: 1, local: 0 })
+    } finally {
+      dispose()
+    }
+  })
+
+  test('a render-subtree record inside the feed root still queues its container', async () => {
+    document.body.innerHTML = `<div id="app"><pre class="vditor-reset">
+      <div id="diagram" data-block="0" data-type="code-block"><pre class="vditor-ir__marker--pre"><code>a</code></pre><pre class="vditor-ir__preview" data-render="2"><div class="language-d2" data-processed="true"></div></pre></div>
+      <p id="prose" data-block="0">text</p>
+    </pre></div>`
+    const app = document.getElementById('app')!
+    provideUnitFeed(
+      window,
+      fakeUnitFeed<UnitsChange>(
+        app.querySelector<HTMLElement>('.vditor-reset')!,
+      ),
+    )
+    const originalRender = CUSTOM_DIAGRAM_ADAPTERS.d2.render
+    const render = vi.fn()
+    CUSTOM_DIAGRAM_ADAPTERS.d2.render = render
+    const dispose = observeCustomDiagrams(app)
+    try {
+      runFrames()
+      await settle()
+      render.mockClear()
+      // Vditor rewrites the preview's rendered content: the feed never reports it.
+      app.querySelector('.vditor-ir__preview')!.innerHTML =
+        '<div class="language-d2"></div>'
+      await Promise.resolve()
+      runFrames()
+      await settle()
+      expect(render).toHaveBeenCalledWith(app.querySelector('#diagram'))
+    } finally {
+      dispose()
+      CUSTOM_DIAGRAM_ADAPTERS.d2.render = originalRender
     }
   })
 })

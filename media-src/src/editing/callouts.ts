@@ -828,10 +828,16 @@ export function calloutSourceHasAnchor(
   return !host?.closest(`.${PREVIEW_CLASS}`)
 }
 
+// Task 733 / 031: the callouts flagged `data-callout-editing`, kept by the flag's writers
+// (`decorateCalloutWrites`, `clearCallout`), so a selection change reads them instead of querying the
+// editor. Cleared by the `observeCallouts` disposer.
+const editingCallouts = new Set<HTMLElement>()
+
 function clearCallout(bq: Element): void {
   bq.removeAttribute('data-callout')
   bq.removeAttribute('data-callout-title')
   bq.removeAttribute('data-callout-editing')
+  editingCallouts.delete(bq as HTMLElement)
   bq.classList.remove('vditor-ir__node')
   bq.className = bq.className.replace(/\bvmde-callout(--\S+)?\b/g, '').trim()
   bq.querySelector(`:scope > .${PREVIEW_CLASS}`)?.remove()
@@ -1428,8 +1434,10 @@ function decorateCalloutWrites(bq: Element): void {
     if (inIr && calloutSourceHasAnchor(bq, anchor)) {
       bq.classList.add('vditor-ir__node--expand')
       bq.setAttribute('data-callout-editing', '')
+      editingCallouts.add(bq as HTMLElement)
     } else {
       bq.removeAttribute('data-callout-editing')
+      editingCallouts.delete(bq as HTMLElement)
       if (inIr) bq.classList.remove('vditor-ir__node--expand')
     }
     // Keep the preview built in BOTH states. While editing it's HIDDEN under `--expand`, but it must
@@ -1509,7 +1517,10 @@ export function observeCallouts(
   // stale render would show on leave. On every selection change, re-derive editing state from the LIVE
   // selection (`:focus-within` doesn't work on the IR edit surface): keep the focused callout
   // expanded, and re-sync any callout still flagged-editing that no longer holds the caret (collapse +
-  // rebuild its preview from the final source). Self-correcting off the DOM flag → no cross-event state.
+  // rebuild its preview from the final source). Task 733 / 031: the flagged callouts come from
+  // `editingCallouts`, kept by the flag's writers (an Undo that restores a flagged blockquote passes
+  // through the scoped `within`, which re-decorates it); entries no longer connected or flagged are
+  // dropped here, so a selection change costs O(flagged callouts) and queries nothing.
   const doc = editorEl.ownerDocument
   let deferredSelectionChange = false
   let disposed = false
@@ -1533,12 +1544,13 @@ export function observeCallouts(
         : null
     if (current?.closest('.vditor-ir'))
       current.classList.add('vditor-ir__node--expand')
-    for (const left of Array.from(
-      editorEl.querySelectorAll<HTMLElement>(
-        'blockquote[data-callout-editing]',
-      ),
-    )) {
-      if (left === current) continue // still being typed in
+    // Deleting the visited entry (here or in decorateCalloutWrites) is safe during Set iteration.
+    for (const left of editingCallouts) {
+      if (!left.isConnected || !left.hasAttribute('data-callout-editing')) {
+        editingCallouts.delete(left)
+        continue
+      }
+      if (left === current || !editorEl.contains(left)) continue // still being typed in, or another editor
       // Collapse the callout we just left and rebuild its preview from the now-final source (caret is
       // outside), as one quiet write.
       writeQuietly(() => {
@@ -1564,5 +1576,6 @@ export function observeCallouts(
     disposeObserver()
     doc.removeEventListener('selectionchange', onSelectionChange)
     unsubscribeComposition()
+    editingCallouts.clear()
   }
 }

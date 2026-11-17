@@ -34,7 +34,15 @@ import {
   HOIST_SCOPE_CHANGE_EVENT,
   isSectionHoistHidden,
 } from '../util/source-map'
-import { classifyAndRecordEditorSurfaceMutations } from '../util/mutation-impact'
+import {
+  classifyAndRecordEditorSurfaceMutations,
+  forEachChangeScope,
+  forEachRecordScope,
+  liveFeedOf,
+  onLiveChange,
+  recordHelperMutationPass,
+} from '../util/mutation-impact'
+import type { UnitsChange } from '../util/unit-changes'
 export { reRenderD2 } from './d2/engines/d2'
 
 // Task 404 phase 1 — inert scaffolding, nothing calls this map yet. `engine-registry.ts` is
@@ -118,6 +126,9 @@ export function presentCustomLangs(root: ParentNode): Set<string> {
   return present
 }
 
+// The records argument of a feed-change pass statistic: a feed change carries no mutation records.
+const NO_RECORDS: readonly MutationRecord[] = []
+
 export function observeCustomDiagrams(
   appEl: HTMLElement | null | undefined,
 ): () => void {
@@ -177,7 +188,27 @@ export function observeCustomDiagrams(
   // the last SVG visible meanwhile (task 161 step 1). On settle, prep canvas previews (cover mode),
   // render the latest source, and start the swap-when-ready reveal watcher. The OPEN path / theme
   // re-renders aren't typing → they render promptly via the rAF path below.
+  const add = (block: Element) => {
+    if (!pendingFull && block instanceof HTMLElement) pendingBlocks.add(block)
+  }
+  // Task 733 / 031: while the unit feed is live, records inside its root are left to the feed; only
+  // the render subtrees it never reports (and records outside its root) come from the observer, as in
+  // `D/diagram-zoom.ts`. Statistics follow Task 022: `local` with the scopes added, else `skipped`.
+  const collectFeedRecords = (records: MutationRecord[]): boolean => {
+    const before = pendingBlocks.size
+    forEachRecordScope(appEl, records, add)
+    const added = pendingBlocks.size - before
+    recordHelperMutationPass(
+      'custom-diagrams',
+      records,
+      added > 0 ? 'local' : 'skipped',
+      added,
+    )
+    return added > 0
+  }
   const collectImpact = (records?: MutationRecord[]): boolean => {
+    if (records && records.length > 0 && liveFeedOf(appEl))
+      return collectFeedRecords(records)
     const batch = records ?? []
     const classified = classifyAndRecordEditorSurfaceMutations(
       'custom-diagrams',
@@ -192,7 +223,30 @@ export function observeCustomDiagrams(
     return true
   }
   const schedule = (records?: MutationRecord[]) => {
-    if (!collectImpact(records)) return
+    if (collectImpact(records)) dispatch()
+  }
+  // The feed's change scopes (cells, items, top-level blocks) fill the queue; a whole change runs the
+  // full pass. Recorded as `full`, `local` or `skipped`.
+  const collectChange = (change: UnitsChange): void => {
+    if (change.whole) {
+      pendingFull = true
+      pendingBlocks.clear()
+      recordHelperMutationPass('custom-diagrams', NO_RECORDS, 'full')
+      dispatch()
+      return
+    }
+    const before = pendingBlocks.size
+    forEachChangeScope(change, add)
+    const added = pendingBlocks.size - before
+    recordHelperMutationPass(
+      'custom-diagrams',
+      NO_RECORDS,
+      added > 0 ? 'local' : 'skipped',
+      added,
+    )
+    if (added > 0) dispatch()
+  }
+  const dispatch = () => {
     if (isTyping()) {
       deferUntilSettle('custom-diagrams', () => {
         beginSettleRender()
@@ -210,6 +264,7 @@ export function observeCustomDiagrams(
   }
   const obs = new MutationObserver((records) => schedule(records))
   obs.observe(appEl, { childList: true, subtree: true })
+  const offLive = onLiveChange(appEl, collectChange)
   // Hoist exit changes attributes only, which the renderer observer deliberately does not watch.
   // The controller's scoped event re-scans newly visible blocks without widening mutation cost.
   const onHoistScopeChange = (event: Event): void => {
@@ -237,6 +292,7 @@ export function observeCustomDiagrams(
   schedule()
   return () => {
     obs.disconnect()
+    offLive()
     document.removeEventListener(HOIST_SCOPE_CHANGE_EVENT, onHoistScopeChange)
     document.removeEventListener(
       PREVIEW_BLOCK_RELEASED_EVENT,

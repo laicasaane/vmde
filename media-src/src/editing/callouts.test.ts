@@ -20,6 +20,13 @@ import {
   resolveBlockHandleUnits,
 } from '../nav/block-handle'
 import { createSourceBlockIndex } from '../nav/source-block-index'
+import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
+import {
+  type BudgetCounts,
+  countBudget,
+  type Factor,
+  irFixture,
+} from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
 import { bindRewrapSource } from './rewrap-command'
 
@@ -1028,5 +1035,68 @@ describe('IR block quote panel on a normalizing body (Task 671)', () => {
     expect(
       [...paragraph.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE),
     ).toHaveLength(1)
+  })
+})
+
+// Task 733 / 031 (F-7): a selection change reads the callouts flagged as editing, not the whole
+// editor: with one callout flagged, the cost is the same as in a document that holds only it.
+// Building the factor 16 fixture with the real Lute can pass 5 s under a full parallel run.
+describe('scoped budgets (Task 733 / 031, F-7)', { timeout: 60_000 }, () => {
+  const FACTORS: readonly Factor[] = [1, 4, 16]
+  const CALLOUT = '> [!NOTE]\n> callout body\n\nafter callout\n'
+
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges()
+  })
+
+  // Flags the fixture's callout as editing (caret inside), moves the caret after it, and counts the
+  // selection change that re-syncs it.
+  function leaveCallout(markdown: string): {
+    counts: BudgetCounts
+    flagged: boolean
+    left: boolean
+  } {
+    const { root } = irFixture(markdown)
+    if (!root.isConnected) document.body.append(root.parentElement!)
+    const dispose = observeCallouts(root)
+    try {
+      const bq = Array.from(root.querySelectorAll('blockquote')).at(-1)!
+      const source = bq.querySelector('p')!
+      const after = bq.nextElementSibling as HTMLElement
+      placeCaret(source.firstChild as Node, 1)
+      applyCallouts(root)
+      const flagged = bq.hasAttribute('data-callout-editing')
+      placeCaret(after.firstChild as Node, 1)
+      const { counts } = countBudget(root, () =>
+        document.dispatchEvent(new Event('selectionchange')),
+      )
+      return { counts, flagged, left: !bq.hasAttribute('data-callout-editing') }
+    } finally {
+      dispose()
+    }
+  }
+
+  const cost = (counts: BudgetCounts) =>
+    counts.queriedNodes + counts.nodesWalked
+
+  it.each(FACTORS)(
+    'a selection change with one callout flagged queries no root at factor %i',
+    (factor) => {
+      const { counts, flagged, left } = leaveCallout(
+        tableHeavyMarkdown(factor) + CALLOUT,
+      )
+      expect(flagged).toBe(true)
+      expect(left).toBe(true)
+      expect(counts.rootQueries).toBe(0)
+      expect(counts.tableQueries).toBe(0)
+      expect(cost(counts)).toBe(cost(leaveCallout(CALLOUT).counts))
+    },
+  )
+
+  it('costs the same at every factor', () => {
+    const costs = FACTORS.map((factor) =>
+      cost(leaveCallout(tableHeavyMarkdown(factor) + CALLOUT).counts),
+    )
+    expect(new Set(costs).size).toBe(1)
   })
 })
