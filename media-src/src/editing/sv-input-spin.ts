@@ -1,4 +1,8 @@
-import { SOURCE_UNITS, sourceUnitFeedOf } from '../util/unit-changes'
+import {
+  SOURCE_UNITS,
+  sourceUnitFeedOf,
+  unitModeOf,
+} from '../util/unit-changes'
 import { type SelectionEnds, writeSelection } from '../util/selection-write'
 
 /** The node a released ends object points at (no document node). */
@@ -137,9 +141,12 @@ export function installSourceInputHooks(
     range: Range,
   ): boolean => placeCaret(vditor, before, after, range)
   const switchText = (vditor: unknown, mode: string): string | undefined => {
-    if (!SOURCE_UNITS) return undefined
     const current = (vditor as VditorLike | undefined)?.currentMode
-    if (mode !== 'sv' && current !== 'sv') return undefined
+    // Task 733 / 020 (Q-164): a switch between the unit modes (IR and WYSIWYG units) also keeps the text.
+    const source = SOURCE_UNITS && (mode === 'sv' || current === 'sv')
+    const units =
+      unitModeOf(mode) !== undefined && unitModeOf(current) !== undefined
+    if (!source && !units) return undefined
     return deps.modeSwitchText?.()
   }
   const sourceUnitsOn = (): boolean => SOURCE_UNITS

@@ -22,12 +22,22 @@ import type { UnitFeed } from '../util/unit-changes'
 // `SOURCE_UNITS` stays false. `sourceUnitsOn` turns the constant on for those cases only (set in their
 // describe blocks); every other case keeps the shipped value.
 const sourceUnitsOn = vi.hoisted(() => ({ value: false }))
-vi.mock('../util/unit-changes', async (original) => ({
-  ...(await original<typeof import('../util/unit-changes')>()),
-  get SOURCE_UNITS() {
-    return sourceUnitsOn.value
-  },
-}))
+// Task 733 / 020 (Q-164): WYSIWYG units, off unless the 020 block turns them on; `unitModeOf` follows.
+const wysiwygUnitsOn = vi.hoisted(() => ({ value: false }))
+vi.mock('../util/unit-changes', async (original) => {
+  const actual = await original<typeof import('../util/unit-changes')>()
+  return {
+    ...actual,
+    get SOURCE_UNITS() {
+      return sourceUnitsOn.value
+    },
+    get WYSIWYG_UNITS() {
+      return wysiwygUnitsOn.value
+    },
+    unitModeOf: (mode: string | null | undefined) =>
+      actual.unitModeOf(mode, wysiwygUnitsOn.value),
+  }
+})
 
 // Task 733 / 015-T1, S-05 (task 015 sections 6.2 D-3 and 6.9 item 2): the window hooks of the patched
 // Source input. `__vmdeSvLocalSpin` decides whether the caret block is spun alone; `__vmdeSvPlaceCaret`
@@ -227,3 +237,52 @@ describe.each([1, 4, 16] as const)(
     })
   },
 )
+
+// Task 733 / 020 (W-A, Q-164): `__vmdeModeSwitchText` also answers a switch between IR and WYSIWYG
+// while WYSIWYG units are on, so V-S2 builds the new mode from the model text instead of
+// `getMarkdown`. With them off it stays undefined for that switch.
+describe('020 mode switch text between IR and WYSIWYG', () => {
+  interface SwitchHooks {
+    __vmdeModeSwitchText?(vditor: unknown, mode: string): string | undefined
+  }
+  const OWNED = 'owned text\n'
+  async function installWith(): Promise<SwitchHooks> {
+    const module = (await import(/* @vite-ignore */ SPIN)) as {
+      installSourceInputHooks(
+        win: Window,
+        deps: { modeSwitchText?(): string | undefined },
+      ): () => void
+    }
+    uninstall = module.installSourceInputHooks(window, {
+      modeSwitchText: () => OWNED,
+    })
+    return window as unknown as SwitchHooks
+  }
+  afterEach(() => {
+    wysiwygUnitsOn.value = false
+    sourceUnitsOn.value = false
+  })
+
+  it.each([
+    ['ir', 'wysiwyg'],
+    ['wysiwyg', 'ir'],
+  ] as const)('answers %s to %s with WYSIWYG units on', async (from, to) => {
+    wysiwygUnitsOn.value = true
+    const win = await installWith()
+    expect(win.__vmdeModeSwitchText?.({ currentMode: from }, to)).toBe(OWNED)
+  })
+
+  it.each([
+    ['ir', 'wysiwyg'],
+    ['wysiwyg', 'ir'],
+  ] as const)(
+    'stays undefined for %s to %s with WYSIWYG units off',
+    async (from, to) => {
+      sourceUnitsOn.value = true
+      const win = await installWith()
+      expect(
+        win.__vmdeModeSwitchText?.({ currentMode: from }, to),
+      ).toBeUndefined()
+    },
+  )
+})

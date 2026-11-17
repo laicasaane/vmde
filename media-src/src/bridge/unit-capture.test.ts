@@ -13,6 +13,7 @@ import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 import { countBudget, wysiwygFixture } from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
+import { writeQuietly } from '../util/mutation-impact'
 import type { HistoryCapture } from '../util/unit-changes'
 import { insertWrapHint } from '../util/wrap-hint-mark'
 import { createModelSession, type ModelSession } from './model-session'
@@ -1535,5 +1536,76 @@ describe('cell capture and restore make no whole-table query (029, F-5)', () => 
     // The text model publishes an edit of this shape as a fallback (the cell has no proof), so no
     // publication runs here: the case proves the restored DOM, which is the part `current` owns.
     restoresCell(r, false)
+  })
+})
+
+// Task 733 / 020 (Q-172, cause 1): the hljs token spans of a WYSIWYG code source are view state. A
+// capture compares the code unit without them, so a highlight that lands quietly between a capture
+// and its Undo does not make `restore` refuse, and the restore writes the span-free HTML.
+describe('020 WYSIWYG code highlight spans are no source', () => {
+  let wysiwyg: UnitLute
+  beforeAll(() => {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wysiwyg = real.lute
+  })
+  const CODE_DOC = 'intro\n\n```js\nconst a = 1\n```\n\nTail.\n'
+
+  function openCode() {
+    const root = document.createElement('div')
+    root.className = 'vditor-reset vditor-wysiwyg'
+    document.body.appendChild(root)
+    const session = createModelSession({
+      wysiwygUnits: true,
+      win: window,
+      getRoot: () => root,
+      getLute: () => wysiwyg,
+      getMode: () => 'wysiwyg',
+      isPreviewShowing: () => false,
+      isStreaming: () => false,
+      isComposing: () => false,
+      e2e: true,
+      countFallbackPublication: () => undefined,
+      requestAnimationFrame: (cb: () => void) => frames.push(cb),
+      cancelAnimationFrame: () => undefined,
+      now: () => 0,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      inViewport: () => false,
+    } as Parameters<typeof createModelSession>[0])
+    live.push(session)
+    frames.length = 0
+    root.innerHTML = wysiwygFixture(CODE_DOC).root.innerHTML
+    session.onHostText(CODE_DOC, 1)
+    session.onEditDomComplete()
+    return {
+      root,
+      port: (session as WithPort).historyPort(),
+      delta: session.deltaPort(),
+    }
+  }
+
+  it("restore('before') accepts a code unit highlighted after its capture and writes no span", () => {
+    const r = openCode()
+    const code = r.root.querySelector(
+      'pre.vditor-wysiwyg__pre > code',
+    ) as HTMLElement
+    expect(code).not.toBeNull()
+    typeInto(code, 'const a = 12\n')
+    const edit = r.port.capture() as HistoryCapture
+    expect(edit).toBeDefined()
+    expect(r.delta.prepareDelta(1).kind).toBe('changes')
+    // The highlight pass lands quietly: token spans over the same text.
+    writeQuietly(() => {
+      code.innerHTML =
+        '<span class="hljs-keyword">const</span> a = <span class="hljs-number">12</span>\n'
+    })
+    expect(r.port.restore(edit, 'before')).toBe(true)
+    const restored = r.root.querySelector(
+      'pre.vditor-wysiwyg__pre > code',
+    ) as HTMLElement
+    expect(restored.querySelector('span'), 'no token span').toBeNull()
+    expect(restored.textContent).toBe('const a = 1\n')
   })
 })

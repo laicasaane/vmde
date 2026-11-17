@@ -1267,14 +1267,14 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
   const awaitingNow = (): boolean => awaited !== undefined || awaitingWrite
 
   /**
-   * Task 733 / 015 (D-5): a switch into or out of Source keeps the host epoch when the old model owned
-   * the text and no typing was unpublished; undefined otherwise (today's path: the host text is dropped).
+   * Task 733 / 015 (D-5) and 020 (Q-164): a switch into or out of Source, or between IR and WYSIWYG,
+   * keeps the host epoch when the old model owned the text and no typing was unpublished; undefined
+   * otherwise (today's path: the host text is dropped).
    */
   const keptAcrossSwitch = (
     next: ServedMode | undefined,
   ): { text: string; epoch: number } | undefined => {
-    if (next === undefined || (next !== 'sv' && builtMode !== 'sv') || !host)
-      return undefined
+    if (next === undefined || !host) return undefined
     const text = ownedText()
     return text === undefined ? undefined : { text, epoch: host.epoch }
   }

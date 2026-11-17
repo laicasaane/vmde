@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { createRealLute } from '../testing/real-lute'
+import { registerQuietObserver } from '../util/mutation-impact'
 import { insertWrapHint } from '../util/wrap-hint-mark'
 import {
   flattenSourceHtml,
@@ -231,5 +232,58 @@ describe('wrap hints in WYSIWYG Lute calls (Task 640)', () => {
     expect(real.lute.VditorDOM2Md(html)).toBe(canonical)
     expect(real.lute.SpinVditorDOM(html)).toBe(spun)
     expect(real.lute.SpinVditorDOM(html)).not.toContain('vmde-wrap-hint')
+  })
+})
+
+// Task 733 / 020 (Q-172, cause 1): the token spans are view state. A highlight pass writes them
+// quietly, so a quiet observer (the unit observer) gets none of its records, while a genuine edit
+// queued before the pass is still handed over.
+describe('020 highlight pass writes quietly', () => {
+  const nextFrame = () =>
+    new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+
+  it('a quiet observer gets no record of the highlight and keeps an earlier edit', async () => {
+    const root = document.createElement('div')
+    root.innerHTML =
+      '<p>para</p><pre class="vditor-wysiwyg__pre"><code class="language-js">const a = 1</code></pre>'
+    document.body.appendChild(root)
+    const code = root.querySelector('code') as HTMLElement
+    const paragraph = root.querySelector('p') as HTMLElement
+    const seen: MutationRecord[] = []
+    const observer = new MutationObserver((records) => seen.push(...records))
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    })
+    const unregister = registerQuietObserver(observer, (records) =>
+      seen.push(...records),
+    )
+    const dispose = observeWysiwygCodeHighlight(
+      root,
+      () => ({
+        highlight: (text) => ({
+          value: `<span class="hljs-keyword">${text.slice(0, 5)}</span>${text.slice(5)}`,
+        }),
+        getLanguage: () => true,
+      }),
+      () => true,
+    )
+    // A genuine edit queued before the pass.
+    paragraph.appendChild(document.createTextNode('x'))
+    await nextFrame()
+    await flush()
+    expect(code.querySelector('.hljs-keyword'), 'the pass ran').not.toBeNull()
+    const insideCode = seen.filter((record) => code.contains(record.target))
+    expect(insideCode, 'records of the highlight').toEqual([])
+    expect(
+      seen.some((record) => record.target === paragraph),
+      'the earlier edit',
+    ).toBe(true)
+    dispose()
+    unregister()
+    observer.disconnect()
+    root.remove()
   })
 })

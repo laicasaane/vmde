@@ -6560,3 +6560,93 @@ describe('Source unit patches V-S1 to V-S4 (task 733 / 015)', () => {
     compiles(chained)
   })
 })
+
+// Task 733 / 020 (W-D, Q-172): `patchWysiwygBackspaceRootRead`, the WYSIWYG copy of
+// `patchIrBackspaceRootRead`. The Backspace/Delete keyup tested `innerHTML` (a whole-root serialization)
+// before the child count; the operands are reordered, and the condition is unchanged.
+describe('patchWysiwygBackspaceRootRead (task 733 / 020 — test the child count before serializing the root)', () => {
+  const ANCHOR =
+    'vditor.wysiwyg.element.innerHTML !== "" && vditor.wysiwyg.element.childNodes.length === 1 &&'
+  const PATCHED =
+    'vditor.wysiwyg.element.childNodes.length === 1 && vditor.wysiwyg.element.innerHTML !== "" &&'
+  const wysiwygIndexChain = () =>
+    VDITOR_TS_PATCHES.find(({ file }) =>
+      file.test('/vditor/src/ts/wysiwyg/index.ts'),
+    )!.transform(wysiwygSource, { path: '/vditor/src/ts/wysiwyg/index.ts' })
+  const condition = (code: string) => {
+    const start = code.indexOf(
+      'if ((event.key === "Backspace" || event.key === "Delete") &&',
+    )
+    expect(start).toBeGreaterThan(-1)
+    const end = code.indexOf(
+      ') {',
+      code.indexOf('textContent === "\\n")', start),
+    )
+    return code.slice(start + 'if '.length, end + 1)
+  }
+  const { JSDOM } = require('jsdom')
+  const evaluate = (cond: string, html: string, key = 'Backspace') => {
+    const dom = new JSDOM(`<!doctype html><div id="root">${html}</div>`)
+    const root = dom.window.document.getElementById('root') as HTMLElement
+    let reads = 0
+    const descriptor = Object.getOwnPropertyDescriptor(
+      dom.window.Element.prototype,
+      'innerHTML',
+    )!
+    Object.defineProperty(root, 'innerHTML', {
+      configurable: true,
+      get() {
+        reads++
+        return descriptor.get!.call(root)
+      },
+    })
+    const result = new Function('event', 'vditor', `return Boolean(${cond})`)(
+      { key },
+      { wysiwyg: { element: root } },
+    ) as boolean
+    return { result, reads }
+  }
+  const ROOTS = [
+    '<p></p>',
+    '<p>\n</p>',
+    '<p>text</p>',
+    '<p></p><p></p>',
+    '<p>a</p><p>b</p><p>c</p>',
+    '',
+    '<div></div>',
+  ]
+
+  it('the anchor occurs once in the shipped WYSIWYG index (pre-patch)', () => {
+    expect(countOf(wysiwygSource, ANCHOR)).toBe(1)
+  })
+
+  it('throws a named error when the anchor is missing', () => {
+    const patch = namedPatch('patchWysiwygBackspaceRootRead')
+    expect(() => patch('// unrelated source')).toThrow(
+      /patchWysiwygBackspaceRootRead/,
+    )
+  })
+
+  it('keeps the condition unchanged for every root shape and key', () => {
+    const upstream = condition(wysiwygSource)
+    const patched = condition(wysiwygIndexChain())
+    for (const html of ROOTS)
+      for (const key of ['Backspace', 'Delete', 'a'])
+        expect(evaluate(patched, html, key).result, `${key} ${html}`).toBe(
+          evaluate(upstream, html, key).result,
+        )
+  })
+
+  it('reads the root HTML only when the root has a single child', () => {
+    const patched = condition(wysiwygIndexChain())
+    expect(evaluate(patched, '<p>a</p><p>b</p><p>c</p>').reads).toBe(0)
+    expect(evaluate(patched, '<p></p><p></p>').reads).toBe(0)
+    expect(evaluate(patched, '<p></p>').reads).toBe(1)
+  })
+
+  it('the registry chain applies it once', () => {
+    const chained = wysiwygIndexChain()
+    expect(countOf(chained, PATCHED)).toBe(1)
+    expect(countOf(chained, ANCHOR)).toBe(0)
+  })
+})

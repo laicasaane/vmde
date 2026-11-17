@@ -26,6 +26,7 @@
 import { writeSelectionKeepingIntent } from './caret'
 import { addScript } from 'vditor/src/ts/util/addScript'
 import { CUSTOM_LANGS } from './code-source'
+import { writeQuietly } from '../util/mutation-impact'
 import { stripWrapHints } from '../util/wrap-hint-mark'
 import {
   isCompositionActive,
@@ -348,7 +349,11 @@ export function observeWysiwygCodeHighlight(
     // Disconnect so our own innerHTML/caret writes aren't observed (no loop).
     obs.disconnect()
     try {
-      for (const [code, lang] of todo) applyToCode(code, hljs, lang)
+      // Task 733 / 020 (Q-172): the token spans are view state; quiet observers (the unit observer)
+      // get no record of them, while genuine records queued before are handed over first.
+      writeQuietly(() => {
+        for (const [code, lang] of todo) applyToCode(code, hljs, lang)
+      })
     } finally {
       obs.observe(root, OBS_OPTS)
     }

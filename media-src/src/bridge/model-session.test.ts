@@ -1919,32 +1919,25 @@ describe('013 WYSIWYG model session', () => {
     expect(r.session.beforeWholeTextPost(1)).toBeUndefined()
   })
 
-  it('re-enters on IR to WYSIWYG to IR: each first post asks for the host bytes and the rebind rebuilds', () => {
+  // Task 733 / 020 (Q-164, written ownership extension): the 013 case asserted the re-entry path (each
+  // first post asked for the host bytes). A switch between IR and WYSIWYG now keeps the owned text, so
+  // each mode's model builds on the next frame with the same epoch and no rebind.
+  it('keeps the owned text on IR to WYSIWYG to IR: each mode builds on the next frame with no rebind', () => {
     const r = modeRig({ mode: 'ir', wysiwygUnits: true })
     r.render(TABLE_DOC)
     r.session.onHostText(TABLE_DOC, 3)
     r.session.onEditDomComplete()
     expect(r.stats()).toMatchObject({ state: 'live', mode: 'ir' })
-    let sequence = 0
     for (const next of ['wysiwyg', 'ir'] as const) {
       r.mode.value = next
       r.session.onModeChange(next)
-      expect(
-        r.session.canPublishDelta(),
-        `${next}: no delta before the rebind`,
-      ).toBe(false)
-      sequence += 1
-      expect(r.session.beforeWholeTextPost(sequence)).toEqual({ rebind: true })
-      r.session.onRebind({
-        command: 'rebind',
-        epoch: 3,
-        afterSequence: 0,
-        content: TABLE_DOC,
-        editSequence: sequence,
-      })
       r.runFrames()
       expect(r.stats(), next).toMatchObject({ state: 'live', mode: next })
       expect(r.session.canPublishDelta()).toBe(true)
+      expect(r.session.confirmedSnapshot()).toEqual({
+        text: TABLE_DOC,
+        epoch: 3,
+      })
     }
   })
 
@@ -2163,5 +2156,102 @@ describe('019 Source history port and owned text', () => {
     expect(text).not.toBeNull()
     text?.splitText(1)
     expect(sourceApi(r).modeSwitchText?.()).toBe(DOC)
+  })
+})
+
+// Task 733 / 020 (W-A, Q-164): a switch between IR and WYSIWYG keeps the owned text, as a switch into
+// or out of Source does. The model of the new mode builds on the next frame from that text, with no
+// `rebind` round trip; with WYSIWYG units off the switch keeps today's path.
+describe('020 IR and WYSIWYG switch keeps the owned text', () => {
+  let wysiwygLute: UnitLute
+  beforeAll(() => {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wysiwygLute = real.lute
+  })
+
+  const SWITCH_DOC =
+    'intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- one\n- two\n\nTail.\n'
+
+  /** A live IR model over SWITCH_DOC with both mode trees rendered. */
+  function openIr(wysiwygUnits: boolean) {
+    const irRoot = document.createElement('div')
+    irRoot.className = 'vditor-reset vditor-ir'
+    const wysiwygRoot = document.createElement('div')
+    wysiwygRoot.className = 'vditor-reset vditor-wysiwyg'
+    document.body.append(irRoot, wysiwygRoot)
+    irRoot.innerHTML = lute.Md2VditorIRDOM(SWITCH_DOC)
+    wysiwygRoot.innerHTML = wysiwygFixture(SWITCH_DOC).root.innerHTML
+    const mode = { value: 'ir' }
+    const frames: Array<() => void> = []
+    const session = createModelSession({
+      wysiwygUnits,
+      win: window,
+      getRoot: () => (mode.value === 'wysiwyg' ? wysiwygRoot : irRoot),
+      getLute: () => (mode.value === 'wysiwyg' ? wysiwygLute : lute),
+      getMode: () => mode.value,
+      isPreviewShowing: () => false,
+      isStreaming: () => false,
+      isComposing: () => false,
+      e2e: true,
+      countFallbackPublication: () => undefined,
+      requestAnimationFrame: (cb: () => void) => frames.push(cb),
+      cancelAnimationFrame: () => undefined,
+      now: () => 0,
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
+      inViewport: () => false,
+    } as Parameters<typeof createModelSession>[0])
+    live.push(session)
+    session.onHostText(SWITCH_DOC, 3)
+    session.onEditDomComplete()
+    const runFrames = () => {
+      for (const cb of frames.splice(0)) cb()
+    }
+    runFrames()
+    const stats = () =>
+      (window as unknown as Record<string, any>).__vmdeModelShadowStats
+    const switchTo = (next: 'ir' | 'wysiwyg') => {
+      mode.value = next
+      session.onModeChange(next)
+    }
+    return { session, stats, runFrames, switchTo, frames }
+  }
+
+  it('IR to WYSIWYG builds the WYSIWYG model on the next frame from the kept text, with no rebind', () => {
+    const r = openIr(true)
+    expect(r.stats()).toMatchObject({ state: 'live', mode: 'ir' })
+    r.switchTo('wysiwyg')
+    expect(r.frames.length, 'a build frame is requested').toBeGreaterThan(0)
+    r.runFrames()
+    expect(r.stats()).toMatchObject({ state: 'live', mode: 'wysiwyg' })
+    expect(r.session.canPublishDelta()).toBe(true)
+    // The host epoch is kept: the model owns the same bytes, with no re-entry post.
+    expect(r.session.confirmedSnapshot()).toEqual({
+      text: SWITCH_DOC,
+      epoch: 3,
+    })
+  })
+
+  it('WYSIWYG back to IR keeps the text the same way', () => {
+    const r = openIr(true)
+    r.switchTo('wysiwyg')
+    r.runFrames()
+    r.switchTo('ir')
+    r.runFrames()
+    expect(r.stats()).toMatchObject({ state: 'live', mode: 'ir' })
+    expect(r.session.confirmedSnapshot()).toEqual({
+      text: SWITCH_DOC,
+      epoch: 3,
+    })
+  })
+
+  it("with WYSIWYG units off, IR to WYSIWYG turns the model off with reason mode (today's path)", () => {
+    const r = openIr(false)
+    r.switchTo('wysiwyg')
+    r.runFrames()
+    expect(r.stats()).toMatchObject({ state: 'off', offReason: 'mode' })
+    expect(r.session.canPublishDelta()).toBe(false)
   })
 })

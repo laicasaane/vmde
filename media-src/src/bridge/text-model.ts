@@ -398,11 +398,8 @@ function layoutUnits<E>(
   const hostOf = new Map<E, HostUnit<E>>()
   for (const hostUnit of listing)
     for (const member of hostUnit.members) hostOf.set(member, hostUnit)
-  const pairs = pairSourceGroups(
-    blocks,
-    [...hostOf.keys()],
-    (element) => hostOf.get(element)?.kind ?? null,
-  )
+  const elements = [...hostOf.keys()]
+  const { pairs, empties } = pairUnits(host, listing, blocks, elements, hostOf)
   if (!pairs) return 'pairing-failed'
   const units: Unit<E>[] = []
   let previous: { offset: number; line: number } | undefined
@@ -419,7 +416,85 @@ function layoutUnits<E>(
     }
     units.push(unit)
   }
+  insertEmptyUnits(units, empties, elements, text)
   return { units, listing }
+}
+
+/**
+ * Pairs the source blocks with the host members. Task 733 / 020 (W-B, Q-165): an empty top-level
+ * paragraph has no source block, so only when that pairing fails the other members are paired and
+ * the empty paragraphs are returned apart (undefined when there are none).
+ */
+function pairUnits<E>(
+  host: UnitHost<E>,
+  listing: readonly HostUnit<E>[],
+  blocks: MovableBlock[],
+  elements: E[],
+  hostOf: ReadonlyMap<E, HostUnit<E>>,
+): {
+  pairs: ReturnType<typeof pairSourceGroups<E>>
+  empties: ReadonlySet<E> | undefined
+} {
+  const kindOf = (element: E) => hostOf.get(element)?.kind ?? null
+  const pairs = pairSourceGroups(blocks, elements, kindOf)
+  if (pairs) return { pairs, empties: undefined }
+  const empties = emptyParagraphs(host, listing)
+  if (empties.size === 0) return { pairs, empties: undefined }
+  return {
+    pairs: pairSourceGroups(
+      blocks,
+      elements.filter((element) => !empties.has(element)),
+      kindOf,
+    ),
+    empties,
+  }
+}
+
+/**
+ * Task 733 / 020 (W-B): puts each empty paragraph (document order) into `units` as a paragraph unit
+ * with empty text at the end of the unit before it, as a live model lists it after an Enter.
+ */
+function insertEmptyUnits<E>(
+  units: Unit<E>[],
+  empties: ReadonlySet<E> | undefined,
+  elements: readonly E[],
+  text: string,
+): void {
+  if (!empties) return
+  const order = new Map(elements.map((element, index) => [element, index]))
+  let index = 0
+  for (const empty of empties) {
+    const at = order.get(empty) ?? 0
+    while (
+      index < units.length &&
+      (order.get(units[index].members[0]) ?? 0) < at
+    )
+      index++
+    const start = index > 0 ? units[index - 1].end : 0
+    const line = offsetToPosition(text, start).line
+    units.splice(index, 0, newUnit<E>('paragraph', [empty], start, start, line))
+    index++
+  }
+}
+
+/** Caret marker, zero-width space and line whitespace: an empty paragraph holds nothing else. */
+const EMPTY_PARAGRAPH_TEXT = /^[ \t\n\r\u200b\u2038]*$/u
+
+/** Task 733 / 020 (W-B): the single-member paragraphs of `listing` whose HTML holds no text. */
+function emptyParagraphs<E>(
+  host: UnitHost<E>,
+  listing: readonly HostUnit<E>[],
+): Set<E> {
+  const out = new Set<E>()
+  for (const unit of listing) {
+    if (unit.kind !== 'paragraph' || unit.members.length !== 1) continue
+    const text = host
+      .html('paragraph', unit.members[0])
+      .replace(/<[^>]*>/gu, '')
+      .replace(/&ZeroWidthSpace;|&#8203;/gu, '')
+    if (EMPTY_PARAGRAPH_TEXT.test(text)) out.add(unit.members[0])
+  }
+  return out
 }
 
 const sameMembers = <E>(a: readonly E[], b: readonly E[]): boolean =>

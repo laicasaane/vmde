@@ -1,11 +1,12 @@
 import { historySourceProjection } from '../editing/undo-block-restore'
+import { flattenSourceHtml } from '../editing/wysiwyg-code-highlight'
 import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import type {
   HistoryCapture,
   HistoryModelPort,
   UnitMode,
 } from '../util/unit-changes'
-import { isHintSpan, stripWrapHints } from '../util/wrap-hint-mark'
+import { isHintSpan } from '../util/wrap-hint-mark'
 import { reportError } from '../util/webview-log'
 import type { TextModel, Unit } from './text-model'
 import { isViewOnlyChild } from './unit-dom'
@@ -127,8 +128,10 @@ const openTag = (el: Element): string => {
   return html.slice(0, html.length - `</${shell.localName}>`.length)
 }
 
+// Task 733 / 020 (Q-172): `flattenSourceHtml` strips the wrap hints and, in a WYSIWYG code source, the
+// hljs token spans (view state); it returns other HTML unchanged.
 const normalized = (el: HTMLElement, kind: 'cell' | 'outer'): string =>
-  stripWrapHints(kind === 'cell' ? el.innerHTML : el.outerHTML)
+  flattenSourceHtml(kind === 'cell' ? el.innerHTML : el.outerHTML)
 
 const parse = (html: string): Node[] => {
   const template = document.createElement('template')

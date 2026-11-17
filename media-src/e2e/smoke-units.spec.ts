@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect, test } from './coverage-fixture'
 import { selectEditorText } from './editor-selection'
 import { hostStubState, installHostStub } from './helpers/host-stub'
+import { tableHeavyMarkdown } from '../../test/vscode-e2e/table-heavy-markdown'
 
 // Task 733 / 024 (plan D-14 section 4.1): the smoke stage. The page runs the real webview entry
 // (main.ts) with Vditor built from source and the build patches applied, bundled by the e2e server
@@ -154,6 +155,13 @@ test.describe('IR, all switches off', () => {
     page,
   }) => {
     await openSmoke(page, 'none')
+    // Task 733 / 020 (Q-181, recorded edit): this case asserts WYSIWYG units off. When the build ships
+    // them on, the WYSIWYG block below covers the switches, so the case skips.
+    const switches = await page.evaluate(
+      () => (window as any).__vmdeE2EReadiness?.switches,
+    )
+    expect(switches, 'the shipped switches are recorded').toBeDefined()
+    test.skip(switches.wysiwygUnits, 'WYSIWYG units ship on')
     await expect.poll(() => shadow(page)).toEqual({ state: 'live', mode: 'ir' })
     await switchMode(page, 'wysiwyg')
     await expect.poll(() => shadow(page)).toEqual({ state: 'off', mode: null })
@@ -566,4 +574,349 @@ test.describe('Source, SOURCE_UNITS on', () => {
     expect(texts[0]).toContain('Body para.')
     expect(texts[1], 'source bytes equal the none bytes').toBe(texts[0])
   })
+})
+
+// Task 733 / 020 (design Q-164 to Q-168, review Q-171): the WYSIWYG block, on `/smoke/wysiwyg.html`
+// (`WYSIWYG_UNITS` on), over `tableHeavyMarkdown(1)` with the places of `wysiwyg-units.spec.ts`. From the
+// 020-E causes: W-A (the model reaches WYSIWYG at the switch), W-B (empty paragraph at a build), W-C (the
+// unit engine holds WYSIWYG history), W-D (no root read per key) and W-E (Undo after a delta publishes).
+// Logged values are counters and kinds only.
+
+const WYSIWYG_DOC = tableHeavyMarkdown(1)
+const WYSIWYG_ROOT = '.vditor-wysiwyg .vditor-reset'
+const WYSIWYG_PLACES = {
+  paragraph: { selector: `${WYSIWYG_ROOT} > p`, nth: 2 },
+  cell: { selector: `${WYSIWYG_ROOT} > table td`, nth: 7 },
+  item: { selector: `${WYSIWYG_ROOT} > ul > li`, nth: 2 },
+} as const
+type WysiwygPlace = keyof typeof WYSIWYG_PLACES
+
+/** Opens `/smoke/wysiwyg.html` on `content` in IR and waits for the live IR model. */
+async function openWysiwygSet(page: Page, content = WYSIWYG_DOC) {
+  await openSourceSet(page, 'wysiwyg', content)
+  await expect.poll(() => shadow(page)).toEqual({ state: 'live', mode: 'ir' })
+}
+
+/** 020-A4: switches through the VMDE mode command (`vmde.switchTo*`), as the host posts it. */
+async function modeCommand(page: Page, mode: 'ir' | 'wysiwyg') {
+  await page.evaluate((m) => {
+    window.postMessage(
+      {
+        command: 'editor-action',
+        action: m === 'ir' ? 'switch-to-ir' : 'switch-to-wysiwyg',
+      },
+      '*',
+    )
+  }, mode)
+  await expect(page.locator(`.vditor-${mode}`)).toBeVisible()
+}
+
+const twoFrames = (page: Page) =>
+  page.evaluate(async () => {
+    for (let i = 0; i < 2; i++)
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+  })
+
+/** The model text digest equals the stub text digest (FNV-1a over UTF-16 code units, as the page's). */
+const modelMatchesStub = (page: Page) =>
+  page.evaluate(() => {
+    const w = window as any
+    const text = w.__vmdeHostStub.text as string
+    let hash = 0x811c9dc5
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i)
+      hash = Math.imul(hash, 0x01000193)
+    }
+    const model = w.__vmdeModelTextDigest?.() as
+      | { length: number; hash: number }
+      | null
+      | undefined
+    return !!model && model.length === text.length && model.hash === hash >>> 0
+  })
+
+const wysiwygCounters = (page: Page) =>
+  page.evaluate(() => {
+    const c = (window as any).__vmdeEditCounters
+    return {
+      legacyEditPosts: c.legacyEditPosts as number,
+      luteDocument: c.luteDocument as number,
+      luteTable: c.luteTable as number,
+      deltaPosts: c.deltaPosts as number,
+      historyDeltaPosts: c.historyDeltaPosts as number,
+      rootClone: c.rootClone as number,
+      rootInnerHtmlRead: c.rootInnerHtmlRead as number,
+    }
+  })
+
+const resetWysiwygCounters = (page: Page) =>
+  page.evaluate(
+    (length) => (window as any).__vmdeEditCounters.reset(length),
+    WYSIWYG_DOC.length,
+  )
+
+const spunCount = (page: Page) =>
+  page.evaluate(
+    () => ((window as any).__vmdeUnitSpinStats?.spun as number) ?? 0,
+  )
+
+/** Clicks the right edge of the place, which puts the caret at the end of its text. */
+async function caretAtPlaceEnd(page: Page, place: WysiwygPlace) {
+  const { selector, nth } = WYSIWYG_PLACES[place]
+  const target = page.locator(selector).nth(nth)
+  await target.scrollIntoViewIfNeeded()
+  const box = await target.boundingBox()
+  if (!box) throw new Error(`${place} has no bounding box`)
+  await target.click({
+    position: { x: Math.max(1, box.width - 2), y: box.height / 2 },
+  })
+  await page.waitForTimeout(150)
+}
+
+/** Caret at the end of the first code line of the first fenced block (its source pre is hidden). */
+async function caretInWysiwygCode(page: Page) {
+  await page
+    .locator('.vditor-wysiwyg')
+    .first()
+    .click({ position: { x: 4, y: 4 } })
+  const placed = await page.evaluate(() => {
+    const code = document.querySelector(
+      '.vditor-wysiwyg .vditor-reset > [data-type="code-block"] pre.vditor-wysiwyg__pre > code',
+    )
+    const source = code?.closest<HTMLElement>('.vditor-wysiwyg__pre')
+    const text = code
+      ? (document
+          .createTreeWalker(code, NodeFilter.SHOW_TEXT)
+          .nextNode() as Text | null)
+      : null
+    if (!source || !text) return false
+    source.style.removeProperty('display')
+    const newline = text.data.indexOf('\n')
+    const range = document.createRange()
+    range.setStart(text, newline < 0 ? text.data.length : newline)
+    range.collapse(true)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    source.focus()
+    return true
+  })
+  if (!placed) throw new Error('code block source not found')
+}
+
+/** The caret's text offset in the WYSIWYG root; -1 without a caret there. */
+const wysiwygCaret = (page: Page) =>
+  page.evaluate((selector) => {
+    const root = document.querySelector(selector)
+    const selection = window.getSelection()
+    if (!root || !selection?.rangeCount) return -1
+    const range = selection.getRangeAt(0)
+    if (!root.contains(range.startContainer)) return -1
+    const before = document.createRange()
+    before.setStart(root, 0)
+    before.setEnd(range.startContainer, range.startOffset)
+    return before.toString().length
+  }, WYSIWYG_ROOT)
+
+/** The one inserted character of `after` against `before`, or -1 when the change is not one insert. */
+function insertedAt(before: string, after: string): number {
+  if (after.length !== before.length + 1) return -1
+  let i = 0
+  while (i < before.length && before[i] === after[i]) i++
+  return after.slice(0, i) + after.slice(i + 1) === before ? i : -1
+}
+
+test.describe('WYSIWYG, WYSIWYG_UNITS on', () => {
+  test.describe.configure({ timeout: 120_000 })
+
+  test('1. IR to WYSIWYG with no key: live in WYSIWYG within two frames and equal to the host (W-A)', async ({
+    page,
+  }) => {
+    await openWysiwygSet(page)
+    await switchMode(page, 'wysiwyg')
+    await twoFrames(page)
+    expect(await shadow(page)).toEqual({ state: 'live', mode: 'wysiwyg' })
+    expect(await modelMatchesStub(page), 'model digest equals the stub').toBe(
+      true,
+    )
+  })
+
+  // Task 733 / 020 (Q-184): a follow-up. The mode command's undo seed runs Vditor's old engine, whose
+  // caret marker write dirties a WYSIWYG unit, so the switch back keeps no text. Fixme until it lands.
+  test.fixme('2. WYSIWYG, IR, WYSIWYG (toolbar and mode command): live after each, no whole post (step d)', async ({
+    page,
+  }) => {
+    await openWysiwygSet(page)
+    await resetWysiwygCounters(page)
+    await switchMode(page, 'wysiwyg')
+    await expect
+      .poll(() => shadow(page), { timeout: 2_000 })
+      .toEqual({ state: 'live', mode: 'wysiwyg' })
+    await modeCommand(page, 'ir')
+    await expect
+      .poll(() => shadow(page), { timeout: 2_000 })
+      .toEqual({ state: 'live', mode: 'ir' })
+    await modeCommand(page, 'wysiwyg')
+    await expect
+      .poll(() => shadow(page), { timeout: 2_000 })
+      .toEqual({ state: 'live', mode: 'wysiwyg' })
+    const counters = await wysiwygCounters(page)
+    expect(counters.legacyEditPosts, 'legacyEditPosts').toBe(0)
+    expect(counters.luteDocument, 'luteDocument').toBe(0)
+    expect(await modelMatchesStub(page)).toBe(true)
+  })
+
+  for (const place of ['paragraph', 'cell', 'item', 'code block'] as const)
+    test(`3. one key in a ${place} posts a delta of the key only (step b)`, async ({
+      page,
+    }) => {
+      await openWysiwygSet(page)
+      await switchMode(page, 'wysiwyg')
+      await page.waitForTimeout(SETTLE_MS)
+      if (place === 'code block') await caretInWysiwygCode(page)
+      else await caretAtPlaceEnd(page, place)
+      const before = await stubText(page)
+      const spunBefore = await spunCount(page)
+      await resetWysiwygCounters(page)
+      await page.keyboard.press('x')
+      await page.waitForTimeout(SETTLE_MS)
+      const counters = await wysiwygCounters(page)
+      expect(counters.legacyEditPosts, 'legacyEditPosts').toBe(0)
+      expect(counters.luteDocument, 'luteDocument').toBe(0)
+      expect(counters.deltaPosts, 'deltaPosts').toBeGreaterThanOrEqual(1)
+      if (place === 'cell' || place === 'item')
+        expect(await spunCount(page), 'unit spins').toBeGreaterThan(spunBefore)
+      // The key only: no table padding, no other byte changed.
+      expect(
+        insertedAt(before, await stubText(page)),
+        'one inserted character',
+      ).toBeGreaterThanOrEqual(0)
+      expect((await hostStubState(page)).resyncs).toBe(0)
+    })
+
+  test('4. a cell key makes no table or document Lute call; a paragraph Backspace reads no root (step e, W-D)', async ({
+    page,
+  }) => {
+    await openWysiwygSet(page)
+    await switchMode(page, 'wysiwyg')
+    await page.waitForTimeout(SETTLE_MS)
+    await caretAtPlaceEnd(page, 'cell')
+    await resetWysiwygCounters(page)
+    await page.keyboard.press('x')
+    await page.waitForTimeout(SETTLE_MS)
+    const cell = await wysiwygCounters(page)
+    expect(cell.luteTable, 'luteTable').toBe(0)
+    expect(cell.luteDocument, 'luteDocument').toBe(0)
+    await caretAtPlaceEnd(page, 'paragraph')
+    await resetWysiwygCounters(page)
+    await page.keyboard.press('Backspace')
+    await page.waitForTimeout(SETTLE_MS)
+    const paragraph = await wysiwygCounters(page)
+    expect(paragraph.rootInnerHtmlRead, 'rootInnerHtmlRead').toBe(0)
+    expect(paragraph.rootClone, 'rootClone').toBe(0)
+  })
+
+  for (const place of ['cell', 'item'] as const)
+    test(`5. Undo and Redo of a ${place} key go by history deltas, with the bytes and the caret (step c, W-C, 020-A2)`, async ({
+      page,
+    }) => {
+      await openWysiwygSet(page)
+      await switchMode(page, 'wysiwyg')
+      await page.waitForTimeout(SETTLE_MS)
+      await caretAtPlaceEnd(page, place)
+      const before = await stubText(page)
+      const caretBefore = await wysiwygCaret(page)
+      await page.keyboard.press('q')
+      await page.waitForTimeout(SETTLE_MS)
+      const typed = await stubText(page)
+      const at = insertedAt(before, typed)
+      expect(at, 'the key is one insert').toBeGreaterThanOrEqual(0)
+      await resetWysiwygCounters(page)
+      await page.keyboard.press('Control+KeyZ')
+      await expect.poll(() => stubText(page)).toBe(before)
+      await page.waitForTimeout(SETTLE_MS)
+      expect(await wysiwygCaret(page), 'caret after Undo').toBe(caretBefore)
+      await page.keyboard.press('Control+KeyY')
+      await expect.poll(() => stubText(page)).toBe(typed)
+      await page.waitForTimeout(SETTLE_MS)
+      expect(await wysiwygCaret(page), 'caret after Redo').toBe(caretBefore + 1)
+      const counters = await wysiwygCounters(page)
+      expect(
+        counters.historyDeltaPosts,
+        'historyDeltaPosts',
+      ).toBeGreaterThanOrEqual(2)
+      expect(counters.legacyEditPosts, 'legacyEditPosts').toBe(0)
+      await page.keyboard.press('Control+KeyZ')
+      await expect.poll(() => stubText(page)).toBe(before)
+      await page.waitForTimeout(SETTLE_MS)
+      // One key typed after Undo lands at the restored caret.
+      await page.keyboard.press('r')
+      await expect
+        .poll(() => stubText(page))
+        .toBe(`${before.slice(0, at)}r${before.slice(at)}`)
+      expect((await hostStubState(page)).resyncs).toBe(0)
+    })
+
+  test('5. Undo after a paragraph delta gives back the stub text from before it (W-E)', async ({
+    page,
+  }) => {
+    await openWysiwygSet(page)
+    await switchMode(page, 'wysiwyg')
+    await page.waitForTimeout(SETTLE_MS)
+    await caretAtPlaceEnd(page, 'paragraph')
+    await page.keyboard.press('a')
+    await page.waitForTimeout(SETTLE_MS)
+    const before = await stubText(page)
+    await page.keyboard.press('b')
+    await page.waitForTimeout(SETTLE_MS)
+    expect(insertedAt(before, await stubText(page))).toBeGreaterThanOrEqual(0)
+    await page.keyboard.press('Control+KeyZ')
+    await expect.poll(() => stubText(page)).toBe(before)
+  })
+
+  test('6. Enter at a paragraph end, then Undo and Redo: the model stays live (W-B)', async ({
+    page,
+  }) => {
+    await openWysiwygSet(page)
+    await switchMode(page, 'wysiwyg')
+    await caretAtPlaceEnd(page, 'paragraph')
+    // A key and Enter with no wait: the empty paragraph exists at the first build after the switch.
+    await page.keyboard.press('a')
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(SETTLE_MS)
+    expect(await shadow(page), 'after Enter').toEqual({
+      state: 'live',
+      mode: 'wysiwyg',
+    })
+    await page.keyboard.press('Control+KeyZ')
+    await page.waitForTimeout(SETTLE_MS)
+    expect(await shadow(page), 'after Undo').toEqual({
+      state: 'live',
+      mode: 'wysiwyg',
+    })
+    await page.keyboard.press('Control+KeyY')
+    await page.waitForTimeout(SETTLE_MS)
+    expect(await shadow(page), 'after Redo').toEqual({
+      state: 'live',
+      mode: 'wysiwyg',
+    })
+    expect(await modelMatchesStub(page)).toBe(true)
+  })
+
+  // 020-E W3: one run in six lost a character. Six runs, each on a fresh page.
+  const CODE_END = '# Head\n\nPara.\n\n```js\nconst a = 1\n```\n'
+  const CODE_END_EXPECTED = '# Head\n\nPara.\n\n```js\nconst a = 1\nY\n```\n'
+  for (let run = 1; run <= 6; run++)
+    test(`7. Enter at the end of a document that ends in a code block, then a key (run ${run})`, async ({
+      page,
+    }) => {
+      await openWysiwygSet(page, CODE_END)
+      await switchMode(page, 'wysiwyg')
+      await page.waitForTimeout(SETTLE_MS)
+      await caretInWysiwygCode(page)
+      await page.keyboard.press('End')
+      await page.keyboard.press('Enter')
+      await page.keyboard.type('Y')
+      await expect.poll(() => stubText(page)).toBe(CODE_END_EXPECTED)
+      expect(CODE_END_EXPECTED).toHaveLength(39)
+    })
 })

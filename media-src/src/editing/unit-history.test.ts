@@ -1490,3 +1490,31 @@ describe.each([1, 4, 16] as const)(
     })
   },
 )
+
+// Task 733 / 020 (W-C, Q-166, 020-A3): after a kept-text switch from IR into WYSIWYG the model is live
+// before any WYSIWYG edit, so Vditor's WYSIWYG stack holds only its first record and the unit engine
+// claims the WYSIWYG history. No `unit-history.ts` change is planned: this is a regression guard that
+// passes before 020-I; smoke case 5 is the failing proof of W-C.
+describe('020 WYSIWYG claim after a kept-text switch', () => {
+  beforeEach(() => {
+    wysiwygUnitsOn.value = true
+  })
+  afterEach(() => {
+    wysiwygUnitsOn.value = false
+  })
+
+  it('claims WYSIWYG at the first record after an IR history', () => {
+    const r = rig({ mode: 'ir' })
+    expect(r.hook.claims(r.vditor)).toBe(true)
+    r.record()
+    r.record(cap('ir key'))
+    // The switch: Vditor records the first WYSIWYG snapshot, the kept-text model is live in WYSIWYG.
+    r.vditor.currentMode = 'wysiwyg'
+    ;(r.vditor.undo.wysiwyg.undoStack as unknown[]).push([])
+    expect(r.hook.claims(r.vditor), 'claim at the first record').toBe(true)
+    r.record()
+    r.record(cap('wysiwyg key'))
+    r.hook.undo(r.vditor)
+    expect(r.names(r.state.restores)).toEqual([['wysiwyg key', 'before']])
+  })
+})

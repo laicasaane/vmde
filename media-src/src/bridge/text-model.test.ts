@@ -710,3 +710,87 @@ describe('012-10 sliced proof of an oversize table (real Lute, fake clock)', {
     expect(r.table.children.every((each) => each.proof === 'proven')).toBe(true)
   })
 })
+
+// Task 733 / 020 (W-B, Q-165, 020-A1): an empty top-level paragraph (no text other than the caret
+// marker and zero-width spaces) has no source block. A build over a DOM that holds one pairs the
+// other members and lists the empty paragraph as a paragraph unit with empty text at the gap after
+// the previous unit: the representation a live model gives the same element after an Enter. Run on
+// an IR DOM and on a WYSIWYG DOM (`layoutUnits` serves every mode).
+describe('020 empty paragraph at a build (W-B)', () => {
+  const TEXT = 'First para.\n\nSecond para.\n'
+  let wysiwygLute: UnitLute
+  beforeAll(async () => {
+    const real = createRealLute('wysiwyg')
+    patchLuteTableCodePipes(real.lute)
+    patchLuteGapRepair(real.lute)
+    wysiwygLute = real.lute
+    // The live path needs the structure windows, as the session installs them.
+    const structure = await import('./model-structure')
+    structure.installModelSync()
+  })
+  afterAll(async () => {
+    const sync = await import('./model-sync')
+    sync.setStructureSync(undefined)
+    setSyncImplementation(undefined)
+  })
+
+  type Shape = { kind: UnitKind; start: number; end: number }[]
+  const shapeOf = (units: readonly Unit<HTMLElement>[]): Shape =>
+    units.map((u) => ({ kind: u.kind, start: u.start, end: u.end }))
+
+  /** Inserts an empty paragraph after the first top-level paragraph, as an Enter at its end does. */
+  function insertEmptyParagraph(root: HTMLElement): void {
+    const empty = document.createElement('p')
+    empty.setAttribute('data-block', '0')
+    empty.textContent = '\u200b'
+    root.querySelector(':scope > p')?.after(empty)
+  }
+
+  /** Runs `body` with the module's Lute set to `mode`'s Lute (the jsdom host reads it). */
+  function withMode<T>(mode: 'ir' | 'wysiwyg', body: () => T): T {
+    const saved = lute
+    if (mode === 'wysiwyg') lute = wysiwygLute
+    try {
+      return body()
+    } finally {
+      lute = saved
+    }
+  }
+
+  const renderInto = (mode: 'ir' | 'wysiwyg', root: HTMLElement): void => {
+    root.innerHTML =
+      mode === 'ir'
+        ? lute.Md2VditorIRDOM(TEXT)
+        : (
+            wysiwygLute as unknown as { Md2VditorDOM(md: string): string }
+          ).Md2VditorDOM(TEXT)
+  }
+
+  for (const mode of ['ir', 'wysiwyg'] as const)
+    it(`${mode}: a build over an empty paragraph equals the live Enter representation`, () =>
+      withMode(mode, () => {
+        // The live path: a model built over the two paragraphs, then the Enter's empty paragraph.
+        const liveRoot = document.createElement('div')
+        renderInto(mode, liveRoot)
+        const liveModel = createTextModel(domHost(liveRoot), scanMovableBlocks)
+        liveModel.build(TEXT)
+        expect(liveModel.state).toBe('live')
+        insertEmptyParagraph(liveRoot)
+        liveModel.markStructureDirty('root')
+        liveModel.sync()
+        expect(liveModel.state, 'live model after the Enter').toBe('live')
+        // The build path: a fresh model over the same DOM and text (a rebind or a kept-text build).
+        const builtRoot = document.createElement('div')
+        renderInto(mode, builtRoot)
+        insertEmptyParagraph(builtRoot)
+        const built = createTextModel(domHost(builtRoot), scanMovableBlocks)
+        built.build(liveModel.text)
+        expect(
+          built.offReason,
+          'build over the empty paragraph',
+        ).toBeUndefined()
+        expect(built.state).toBe('live')
+        expect(built.text).toBe(liveModel.text)
+        expect(shapeOf(built.units)).toEqual(shapeOf(liveModel.units))
+      }))
+})

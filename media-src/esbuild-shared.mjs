@@ -3024,6 +3024,23 @@ export function patchIrBackspaceRootRead(code) {
   )
 }
 
+// Task 733 / 020 (W-D): as patchIrBackspaceRootRead for the WYSIWYG keyup; the operands are reordered so
+// the child count is tested first; both are side-effect-free getters, so the condition is unchanged.
+const WYSIWYG_BACKSPACE_ROOT_READ =
+  'vditor.wysiwyg.element.innerHTML !== "" && vditor.wysiwyg.element.childNodes.length === 1 &&'
+export function patchWysiwygBackspaceRootRead(code) {
+  assertOneAnchor(
+    code,
+    WYSIWYG_BACKSPACE_ROOT_READ,
+    'patchWysiwygBackspaceRootRead',
+    'wysiwyg/index.ts',
+  )
+  return code.replace(
+    WYSIWYG_BACKSPACE_ROOT_READ,
+    'vditor.wysiwyg.element.childNodes.length === 1 && vditor.wysiwyg.element.innerHTML !== "" &&',
+  )
+}
+
 // Task 733 / 002 — the IR paste handler spins the whole block of the caret (the whole table for a
 // cell). The same hook handles a paste into a cell (event undefined: cells only) before the block spin.
 const IR_PASTE_SPIN =
@@ -4556,13 +4573,15 @@ export const VDITOR_TS_PATCHES = [
   {
     // chain the wysiwyg/index.ts patches (link-click gate + clicked-line caret + list marker on
     // space, task 441, + the Task 711 cancelled composition, + the Task 714 Shift-held preview
-    // reveal). Distinct anchors, so order is immaterial.
+    // reveal, + the Task 733 / 020 Backspace root read). Distinct anchors, so order is immaterial.
     file: /vditor[/\\]src[/\\]ts[/\\]wysiwyg[/\\]index\.ts$/,
     transform: (code) =>
-      patchWysiwygShiftArrowPreview(
-        patchWysiwygCancelledComposition(
-          patchWysiwygListMarkerOnSpace(
-            patchWysiwygCodeClickCaret(patchWysiwygLinkClick(code)),
+      patchWysiwygBackspaceRootRead(
+        patchWysiwygShiftArrowPreview(
+          patchWysiwygCancelledComposition(
+            patchWysiwygListMarkerOnSpace(
+              patchWysiwygCodeClickCaret(patchWysiwygLinkClick(code)),
+            ),
           ),
         ),
       ),

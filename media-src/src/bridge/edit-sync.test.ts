@@ -4011,3 +4011,69 @@ describe('019 Source with a live model', () => {
     expect(t.deltas()).toHaveLength(1)
   })
 })
+
+// Task 733 / 020 (W-E, Q-168): the post after an Undo (no user input) that follows a WYSIWYG delta
+// publishes. A delta recorded as 'ir' made it look like a switch into WYSIWYG, and `postEdit` returned
+// without publishing (020-E `probe-z.log`). 019's C4 fix (Q-156) records the editor's current mode.
+describe('020 WYSIWYG delta then a post without user input', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('the post after an Undo publishes after a WYSIWYG delta (W-E)', () => {
+    const results: PrepareResult[] = []
+    const port: DeltaSessionPort = {
+      prepareDelta: vi.fn(
+        (): PrepareResult => results.shift() ?? { kind: 'nothing' },
+      ),
+      epoch: () => 3,
+      awaiting: () => false,
+      hasDirty: () => false,
+      modelText: () => 'alphaX\n',
+      rebind: vi.fn(),
+      markPublishedWhole: vi.fn(),
+      clearForms: vi.fn(),
+    }
+    const session = {
+      beforeWholeTextPost: vi.fn(() => undefined),
+      onModeChange: vi.fn(),
+      turnOff: vi.fn(),
+      deltaPort: () => port,
+      canPublishDelta: () => true,
+      ownsText: () => true,
+      onWholeTextPublished: vi.fn(),
+      recordFallback: vi.fn(),
+      markExplicitAtCaret: vi.fn(),
+      applyText: vi.fn((): ApplyOutcome => ({ kind: 'applied' })),
+      rebuildAfterExact: vi.fn(),
+    }
+    const rig = boot({
+      mode: 'wysiwyg',
+      getValue: () => 'FULL',
+      modelSession: session,
+    })
+    const deltas = () =>
+      rig.post.mock.calls.filter((c) => c[0]?.command === 'edit-delta')
+    const key = {
+      kind: 'changes' as const,
+      before: 'alpha\n',
+      changes: [{ from: 5, to: 5, insert: 'X' }],
+    }
+    results.push(key)
+    rig.es.markUserInput()
+    rig.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(deltas()).toHaveLength(1)
+    // The Undo's post: no user input, the DOM changed back.
+    results.push({ ...key, before: 'alphaX\n' })
+    rig.es.schedule()
+    vi.advanceTimersByTime(250)
+    expect(deltas(), 'the post after Undo').toHaveLength(2)
+    expect(session.onModeChange).not.toHaveBeenCalled()
+  })
+})
