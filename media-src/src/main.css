@@ -1931,6 +1931,30 @@ body[data-full-width="0"] #vmde-prerender :is(.vditor-ir, .vditor-wysiwyg) .vdit
   top: 1px;
 }
 
+/* Task 733 / 025 (F-1): layout containment of each top-level IR block. A text write inside one block
+   then leaves the out-of-flow layout of every other block alone (the 6,240 absolutely positioned
+   inline-code markers at f16 resolved against one far containing block; 028-E, 025-E). `layout` only:
+   `style` (counter and quote scoping) adds nothing measured (025-E finding 3) and would scope
+   counters. IR only: WYSIWYG and Source keep today's layout (contract scope). */
+.vditor-ir > .vditor-reset > * {
+  contain: layout;
+}
+
+/* Containment makes each heading a block formatting context, which would enclose the floated level
+   label (Vditor `_ir.less:186-202`, `float: left`) and grow every heading by 3.5 to 4.3 px (025-E D-1).
+   The label leaves the flow instead: the same box, absolutely positioned at the float's place. The
+   heading is its containing block (`contain: layout`), its padding-top is 0, so `top: 0` is the
+   float's top and `left: 0` plus Vditor's `margin-left: -29px` is the float's left. */
+.vditor-ir > .vditor-reset > :is(h1, h2, h3, h4, h5, h6)::before {
+  float: none;
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.vditor-ir > .vditor-reset > :is(h1, h2, h3, h4)::before {
+  top: 1px;
+}
+
 /* showHeadingMarkers off: hide ALL the left-gutter markers (heading levels
    H1–H6, the link-reference ↩, footnotes, toc) and tighten the now-empty left
    gutter on both the content and the pinned toolbar. Both modes. */

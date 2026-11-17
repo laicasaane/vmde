@@ -290,10 +290,39 @@ describe('heading fold icon hit testing', () => {
     ).toBe(true)
 
     vi.restoreAllMocks()
-    mockHeadingGutter({ before: { position: 'absolute' } })
+    mockHeadingGutter({ before: { position: 'fixed' } })
     expect(
       headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
     ).toBe(false)
+  })
+
+  // Task 733 / 025: with `contain: layout` on top-level IR blocks the level label leaves the flow, an
+  // absolutely positioned box at the float's place (heading padding box plus its `left`/`top` and margins).
+  it('accepts an absolutely positioned marker at its computed offsets', () => {
+    const heading = document.createElement('h3')
+    heading.setAttribute('data-vmde-foldable', '1')
+    mockHeadingGutter({
+      before: { float: 'none', position: 'absolute', left: '0px', top: '1px' },
+      heading: { borderLeftWidth: '2px', borderTopWidth: '3px' },
+    })
+    // Marker box: left 100 + 2 + 0 - 29 = 73 to 93, top 200 + 3 + 1 = 204 to 225.
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 83, clientY: 214 }),
+    ).toBe(true)
+    expect(
+      headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+    ).toBe(true)
+
+    for (const before of [
+      { float: 'none', position: 'absolute', left: 'auto', top: '1px' },
+      { float: 'none', position: 'absolute', left: '0px', top: 'auto' },
+    ]) {
+      vi.restoreAllMocks()
+      mockHeadingGutter({ before })
+      expect(
+        headingFoldGutterHitTest(heading, { clientX: 80, clientY: 243 }),
+      ).toBe(false)
+    }
   })
 
   it('fails closed for malformed visible marker or arrow geometry', () => {

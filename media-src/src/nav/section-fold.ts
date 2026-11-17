@@ -198,6 +198,19 @@ function renderedHeadingPseudoBox(
     if (!origin) return false
     left = headingRect.left + origin[0]
     top = headingRect.top + origin[1]
+  } else if (style.position === 'absolute') {
+    // Task 733 / 025: `contain: layout` on top-level IR blocks takes the level label out of the flow
+    // (main.css), an absolute box whose containing block is the heading's padding box. Its place is the
+    // heading's border edge plus the computed `left`/`top` and margins; `auto` offsets fail closed.
+    const insets = read(getComputedStyle(heading), PSEUDO_BOX_PROPERTIES)
+    const offsets = read(
+      style,
+      ['left', 'top', 'marginLeft', 'marginTop'],
+      false,
+    )
+    if (!insets || !offsets) return false
+    left = headingRect.left + insets[6] + offsets[0] + offsets[2]
+    top = headingRect.top + insets[8] + offsets[1] + offsets[3]
   } else {
     const insets = read(getComputedStyle(heading), PSEUDO_BOX_PROPERTIES)
     const margins = read(style, ['marginLeft', 'marginTop'], false)

@@ -25,9 +25,22 @@ type Variant =
   | 'k-cv'
   | 'k-contain-cell'
   | 'k-cv-cell'
+  | 'k-product'
+  | 'k-product-layout'
+  | 'k-marker'
+  | 'k-product-none'
 
 /** The page style a variant runs under: production, no stylesheets, or one injected containment rule. */
-type StyleMode = 'production' | 'off' | 'contain' | 'cv'
+type StyleMode =
+  | 'production'
+  | 'off'
+  | 'contain'
+  | 'cv'
+  | 'product'
+  | 'product-layout'
+  | 'marker'
+  | 'product-none'
+type InjectedMode = Exclude<StyleMode, 'production' | 'off'>
 
 interface Sample {
   /** From the handler start to the handler end (the synchronous part). */
@@ -47,10 +60,20 @@ interface LuteInstance {
 
 const BASE_OFFSET = 1
 const TARGET_OFFSET = 2
-// Rules that the containment variants inject (D-13 design section 11.4, k-contain and k-cv).
-const STYLE_RULES: Record<'contain' | 'cv', string> = {
+// Rules that the containment variants inject (D-13 design section 11.4, k-contain and k-cv). Task 025-E
+// adds the candidate product rules: top-level IR blocks contained with the product selector
+// (`layout style`, then `layout` alone), and task 028-E's narrow rule that makes each inline-code node
+// the containing block of its two absolutely positioned markers. Task 025-T adds `product-none`: the shipped
+// page with the product containment rule switched off, the in-run reference of the gain case.
+const STYLE_RULES: Record<InjectedMode, string> = {
   contain: '#root > * { contain: layout style; }',
   cv: '#root > table { content-visibility: auto; contain-intrinsic-size: auto 800px; }',
+  product: '.vditor-ir .vditor-reset > * { contain: layout style; }',
+  'product-layout': '.vditor-ir .vditor-reset > * { contain: layout; }',
+  marker:
+    ".vditor-ir .vditor-reset .vditor-ir__node[data-type='code'] { position: relative; }",
+  'product-none':
+    '.vditor-ir > .vditor-reset > * { contain: none !important; }',
 }
 
 const root = document.getElementById('root') as HTMLElement
@@ -123,7 +146,7 @@ function configure(mode: StyleMode): void {
   injectedStyle = null
   for (const sheet of Array.from(document.styleSheets))
     sheet.disabled = mode === 'off'
-  if (mode === 'contain' || mode === 'cv') {
+  if (mode !== 'production' && mode !== 'off') {
     injectedStyle = document.createElement('style')
     injectedStyle.textContent = STYLE_RULES[mode]
     document.head.append(injectedStyle)
@@ -237,7 +260,7 @@ function operate(variant: Variant): void {
       selection.setBaseAndExtent(text, TARGET_OFFSET, text, TARGET_OFFSET)
       return
     default:
-      // g, g-cell and the k- variants: the write, then the pair.
+      // g, g-cell and the k- variants (product and marker rules included): the write, then the pair.
       writeOneCharacter(variant)
       setSelectionFocus(collapsedAt(text, TARGET_OFFSET))
       return

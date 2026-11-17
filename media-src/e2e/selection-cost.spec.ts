@@ -11,7 +11,10 @@ import type { Page } from '@playwright/test'
 // median and p90 of the handler time and of `deferred` (frame time minus variant a's at the same
 // factor), the design's "grows" test, the M-2 decision rules 1 to 5, and one trace of variant g per
 // factor that splits the flush into style and layout work. The decision itself is recorded in the task
-// handoff.
+// handoff. Task 025-E adds k-product and k-product-layout (the containment rule on the product selector
+// `.vditor-ir .vditor-reset > *`, with and without `style`) and k-marker (task 028-E's inline-code
+// containing-block rule) beside g and k-contain. Task 025-T adds k-product-none (the shipped page with
+// the product containment rule switched off) and the case "product containment: in-run gain at f16".
 //
 // Opt-in like `init-bench.spec.ts` (a measurement, not a regression check):
 //   BENCH=1 npm --prefix media-src run test:e2e -- selection-cost
@@ -40,6 +43,10 @@ const VARIANTS = [
   'k-cv',
   'k-contain-cell',
   'k-cv-cell',
+  'k-product',
+  'k-product-layout',
+  'k-marker',
+  'k-product-none',
 ] as const
 const REPETITIONS = 20
 const CONTAINMENT = [
@@ -50,7 +57,15 @@ const CONTAINMENT = [
 ] as const
 
 type Variant = (typeof VARIANTS)[number]
-type StyleMode = 'production' | 'off' | 'contain' | 'cv'
+type StyleMode =
+  | 'production'
+  | 'off'
+  | 'contain'
+  | 'cv'
+  | 'product'
+  | 'product-layout'
+  | 'marker'
+  | 'product-none'
 interface Sample {
   handler: number
   toFrame: number
@@ -78,6 +93,10 @@ function styleMode(variant: Variant): StyleMode {
   if (variant === 'k-off') return 'off'
   if (variant === 'k-contain' || variant === 'k-contain-cell') return 'contain'
   if (variant === 'k-cv' || variant === 'k-cv-cell') return 'cv'
+  if (variant === 'k-product') return 'product'
+  if (variant === 'k-product-layout') return 'product-layout'
+  if (variant === 'k-marker') return 'marker'
+  if (variant === 'k-product-none') return 'product-none'
   return 'production'
 }
 
@@ -256,6 +275,55 @@ async function traceG(page: Page): Promise<FlushSums> {
   return sumFlush(events)
 }
 
+// Task 025 gain case: the pair of the shipped page (g) and the same page with the product containment
+// rule switched off (k-product-none).
+const GAIN_PAIR = ['g', 'k-product-none'] as const
+interface RatioMedians {
+  handler: number | null
+  toFrame: number | null
+}
+
+/** Switches the page style for `variant` outside any timed region, then runs one untimed repetition. */
+async function useStyle(page: Page, variant: Variant): Promise<void> {
+  await page.evaluate(
+    (mode) => (window as any).__selectionCost.configure(mode),
+    styleMode(variant),
+  )
+  await twoFrames(page)
+  await sample(page, variant)
+}
+
+function ratio(num: number, den: number): number | null {
+  return den > 0 ? num / den : null
+}
+
+function medianOf(values: (number | null)[]): number | null {
+  const known = values.filter((v): v is number => v !== null)
+  return known.length > 0 ? percentile(known, 0.5) : null
+}
+
+/** The medians of the per-pair ratios g over k-product-none at one factor, pairs in alternating order. */
+async function gainAt(page: Page, factor: number): Promise<RatioMedians> {
+  await page.evaluate((f) => (window as any).__selectionCost.load(f), factor)
+  for (const variant of GAIN_PAIR) await useStyle(page, variant)
+  const handlerRatios: (number | null)[] = []
+  const toFrameRatios: (number | null)[] = []
+  for (let i = 0; i < REPETITIONS; i++) {
+    const order: readonly Variant[] =
+      i % 2 === 0 ? GAIN_PAIR : [GAIN_PAIR[1], GAIN_PAIR[0]]
+    const pair = new Map<Variant, Sample>()
+    for (const variant of order) {
+      await useStyle(page, variant)
+      pair.set(variant, await sample(page, variant))
+    }
+    const g = pair.get('g') as Sample
+    const none = pair.get('k-product-none') as Sample
+    handlerRatios.push(ratio(g.handler, none.handler))
+    toFrameRatios.push(ratio(g.toFrame, none.toFrame))
+  }
+  return { handler: medianOf(handlerRatios), toFrame: medianOf(toFrameRatios) }
+}
+
 test.describe('native selection cost (M-1, M-2)', () => {
   test.skip(!RUN, 'set BENCH=1 to run the selection cost measurement')
   test.describe.configure({ timeout: 900_000 })
@@ -346,5 +414,37 @@ test.describe('native selection cost (M-1, M-2)', () => {
     })
     console.log(`selection-cost M-2 result\n${json}`)
     expect(Object.keys(summary)).toHaveLength(VARIANTS.length)
+  })
+
+  // Task 025 (design section 2, Q-185): the product containment rule against the same page with the
+  // rule switched off, in one page load. Each pair times g and k-product-none one after the other, in
+  // alternating order; the style toggle and one untimed repetition run before each timed sample, so the
+  // toggle's own recalculation is not measured. The f16 medians of the per-pair ratios (g over
+  // k-product-none) are asserted; f1 and f4 are recorded only.
+  test('product containment: in-run gain at f16', async ({
+    page,
+  }, testInfo) => {
+    await openHarness(page)
+    const report: Record<string, RatioMedians> = {}
+    for (const factor of FACTORS)
+      report[`f${factor}`] = await gainAt(page, factor)
+    await page.evaluate(() =>
+      (window as any).__selectionCost.configure('production'),
+    )
+    const json = JSON.stringify(report, null, 2)
+    await testInfo.attach('product-containment-gain.json', {
+      body: json,
+      contentType: 'application/json',
+    })
+    console.log(`product containment gain (g over k-product-none)\n${json}`)
+    const f16 = report.f16
+    expect(
+      f16.handler ?? Number.POSITIVE_INFINITY,
+      'f16 handler: median of the per-pair ratios',
+    ).toBeLessThanOrEqual(0.85)
+    expect(
+      f16.toFrame ?? Number.POSITIVE_INFINITY,
+      'f16 time to the next frame: median of the per-pair ratios',
+    ).toBeLessThanOrEqual(0.75)
   })
 })
