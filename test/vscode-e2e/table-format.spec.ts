@@ -214,22 +214,30 @@ const PADDED_TABLE = [
 const PADDING_CASES: Array<{
   name: string
   caret: CaretTarget
+  /**
+   * Task 733 / 019 (Q-159): with Source units on, the switch shows the raw host table, so there is no
+   * padding; the caret goes to the same cell edge of the raw text and lands as in the padded case.
+   */
+  rawCaret: CaretTarget
   /** Where the caret may land once the table is formatted: `delta` range after the first `needle`. */
   landing: { needle: string; min: number; max: number }
 }> = [
   {
     name: 'left padding',
     caret: { needle: '| a ', delta: 2 },
+    rawCaret: { needle: '|a|', delta: 1 },
     landing: { needle: '| a ', min: 2, max: 2 },
   },
   {
     name: 'right padding',
     caret: { needle: '| a ', delta: 7 },
+    rawCaret: { needle: '|a|', delta: 2 },
     landing: { needle: '| a ', min: 3, max: 3 },
   },
   {
     name: 'an empty cell',
     caret: { needle: '| wide text |', delta: 17 },
+    rawCaret: { needle: '|wide text||', delta: 11 },
     landing: { needle: '| wide text |', min: 13, max: 21 },
   },
 ]
@@ -260,7 +268,8 @@ for (const padding of PADDING_CASES) {
     const shown = await frame
       .locator('body')
       .evaluate(() => (window as any).vditor.vditor.sv.element.textContent)
-    if ((await shippedSwitches(frame)).sourceUnits)
+    const sourceUnits = (await shippedSwitches(frame)).sourceUnits
+    if (sourceUnits)
       expect(shown).toContain(
         ['|a|longer|', '|-|-|', '|wide text||'].join('\n'),
       )
@@ -268,7 +277,10 @@ for (const padding of PADDING_CASES) {
     expect(await docText(evaluateInVSCode, file)).toBe(before)
     const placed = await frame
       .locator('body')
-      .evaluate(placeSourceCaret, padding.caret)
+      .evaluate(
+        placeSourceCaret,
+        sourceUnits ? padding.rawCaret : padding.caret,
+      )
     expect(placed.rootOffset).toBe(placed.expected)
     await evaluateInVSCode(async (vscode) => {
       await vscode.commands.executeCommand('vmde.formatTable')

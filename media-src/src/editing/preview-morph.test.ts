@@ -242,3 +242,51 @@ describe('019 morphPreviewUnits keeps the block separators (C5)', () => {
     expect(pane.innerHTML).toBe(whole('<p>a</p>', '<p>n</p>', '<p>c</p>'))
   })
 })
+
+// Task 733 run 1 repair (`edit-counter-gates:789`): the front-matter observer adds a view-only table after
+// the front matter's `pre` once the pane is built. The unit morph counts it with that unit instead of
+// refusing (which rendered the whole pane on every key).
+describe('morphPreviewUnits with a view-only element a renderer added (733 run 1)', () => {
+  const build = () => {
+    const pane = document.createElement('div')
+    pane.innerHTML = '<pre>fm</pre>\n<p>alpha</p>\n<p>bravo</p>\n'
+    previewMorph.setPreviewUnitBaseline(pane, [1, 1, 1])
+    const table = document.createElement('div')
+    table.className = 'vmde-front-matter'
+    table.setAttribute('data-render', '1')
+    table.setAttribute('contenteditable', 'false')
+    pane.querySelector('pre')?.after(table)
+    return { pane, table }
+  }
+
+  test('a later unit morphs and the view-only element stays', () => {
+    const { pane, table } = build()
+    expect(
+      previewMorph.morphPreviewUnits(pane, 2, 1, ['<p>bravox</p>\n']),
+    ).toBe(true)
+    expect(pane.children[1]).toBe(table)
+    expect(pane.textContent).toContain('bravox')
+    // The next key needs no recount.
+    expect(
+      previewMorph.morphPreviewUnits(pane, 1, 1, ['<p>alphay</p>\n']),
+    ).toBe(true)
+    expect(pane.children.length).toBe(4)
+  })
+
+  test('the unit that holds it takes it out with its own elements', () => {
+    const { pane, table } = build()
+    expect(
+      previewMorph.morphPreviewUnits(pane, 0, 1, ['<pre>fm2</pre>\n']),
+    ).toBe(true)
+    expect(table.isConnected).toBe(false)
+    expect(pane.children.length).toBe(3)
+  })
+
+  test('a pane with an element of no unit still refuses (guard)', () => {
+    const { pane } = build()
+    pane.append(document.createElement('p'))
+    expect(
+      previewMorph.morphPreviewUnits(pane, 1, 1, ['<p>alphay</p>\n']),
+    ).toBe(false)
+  })
+})

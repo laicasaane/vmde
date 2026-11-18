@@ -59,6 +59,7 @@ import {
 } from './helpers/shortcut-xtest-kit'
 import {
   expectNoShadowMismatch,
+  shippedSwitches,
   waitForInitialUndoSnapshot,
   wf,
 } from './webview-helpers'
@@ -639,7 +640,19 @@ async function journey(kit: Kit, j: Journey) {
       return result
     }
     result.redo = await historyStep(ctx, 'redo', { ...typedState, disk })
-    if (j.mode === 'sv')
+    // Task 733 / 015 (D-4): with Source units on, the host keeps its bytes outside the typed unit, while
+    // the Source view of the large fixture shows the spin's normalized text; the host then holds the
+    // opened bytes with exactly the typed insertion.
+    if (
+      j.mode === 'sv' &&
+      j.large &&
+      (await shippedSwitches(kit.frame())).sourceUnits
+    )
+      expect(
+        hostTyped.replace(/\r\n/g, '\n'),
+        'the host keeps its bytes and holds the typing',
+      ).toBe(ins(content, prefix + typed).replace(/\r\n/g, '\n'))
+    else if (j.mode === 'sv')
       expect(svTrim(viewTyped), 'SV view equals the host text').toBe(
         svTrim(hostTyped.replace(/\r\n/g, '\n')),
       )

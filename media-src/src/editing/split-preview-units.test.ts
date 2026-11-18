@@ -265,4 +265,33 @@ describe('019 Split separators and the pane-open baseline', () => {
     expect(counts.luteCalls).toBe(1)
     expect(pane.textContent).toContain('charliex')
   })
+
+  // Task 733 run 1 repair (`edit-counter-gates:789`): the front-matter renderer adds a view-only table
+  // after the front matter's `pre`. The unit baseline counts it with its unit, so the next key still
+  // morphs one unit instead of rendering the pane whole.
+  it('a view-only element a renderer adds is counted with its unit (733 run 1)', async () => {
+    vi.useFakeTimers()
+    const withFrontMatter = '---\ntitle: x\n---\n\nalpha\n\nbravo\n'
+    const r = await rig(withFrontMatter)
+    const pane = freshPane(r)
+    const div = divStarting(r.root, 'bravo')
+    r.emit(unitChange(div))
+    expect(hookOf()?.(r.vditor)).toBe(true)
+    vi.runAllTimers()
+    // The front-matter observer adds its view-only table after the `pre` (in the page, after the job).
+    const table = document.createElement('div')
+    table.className = 'vmde-front-matter'
+    table.setAttribute('data-render', '1')
+    table.setAttribute('contenteditable', 'false')
+    pane.querySelector(':scope > pre')?.after(table)
+    div.firstElementChild?.append('x')
+    r.emit(unitChange(div))
+    const { counts } = countBudget(r.root, () => {
+      hookOf()?.(r.vditor)
+      vi.runOnlyPendingTimers()
+    })
+    expect(counts.luteCalls).toBe(1)
+    expect(pane.textContent).toContain('bravox')
+    expect(pane.querySelectorAll(':scope > .vmde-front-matter').length).toBe(1)
+  })
 })

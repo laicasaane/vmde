@@ -1150,6 +1150,40 @@ describe('liveUnitOf (002)', () => {
   })
 })
 
+// Task 733 / 021 (run 1 repair, `edit-path-scans:316`): a paragraph typed into a definition is spun into a
+// new definitions div that the model lists only at the next sync. A key in it before that sync must find a
+// definition unit, or the unit spin refuses and Vditor's whole-root spin moves the definition to the end.
+describe('liveUnitOf: a definitions div typed since the last sync (021 run 1)', () => {
+  const DEF_DOC = 'intro\n\ntail\n'
+
+  /** Inserts an unmapped top-level div before the second paragraph, as the block spin writes it. */
+  function insertBeforeTail(r: Rig, html: string): HTMLElement {
+    const template = document.createElement('template')
+    template.innerHTML = html
+    const div = template.content.firstElementChild as HTMLElement
+    r.root.insertBefore(div, r.root.querySelectorAll('p')[1])
+    return div
+  }
+
+  it('answers the unmapped definitions div as a definition unit', () => {
+    const r = open(DEF_DOC)
+    const div = insertBeforeTail(
+      r,
+      '<div data-block="0" data-type="link-ref-defs-block">[r]: https\n</div>',
+    )
+    const unit = r.session.liveUnitOf(div.firstChild as Text)
+    expect(unit?.kind).toBe('definition')
+    expect(unit?.el).toBe(div)
+    expect(unit?.top).toBe(div)
+  })
+
+  it('answers nothing for any other unmapped top-level block (guard)', () => {
+    const r = open(DEF_DOC)
+    const div = insertBeforeTail(r, '<p data-block="0">fresh</p>')
+    expect(r.session.liveUnitOf(div.firstChild as Text)).toBeUndefined()
+  })
+})
+
 describe('unit change feed (Task 733 / 005-A)', () => {
   const FEED_DOC =
     'alpha\n\nbeta\n\n# Head\n\n- one\n- two\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'

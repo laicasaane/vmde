@@ -208,6 +208,53 @@ describe('spinUnit for a definition unit (rule 1 branch, section 6.4)', () => {
   })
 })
 
+// Task 733 run 1 repair (`edit-path-scans:316`): Enter at the end of a definition clones its div empty.
+// The clone becomes an empty paragraph in place; the whole-root spin would move the definition last.
+describe('spinUnit for an emptied definitions div (733 run 1)', () => {
+  it('replaces the emptied div by an empty paragraph and leaves the definition where it is', () => {
+    const root = rootWith(
+      '<p data-block="0">a</p><div data-block="0" data-type="link-ref-defs-block">[d]: http://d\n</div><div data-block="0" data-type="link-ref-defs-block"><wbr><br></div><p data-block="0">z</p>',
+    )
+    const clone = root.children[2] as HTMLElement
+    const unit = {
+      el: clone,
+      members: [clone],
+      kind: 'definition',
+      top: clone,
+    } as unknown as LiveUnit
+    let spins = 0
+    const deps = {
+      ...baseDeps(unit),
+      spinDefinition: (): UnitSpinResult => {
+        spins++
+        return { kind: 'refused', reason: 'shape' }
+      },
+    }
+    expect(
+      spinUnit(
+        deps as UnitSpinDeps,
+        caretIn(clone, 0),
+        root,
+        new InputEvent('input', { inputType: 'insertParagraph' }),
+      ),
+    ).toBe(true)
+    expect(spins).toBe(0)
+    expect(root.children[1].getAttribute('data-type')).toBe(
+      'link-ref-defs-block',
+    )
+    expect(root.children[2].outerHTML).toBe('<p data-block="0"><wbr></p>')
+    expect(root.children[3].textContent).toBe('z')
+  })
+
+  it('the Lute spin of the emptied div is that empty paragraph', () => {
+    expect(
+      lute.SpinVditorIRDOM(
+        '<div data-block="0" data-type="link-ref-defs-block"><wbr><br></div>',
+      ),
+    ).toBe('<p data-block="0"><wbr></p>')
+  })
+})
+
 describe('spinUnit for a footnote unit (rule 3b, section 6.4)', () => {
   it('spins the footnote definition in its block shell and replaces only that definition', () => {
     const root = rootWith(

@@ -308,11 +308,24 @@ const innerOf = (outerHtml: string, tag: string): string =>
     outerHtml.lastIndexOf(`</${tag}>`),
   )
 
+/**
+ * Lute's spin of an emptied definitions div (`<wbr><br>`): one empty paragraph with the caret.
+ * Task 733 run 1 repair (`edit-path-scans:316`): Enter at the end of a definition makes the browser clone
+ * the div empty; the clone becomes this paragraph in place instead of a whole-root spin, which moved
+ * every definition to the end of the document.
+ */
+const EMPTY_PARAGRAPH = '<p data-block="0"><wbr></p>'
+
 /** Rule 1 branch (task 733 / 017): the caret's definition unit is spun alone; its element stays. */
 function spinRootDefinition(deps: UnitSpinDeps, range: Range): boolean {
   if (!deps.spinDefinition) return refuse(deps, NOT_A_UNIT)
   const unit = deps.liveUnitOf(range.startContainer)
   if (unit?.kind !== 'definition') return refuse(deps, NOT_A_UNIT)
+  if (unit.el.textContent === '' && unit.el.querySelector('wbr')) {
+    unit.el.outerHTML = EMPTY_PARAGRAPH
+    deps.count?.(SPUN)
+    return true
+  }
   const result = deps.spinDefinition(unit.el.outerHTML)
   if (result.kind !== 'spun') return refuse(deps, result.reason)
   const inner = innerOf(result.html, 'div')

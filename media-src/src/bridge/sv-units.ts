@@ -38,19 +38,41 @@ function sourceText(members: readonly HTMLElement[]): string {
   return text.replace(TRAILING_ZERO_WIDTH, '').replace(TRAILING_BREAKS, '')
 }
 
-/** One host unit per non-empty `data-block` div; undefined when the root holds anything else. */
+/** A line that starts a link reference definition (`[x]: …`) or a footnote definition (`[^x]: …`). */
+const DEFINITION_LINE = /(?:^|\n) {0,3}\[\^?[^\]\n]+\]:/u
+
+/**
+ * One host unit per non-empty `data-block` div; undefined when the root holds anything else: another
+ * element, a Text node of its own (a range write across two divs leaves its text between them, outside
+ * every unit), or a definition. Task 733 / 015 (Q-S4): a document with a link reference definition or a
+ * footnote keeps today's whole-text path in Source, so a definition at the build, or one that a later
+ * spin writes, turns the model off (`unit-without-kind`, as an IR block without a kind does).
+ */
 function listSourceUnits(
   root: HTMLElement,
 ): HostUnit<HTMLElement>[] | undefined {
   const units: HostUnit<HTMLElement>[] = []
-  for (const child of Array.from(root.children)) {
-    if (!(child instanceof HTMLElement) || !child.hasAttribute('data-block'))
-      return undefined
-    // Vditor's split leaves an empty div after a block that ends the document (a table): no source.
-    if ((child.textContent ?? '') === '') continue
-    units.push({ kind: 'paragraph', members: [child] })
+  for (let node = root.firstChild; node; node = node.nextSibling) {
+    const div = sourceDivOf(node)
+    if (div === REFUSED) return undefined
+    if (div) units.push({ kind: 'paragraph', members: [div] })
   }
   return units
+}
+
+const REFUSED = 'refused'
+
+/** The unit div of a root child; null for a child that holds no source; `REFUSED` when the root is not units. */
+function sourceDivOf(node: ChildNode): HTMLElement | null | typeof REFUSED {
+  if (node.nodeType === Node.TEXT_NODE)
+    return (node as Text).data === '' ? null : REFUSED
+  if (node.nodeType !== Node.ELEMENT_NODE) return null
+  if (!(node instanceof HTMLElement) || !node.hasAttribute('data-block'))
+    return REFUSED
+  const text = node.textContent ?? ''
+  // Vditor's split leaves an empty div after a block that ends the document (a table): no source.
+  if (text === '') return null
+  return DEFINITION_LINE.test(text) ? REFUSED : node
 }
 
 export function createSourceUnitDom(

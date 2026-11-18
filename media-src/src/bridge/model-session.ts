@@ -638,6 +638,29 @@ function liveUnitFor(
   return undefined
 }
 
+/**
+ * Task 733 / 021 (run 1 repair): the definitions div that holds `node` when the model does not map it
+ * yet. A paragraph typed into a definition is spun into a new definitions div, and the model lists it
+ * only at the next sync. Until then a key in it must still spin that div alone: Vditor's whole-root spin
+ * moves every definition to the document end. Allocates only when such a div holds `node`.
+ */
+function unmappedDefinitionOf(
+  model: TextModel<HTMLElement>,
+  root: HTMLElement | null,
+  node: Node,
+): LiveUnit | undefined {
+  const el = node instanceof Element ? node : node.parentElement
+  if (!root || !el || el === root || !root.contains(el)) return undefined
+  const top = rootChild(el as HTMLElement, root)
+  if (
+    top.getAttribute('data-type') !== 'link-ref-defs-block' ||
+    !top.hasAttribute('data-block') ||
+    model.unitOf(top)
+  )
+    return undefined
+  return { el: top, members: [top], kind: 'definition', top }
+}
+
 export function createModelSession(deps: ModelSessionDeps): ModelSession {
   // `sync()` answers `sync-error` until the structure windows are installed (model-structure.ts).
   installModelSync()
@@ -1812,7 +1835,10 @@ export function createModelSession(deps: ModelSessionDeps): ModelSession {
     },
     liveUnitOf(node) {
       if (!model || !serving()) return undefined
-      return liveUnitFor(model, modelRoot(), node)
+      const root = modelRoot()
+      const unit = liveUnitFor(model, root, node)
+      if (unit || builtMode !== 'ir' || !DEFINITION_UNITS) return unit
+      return unmappedDefinitionOf(model, root, node)
     },
     markExplicitAtCaret() {
       if (!model || !live()) return

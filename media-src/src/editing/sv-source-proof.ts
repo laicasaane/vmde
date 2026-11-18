@@ -334,7 +334,35 @@ export function planSvRegionEdit(
     : { replacement: toLf(region), anchor, focus }
 }
 
-/** Replace only the rendered span; false (editor untouched) when the text is not `text`. */
+/** The Text point of `offset` that starts the text after it: a boundary between two Text nodes resolves to
+ *  the start of the later one, so a range from it stays inside the block that holds the replaced text. */
+function forwardTextPointAt(
+  editor: HTMLElement,
+  offset: number,
+): { node: Text; offset: number } | null {
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+  let remaining = offset
+  let last: Text | null = null
+  for (
+    let node = walker.nextNode() as Text | null;
+    node;
+    node = walker.nextNode() as Text | null
+  ) {
+    last = node
+    if (remaining < node.data.length) return { node, offset: remaining }
+    remaining -= node.data.length
+  }
+  return last && remaining === 0
+    ? { node: last, offset: last.data.length }
+    : null
+}
+
+/**
+ * Replace only the rendered span; false (editor untouched) when the text is not `text`. A non-empty span
+ * starts in the Text node that holds its first character (Task 733 run 1 repair): with Source units, each
+ * chunk is its own `data-block` div, and a start at the end of the previous div made the range delete
+ * across both divs and insert the replacement between them, outside every unit.
+ */
 export function spliceSvRenderedSpan(
   editor: HTMLElement,
   text: string,
@@ -342,7 +370,10 @@ export function spliceSvRenderedSpan(
   replacement: string,
 ): boolean {
   if (svText(editor) !== text) return false
-  const startPoint = textPointAt(editor, span.start)
+  const startPoint =
+    span.start < span.end
+      ? forwardTextPointAt(editor, span.start)
+      : textPointAt(editor, span.start)
   const endPoint = textPointAt(editor, span.end)
   if (!startPoint || !endPoint) return false
   const range = document.createRange()

@@ -277,3 +277,55 @@ describe('Task 681: proveSvCaretInSpan', () => {
     })
   })
 })
+
+// Task 733 run 1 repair (`table-format:146`): with Source units each chunk is its own `data-block` div. A
+// span that starts at a block boundary must be replaced inside the block that holds its first character,
+// never between the divs (outside every unit, where the Source history does not see it).
+describe('spliceSvRenderedSpan at a block boundary (733 run 1)', () => {
+  const blocks = (...texts: string[]) => {
+    const editor = document.createElement('pre')
+    for (const text of texts) {
+      const div = document.createElement('div')
+      div.setAttribute('data-block', '0')
+      const span = document.createElement('span')
+      span.textContent = text
+      div.append(span)
+      editor.append(div)
+    }
+    document.body.replaceChildren(editor)
+    return editor
+  }
+
+  test('a span that starts a block is replaced inside that block', () => {
+    const editor = blocks('before\n\n', '|a|b|\n\n', 'after\n')
+    const text = editor.textContent ?? ''
+    const start = text.indexOf('|a|b|')
+    const span = { start, end: start + '|a|b|'.length }
+    expect(proof.spliceSvRenderedSpan(editor, text, span, '| a | b |')).toBe(
+      true,
+    )
+    // No Text node of the editor's own: every character stays in a block.
+    expect(
+      Array.from(editor.childNodes).every((node) => node.nodeType === 1),
+    ).toBe(true)
+    expect(editor.children[1].textContent).toBe('| a | b |\n\n')
+    expect(editor.children[0].textContent).toBe('before\n\n')
+  })
+
+  test('a span inside one Text node keeps today’s replacement (guard)', () => {
+    const editor = blocks('alpha beta\n\n', 'tail\n')
+    const text = editor.textContent ?? ''
+    const span = { start: 6, end: 10 }
+    expect(proof.spliceSvRenderedSpan(editor, text, span, 'BETA')).toBe(true)
+    expect(editor.children[0].textContent).toBe('alpha BETA\n\n')
+  })
+
+  test('an empty span at a block boundary inserts at the end of the earlier block (guard)', () => {
+    const editor = blocks('one\n\n', 'two\n')
+    const text = editor.textContent ?? ''
+    expect(
+      proof.spliceSvRenderedSpan(editor, text, { start: 5, end: 5 }, 'X'),
+    ).toBe(true)
+    expect(editor.children[0].textContent).toBe('one\n\nX')
+  })
+})

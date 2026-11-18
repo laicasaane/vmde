@@ -158,3 +158,43 @@ describe('Source history port (019)', () => {
     expect(r.root.textContent?.slice(start, start + 10)).toBe('SecondWXYZ')
   })
 })
+
+// Task 733 / 015 (Q-S4) and run 1 repair (`source-units:200`, `table-format:146`): a document with a link
+// reference definition or a footnote keeps today's whole-text path in Source, and a root that holds text
+// outside every `data-block` div is not described by units. Either keeps the Source model off.
+describe('Source units: definitions and root text keep the whole-text path (run 1)', () => {
+  const build = (markdown: string, edit?: (root: HTMLElement) => void) => {
+    const root = svFixture(markdown)
+    edit?.(root)
+    const dom = createSourceUnitDom(root)
+    const model = createTextModel(dom, scanSourceChunks)
+    model.build(markdown)
+    return { dom, model }
+  }
+
+  it.each([
+    ['a link reference definition', 'see [r]\n\n[r]: http://example.test\n'],
+    ['a footnote', 'see [^1]\n\n[^1]: note\n'],
+  ])('a document with %s builds no Source model', (_name, markdown) => {
+    const { dom, model } = build(markdown)
+    expect(dom.listUnits()).toBeUndefined()
+    expect(model.state).toBe('off')
+    expect(model.offReason).toBe('unit-without-kind')
+  })
+
+  it('a Text node of the root between two divs lists no units', () => {
+    const { dom } = build(MARKDOWN, (root) => {
+      root.insertBefore(
+        document.createTextNode('| a | b |'),
+        root.children[1] ?? null,
+      )
+    })
+    expect(dom.listUnits()).toBeUndefined()
+  })
+
+  it('a document with neither builds the Source model (guard)', () => {
+    const { dom, model } = build(MARKDOWN)
+    expect(dom.listUnits()?.length).toBe(3)
+    expect(model.state).toBe('live')
+  })
+})

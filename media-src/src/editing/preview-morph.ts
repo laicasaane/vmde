@@ -24,6 +24,9 @@
 const rawCache = new WeakMap<HTMLElement, string[]>()
 // Task 733 / 015: element counts per Source unit of a Split pane (see `morphPreviewUnits`).
 const unitCounts = new WeakMap<HTMLElement, number[]>()
+// Task 733 run 1 repair: the counts of the elements each unit's own HTML gave, without the view-only
+// elements a renderer added later (see `attachViewOnly`).
+const htmlCounts = new WeakMap<HTMLElement, number[]>()
 
 // One top-level unit = an element plus its trailing non-element siblings (Lute emits
 // '\n' text nodes between blocks; they ride with the PRECEDING block).
@@ -60,6 +63,7 @@ function fullSet(el: HTMLElement, html: string, raws: string[]): void {
 export function morphPreviewInto(el: HTMLElement, html: string): void {
   // Task 733 / 015: a raw-diff morph rewrites the pane outside the unit baseline.
   unitCounts.delete(el)
+  htmlCounts.delete(el)
   try {
     const tpl = document.createElement('template')
     tpl.innerHTML = html
@@ -129,6 +133,46 @@ export function setPreviewUnitBaseline(
   elementCounts: readonly number[],
 ): void {
   unitCounts.set(pane, [...elementCounts])
+  htmlCounts.set(pane, [...elementCounts])
+}
+
+/** A view-only element a renderer put into the pane (the front-matter table): not part of any unit's HTML. */
+const isViewOnly = (el: Element): boolean =>
+  el.hasAttribute('data-render') &&
+  el.getAttribute('contenteditable') === 'false'
+
+/**
+ * Task 733 run 1 repair (`edit-counter-gates:789`): a renderer can add a view-only element after a
+ * unit's elements once the pane is built (the front-matter observer adds its table after the `pre`).
+ * Counts each such element with the unit before it. Runs only when the counts miss the pane (O(pane),
+ * once per such addition); false when the pane does not hold the units' own elements in order.
+ */
+function attachViewOnly(
+  pane: HTMLElement,
+  counts: number[],
+  own: readonly number[],
+): boolean {
+  const next = new Array<number>(own.length).fill(0)
+  let unit = -1
+  let need = 0
+  for (let el = pane.firstElementChild; el; el = el.nextElementSibling) {
+    if (isViewOnly(el)) {
+      if (unit < 0) return false
+      next[unit]++
+      continue
+    }
+    while (need === 0) {
+      unit++
+      if (unit >= own.length) return false
+      need = own[unit]
+    }
+    next[unit]++
+    need--
+  }
+  if (need !== 0) return false
+  for (let i = unit + 1; i < own.length; i++) if (own[i] !== 0) return false
+  counts.splice(0, counts.length, ...next)
+  return true
 }
 
 /** The number of units a pane's baseline holds; undefined without a baseline. */
@@ -187,6 +231,21 @@ function isSeparator(node: Node | null): boolean {
   )
 }
 
+/** The element total of `counts` and the first element index of unit `from`. */
+function spanOf(
+  counts: readonly number[],
+  from: number,
+): { total: number; start: number } {
+  let total = 0
+  let start = 0
+  for (let i = 0; i < counts.length; i++) {
+    if (i === from) start = total
+    total += counts[i]
+  }
+  if (from === counts.length) start = total
+  return { total, start }
+}
+
 /**
  * Replaces the elements of units `from` to `from + removed - 1` by the elements of `htmls` (one entry per
  * new unit). Elements of other units stay the same nodes. False when the pane left its baseline
@@ -199,16 +258,15 @@ export function morphPreviewUnits(
   htmls: readonly string[],
 ): boolean {
   const counts = unitCounts.get(pane)
-  if (!counts || from < 0 || from + removed > counts.length) return false
-  let total = 0
-  let start = 0
-  for (let i = 0; i < counts.length; i++) {
-    if (i === from) start = total
-    total += counts[i]
-  }
-  if (from === counts.length) start = total
+  const own = htmlCounts.get(pane)
+  if (!counts || !own || from < 0 || from + removed > counts.length)
+    return false
   const children = pane.children
-  if (total !== children.length) return false
+  let { total, start } = spanOf(counts, from)
+  if (total !== children.length) {
+    if (!attachViewOnly(pane, counts, own)) return false
+    ;({ total, start } = spanOf(counts, from))
+  }
   let removedElements = 0
   for (let i = from; i < from + removed; i++) removedElements += counts[i]
   const stopAt = children[start + removedElements] ?? null
@@ -220,6 +278,7 @@ export function morphPreviewUnits(
     fresh.push(elements)
   }
   counts.splice(from, removed, ...fresh)
+  own.splice(from, removed, ...fresh)
   // The raw cache of `morphPreviewInto` no longer describes the pane: its next morph sets it whole.
   rawCache.delete(pane)
   return true
