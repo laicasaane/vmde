@@ -115,10 +115,13 @@ const headingGutterBox = (target: import('@playwright/test').Locator) =>
       heading.top +
       px(headingStyle.borderTopWidth) +
       px(headingStyle.paddingTop)
+    // Task 733 / 025: the IR level label is absolutely positioned at the heading's padding edge (main.css); its `top` offsets it like a relative one.
     const markerTop =
       contentTop +
       px(marker.marginTop) +
-      (marker.position === 'relative' ? px(marker.top) || 0 : 0)
+      (marker.position === 'relative' || marker.position === 'absolute'
+        ? px(marker.top) || 0
+        : 0)
     const markerBox = {
       left: contentLeft + px(marker.marginLeft),
       top: markerTop,
