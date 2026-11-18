@@ -157,6 +157,10 @@ test.describe('Source units', () => {
     const file = path.join(baseDir, 'source-units-forms.md')
     const text = '3. x\n5. y\n\nlast paragraph\n'
     const frame = await openSource(workbox, evaluateInVSCode, file, text)
+    test.skip(
+      !(await shippedSwitches(frame)).sourceUnits,
+      'Source units ship off',
+    )
     await caretInSource(frame, 'last', 0)
     await workbox.keyboard.type('z', { delay: 150 })
     await workbox.waitForTimeout(2000)
@@ -174,6 +178,10 @@ test.describe('Source units', () => {
     const file = path.join(baseDir, 'source-units-split.md')
     const text = 'first block\n\nsecond block\n'
     const frame = await openSource(workbox, evaluateInVSCode, file, text)
+    test.skip(
+      !(await shippedSwitches(frame)).sourceUnits,
+      'Source units ship off',
+    )
     await caretInSource(frame, 'first', 0)
     await workbox.keyboard.press('Enter', { delay: 150 })
     await workbox.keyboard.press('Enter', { delay: 150 })
