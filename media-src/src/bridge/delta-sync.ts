@@ -267,7 +267,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       previousEnd = { offset: change.to, line: end.line }
       previousTo = change.to
     }
-    return out
+    return joinTouching(out)
   }
 
   function post(
@@ -543,4 +543,31 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       deps.afterDelta?.()
     },
   }
+}
+
+/**
+ * Task 733 / 034: a change that starts where the previous one ends joins it. Two insertions at one
+ * point (a table column insert) have no defined order, and the host refuses them (`checkOrder`,
+ * 'order'), resynchronizes, and the history is lost. O(changes); only touching changes allocate a
+ * joined one.
+ */
+function joinTouching(
+  changes: EditDeltaMessage['changes'],
+): EditDeltaMessage['changes'] {
+  for (let i = changes.length - 1; i > 0; i -= 1) {
+    const last = changes[i - 1]
+    const next = changes[i]
+    if (
+      next.start.line !== last.end.line ||
+      next.start.character !== last.end.character
+    )
+      continue
+    changes.splice(i - 1, 2, {
+      start: last.start,
+      end: next.end,
+      oldText: last.oldText + next.oldText,
+      text: last.text + next.text,
+    })
+  }
+  return changes
 }

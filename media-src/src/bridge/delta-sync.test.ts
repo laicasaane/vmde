@@ -235,6 +235,43 @@ describe('publish: changes', () => {
   })
 })
 
+// Task 733 / 034 (row 8): Insert Column Left gave changes that touch at one offset (two insertions,
+// then a replacement starting there). The host refuses two insertions at one point (`delta-validate.ts`
+// `checkOrder`, 'order'), resynchronizes, and the history is lost. Touching changes are posted as one.
+describe('034 touching changes', () => {
+  it('posts insertions and a replacement at one offset as one change the host accepts', () => {
+    const t = setup()
+    // offset 18 is the start of 'line3' (line 3, character 0)
+    t.state.results.push({
+      kind: 'changes',
+      before,
+      changes: [
+        typed(2, 'A'),
+        typed(18, 'X'),
+        typed(18, 'Y'),
+        typed(18, 'Z', 23),
+      ],
+    })
+    expect(t.sync.publish('idle')).toBe('delta')
+    const changes = (t.posted[0] as { changes: Array<Record<string, unknown>> })
+      .changes
+    expect(changes).toEqual([
+      {
+        start: { line: 0, character: 2 },
+        end: { line: 0, character: 2 },
+        oldText: '',
+        text: 'A',
+      },
+      {
+        start: { line: 3, character: 0 },
+        end: { line: 3, character: 5 },
+        oldText: 'line3',
+        text: 'XYZ',
+      },
+    ])
+  })
+})
+
 describe('publish: awaiting an answer', () => {
   it('posts nothing for idle and overdue and does not drain', () => {
     const t = setup()

@@ -6,7 +6,7 @@ import {
   resetCaretAuthorityForTests,
   setCaretPaintabilityProbeForTests,
 } from './caret'
-import { installIrMarkerReveal } from './editor-caret'
+import { holdRevealAt, installIrMarkerReveal } from './editor-caret'
 
 interface Harness {
   editor: HTMLElement
@@ -1167,5 +1167,76 @@ describe('IR horizontal Arrow steps through revealed markers (Task 648)', () => 
 
     expect(harness.strong.classList).not.toContain('vditor-ir__node--expand')
     harness.dispose()
+  })
+})
+
+// Task 733 / 034 (row 3): Escape collapses the inline node at the caret and puts the caret after it
+// (`handleEscape`, selection-scope.ts). That selection change scheduled a reveal frame whose targets
+// hold the node next to the collapsed caret, so the frame expanded it again 9 to 40 ms later (real VS
+// Code `structural-selection.spec.ts`, IR Escape). The held range keeps the collapse until it moves.
+describe('034: a held reveal keeps the Escape collapse', () => {
+  beforeEach(() => {
+    document.body.replaceChildren()
+  })
+
+  afterEach(() => {
+    ;(window as unknown as { vditor?: unknown }).vditor = undefined
+    resetCaretAuthorityForTests()
+    vi.restoreAllMocks()
+  })
+
+  const EXPAND = 'vditor-ir__node--expand'
+
+  /** Escape's own writes: the class off and the caret after `node`, then the hold on the live range. */
+  function escapeAfter(node: HTMLElement): void {
+    node.classList.remove(EXPAND)
+    const parent = node.parentNode as Node
+    placeCaret(parent, Array.from(parent.childNodes).indexOf(node) + 1)
+    holdRevealAt(getSelection()!.getRangeAt(0).cloneRange())
+  }
+
+  it('a frame after Escape leaves the node collapsed; a later range inside it reveals it again', () => {
+    const harness = createHarness()
+    placeCaret(harness.strongText, 2)
+    document.dispatchEvent(new Event('selectionchange'))
+    harness.runFrame()
+    expect(harness.strong.classList).toContain(EXPAND)
+
+    escapeAfter(harness.strong)
+    document.dispatchEvent(new Event('selectionchange'))
+    if (harness.hasFrame()) harness.runFrame()
+    expect(harness.strong.classList).not.toContain(EXPAND)
+
+    placeCaret(harness.strongText, 1)
+    document.dispatchEvent(new Event('selectionchange'))
+    harness.runFrame()
+    expect(harness.strong.classList).toContain(EXPAND)
+    harness.dispose()
+  })
+
+  it('caret at the edge between two inline nodes: the neighbour revealed before Escape collapses after the dwell', () => {
+    const harness = createHarness()
+    harness.after.remove()
+    const block = harness.strong.parentNode as Node
+    placeCaret(block, Array.from(block.childNodes).indexOf(harness.link))
+    document.dispatchEvent(new Event('selectionchange'))
+    harness.runFrame()
+    expect(harness.strong.classList).toContain(EXPAND)
+    expect(harness.link.classList).toContain(EXPAND)
+
+    escapeAfter(harness.strong)
+    document.dispatchEvent(new Event('selectionchange'))
+    if (harness.hasFrame()) harness.runFrame()
+    expect(harness.strong.classList).not.toContain(EXPAND)
+    expect(harness.link.classList).toContain(EXPAND)
+    harness.runDwell()
+    expect(harness.link.classList).not.toContain(EXPAND)
+    expect(harness.strong.classList).not.toContain(EXPAND)
+    harness.dispose()
+  })
+
+  it('is a no-op without an installed controller', () => {
+    const range = document.createRange()
+    expect(() => holdRevealAt(range)).not.toThrow()
   })
 })

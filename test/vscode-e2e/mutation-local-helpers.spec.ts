@@ -300,8 +300,10 @@ test('large mixed edits stay mutation-local and preserve exact host state', asyn
   const mergeStats = await readStats()
   expect(mergeStats.rawRecords).toBeGreaterThan(0)
   expect(mergeStats.helpers['section-fold-surface']).toBeDefined()
-  // Task 733 (Q-129): the unit feed scopes a list item merge to its list, a local fold pass.
-  expect(mergeStats.helpers['section-fold-surface'].local).toBeGreaterThan(0)
+  // Restores the pre-Q-129 assertion (`8435e197`): Backspace in the new empty item makes it a top-level paragraph,
+  // and the fold refolds the headings (a full pass) when the top-level count changes (Task 733 / 034, Q-204).
+  // The split above proves the local list pass.
+  expect(mergeStats.helpers['section-fold-surface'].full).toBeGreaterThan(0)
   expect(mergeStats.helpers['responsive-tables']).toBeDefined()
   expect(mergeStats.helpers['responsive-tables'].full).toBe(0)
   expect(mergeStats.helpers['responsive-tables'].skipped).toBeGreaterThan(0)
@@ -378,11 +380,14 @@ test('large mixed edits stay mutation-local and preserve exact host state', asyn
     'custom-diagrams',
     'render-cache',
   ]) {
-    expect(externalStats.helpers[name], `${name} external stats`).toBeDefined()
-    expect(
-      externalStats.helpers[name].full,
-      `${name} external full passes`,
-    ).toBeGreaterThan(0)
+    // Task 733 / 034: the host update is applied by units (shared rules 3.7 "Host update": no
+    // `setValue`), as `4d2b298b` stated for the table helper above, so the diagram helpers route the
+    // inserted paragraph as a local pass instead of a whole one (Chromium harness: full 0, local 2).
+    // The `:304` failure masked this line until 034.
+    const helper = externalStats.helpers[name]
+    expect(helper, `${name} external stats`).toBeDefined()
+    expect(helper.full, `${name} external full passes`).toBe(0)
+    expect(helper.local, `${name} external local passes`).toBeGreaterThan(0)
   }
   await replaceDocument(EDITED)
   await expect.poll(() => docText(evaluateInVSCode, file)).toBe(EDITED)

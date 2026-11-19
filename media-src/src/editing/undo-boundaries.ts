@@ -364,6 +364,22 @@ function isViewToggle(target: EventTarget | null): boolean {
   return target instanceof Element && !!target.closest(VIEW_ONLY_SELECTOR)
 }
 
+// Unmodified Enter or Space (Shift allowed, as for an editing Enter) on a focused toolbar Undo or
+// Redo button activates it through the native click, which `onHistoryClick` prepares before Vditor
+// runs the command. A keydown boundary there would publish or serialize the restored document from
+// its timer after the Undo ran. Identity against the two registered buttons (the overflow moves
+// the registered element, so this holds there too), not a selector: a lookalike control elsewhere
+// in the webview keeps its seed and boundary, as do modified keys.
+function isHistoryButtonActivation(
+  current: UndoInner,
+  event: KeyboardEvent,
+): boolean {
+  if (event.key !== 'Enter' && event.key !== ' ') return false
+  if (event.ctrlKey || event.metaKey || event.altKey) return false
+  const target = event.target
+  return target instanceof Node && isHistoryButtonTarget(current, target)
+}
+
 function isToolbarAction(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
   const action = target.closest<HTMLElement>(
@@ -448,6 +464,17 @@ export function preparePendingHistory(inner: unknown): boolean {
 }
 
 const HISTORY_BUTTONS = ['undo', 'redo'] as const
+
+// Whether `target` is inside one of the registered toolbar Undo or Redo buttons. Two fixed checks,
+// no closure: it runs on every unmodified Enter or Space keydown.
+function isHistoryButtonTarget(current: UndoInner, target: Node): boolean {
+  const elements = current.toolbar?.elements
+  if (!elements) return false
+  return (
+    !!elements.undo?.children[0]?.contains(target) ||
+    !!elements.redo?.children[0]?.contains(target)
+  )
+}
 
 /** Whether the boundary must hand its state to `input`. Normally unless the state renders like the
  * host text. Task 699: a toolbar Link click changed the source under a fresh explicit-edit mark is
@@ -574,6 +601,7 @@ export function installUndoBoundaries(
     // Task 631, Task 653: Enter on a view-only control (collapse toggle, Outline, Preview, the mode
     // controls and the rest) is not an edit.
     if (isViewToggle(event.target)) return
+    if (isHistoryButtonActivation(inner(), event)) return
     // Task 598: a key may edit natively or run a command whose message arrives later; seed before
     // either. The seed never stops, prevents or replays the key.
     if (!MODIFIER_KEYS.has(event.key)) seedUndoBaseline(inner(), event)

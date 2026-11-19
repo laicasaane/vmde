@@ -14,7 +14,7 @@ import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdow
 import { countBudget, wysiwygFixture } from '../testing/budget-harness'
 import { createRealLute } from '../testing/real-lute'
 import { writeQuietly } from '../util/mutation-impact'
-import type { HistoryCapture } from '../util/unit-changes'
+import type { HistoryCapture, RestoredCaret } from '../util/unit-changes'
 import { insertWrapHint } from '../util/wrap-hint-mark'
 import { createModelSession, type ModelSession } from './model-session'
 const renderSpy = vi.hoisted(() => vi.fn())
@@ -41,7 +41,11 @@ interface Port {
   claimable(): boolean
   ready(): boolean
   capture(): HistoryCapture | undefined
-  restore(capture: HistoryCapture, side: 'before' | 'after'): boolean
+  restore(
+    capture: HistoryCapture,
+    side: 'before' | 'after',
+    caret?: RestoredCaret,
+  ): boolean
 }
 type WithPort = ModelSession & { historyPort(): Port }
 
@@ -525,6 +529,133 @@ describe('derived callout attributes are no source', () => {
     quote.classList.add('vditor-ir__node')
     expect(r.port.restore(edit, 'before')).toBe(true)
     expect(r.sync()).toBe('> [!NOTE] Proof\n> body\n\nother\n')
+  })
+
+  // Task 733 / 034 (first-action-history `callout-apply`): an Undo whose step has no usable caret puts the
+  // caret at the change site, inside the callout source, and callouts.ts flags the blockquote
+  // `data-callout-editing`. The flag is view state: the Redo must not read it as a foreign change.
+  it('the editing flag a caret inside writes is no source for Undo or Redo', () => {
+    const r = open('> [!NOTE]\n> alpha body\n\nother\n')
+    const quote = () => r.root.querySelector('blockquote') as HTMLElement
+    const p = quote().querySelector('p') as HTMLElement
+    p.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    const text = p.firstChild as Text
+    text.data = text.data.replace('NOTE', 'WARNING')
+    const edit = r.port.capture() as HistoryCapture
+    expect(r.sync()).toBe('> [!WARNING]\n> alpha body\n\nother\n')
+    quote().setAttribute('data-callout-editing', '')
+    expect(r.port.restore(edit, 'before')).toBe(true)
+    expect(r.sync()).toBe('> [!NOTE]\n> alpha body\n\nother\n')
+    quote().setAttribute('data-callout-editing', '')
+    expect(r.port.restore(edit, 'after')).toBe(true)
+    expect(r.sync()).toBe('> [!WARNING]\n> alpha body\n\nother\n')
+  })
+})
+
+// Task 733 / 034 (row 7): a step without a usable caret asks the restore for the change's own caret: Undo
+// lands at the start of the restored change and Redo at its end, inside the element the window wrote.
+describe('034 the restore supplies the change site when asked', () => {
+  it('Undo gives the start of the change and Redo its end; no request, no endpoint', () => {
+    const r = open(DOC)
+    const beta = r.root.querySelectorAll('p')[1] as HTMLElement
+    typeInto(beta, 'bexta')
+    const capture = r.port.capture() as HistoryCapture
+    r.sync()
+    const undo: RestoredCaret = { endpoint: undefined }
+    expect(r.port.restore(capture, 'before', undo)).toBe(true)
+    r.sync()
+    const restored = r.root.querySelectorAll('p')[1] as HTMLElement
+    expect(undo.endpoint?.node.isConnected).toBe(true)
+    expect(restored.contains(undo.endpoint?.node as Node)).toBe(true)
+    expect(undo.endpoint?.offset).toBe(2)
+    const redo: RestoredCaret = { endpoint: undefined }
+    expect(r.port.restore(capture, 'after', redo)).toBe(true)
+    r.sync()
+    expect(
+      r.root.querySelectorAll('p')[1].contains(redo.endpoint?.node as Node),
+    ).toBe(true)
+    expect(redo.endpoint?.offset).toBe(3)
+    expect(r.port.restore(capture, 'before')).toBe(true)
+    expect(r.sync()).toBe(DOC)
+  })
+
+  it('a refused restore leaves the endpoint unset', () => {
+    const r = open(DOC)
+    const beta = r.root.querySelectorAll('p')[1] as HTMLElement
+    typeInto(beta, 'bexta')
+    const capture = r.port.capture() as HistoryCapture
+    r.sync()
+    typeInto(r.root.querySelectorAll('p')[1] as HTMLElement, 'foreign')
+    const undo: RestoredCaret = { endpoint: undefined }
+    expect(r.port.restore(capture, 'before', undo)).toBe(false)
+    expect(undo.endpoint).toBeUndefined()
+  })
+})
+
+// Task 733 / 034 (row 8): Vditor's column alignment sets `align` on the column's cells. A cell window holds
+// the cell's inner HTML only, so both sides were equal and the alignment made no step; the next Undo
+// then failed its verification on the aligned table (real VS Code `table-operations.spec.ts`, IR). The
+// table command's keydown snapshot records the cells' `align`, and a changed one gives a table window.
+describe('034 table alignment is one step', () => {
+  beforeEach(() => window.getSelection()?.removeAllRanges())
+  // A caret left in a removed cell makes the syncs of later cases fall back.
+  afterEach(() => window.getSelection()?.removeAllRanges())
+
+  /** The caret in body cell `index`, as the editor has it when a table command runs. */
+  function caretInCell(r: Rig, index: number): HTMLElement {
+    const cell = r.root.querySelectorAll('td')[index] as HTMLElement
+    const range = document.createRange()
+    range.setStart(cell.firstChild as Text, 0)
+    range.collapse(true)
+    window.getSelection()?.addRange(range)
+    return cell
+  }
+
+  /** The `align` of every cell of column `column`, header first. */
+  const aligns = (r: Rig, column: number) =>
+    Array.from(r.root.querySelectorAll('tr'), (tr) =>
+      tr.children[column]?.getAttribute('align'),
+    )
+
+  /** Vditor's align command: an untrusted keydown on the editor (dispatchContainedKeydown), then the writes. */
+  function alignRight(r: Rig, cell: HTMLElement, column: number): void {
+    cell.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'r',
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+    for (const tr of r.root.querySelectorAll('tr'))
+      tr.children[column]?.setAttribute('align', 'right')
+  }
+
+  it('a table command keydown, then align on a column: one step whose Undo removes it and Redo puts it back', () => {
+    const r = open(DOC)
+    expect(r.sync()).toBe(DOC)
+    const cell = caretInCell(r, 0)
+    alignRight(r, cell, 0)
+    const aligned = r.sync()
+    expect(aligned).not.toBe(DOC)
+    const capture = r.port.capture() as HistoryCapture
+    expect(capture, 'the alignment makes a step').toBeDefined()
+    expect(r.port.restore(capture, 'before')).toBe(true)
+    expect(aligns(r, 0)).toEqual([null, null, null])
+    expect(r.sync()).toBe(DOC)
+    expect(r.port.restore(capture, 'after')).toBe(true)
+    expect(aligns(r, 0)).toEqual(['right', 'right', 'right'])
+    expect(r.sync()).toBe(aligned)
+  })
+
+  it('a trusted key in a cell records no attributes', () => {
+    const r = open(DOC)
+    const cell = caretInCell(r, 0)
+    const read = vi.spyOn(Element.prototype, 'getAttribute')
+    // jsdom cannot make a trusted keydown; the typing path's `beforeinput` stands for the trusted key.
+    cell.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    expect(read.mock.calls.filter(([name]) => name === 'align')).toEqual([])
   })
 })
 

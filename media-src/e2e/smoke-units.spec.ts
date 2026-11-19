@@ -1451,3 +1451,63 @@ for (const set of ['wysiwyg', 'none'] as const) {
     }
   })
 }
+
+// Task 733 / 034 (rows 1 and 2): Vditor's legacy Source paste (`processPaste`) edits by Range calls and
+// emits no `input` event, so the publication took the paste after a mode switch for the switch's own
+// render and posted nothing (real VS Code `paste-over-selection.spec.ts` and `paste-url-link.spec.ts`,
+// Source). Set `none`: Source keeps the whole-text path.
+test.describe('034: legacy Source paste', () => {
+  test.describe.configure({ timeout: 90_000 })
+
+  /** Dispatches a `paste` of `text` on the Source element, as Chromium's paste does. */
+  const pasteInSource = (page: Page, text: string) =>
+    page.evaluate((value) => {
+      const data = new DataTransfer()
+      data.setData('text/plain', value)
+      ;(window as any).vditor.vditor.sv.element.dispatchEvent(
+        new ClipboardEvent('paste', {
+          clipboardData: data,
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+    }, text)
+
+  /** The `edit` posts the stub recorded after the first `from` posts. */
+  const editsSince = async (page: Page, from: number) =>
+    (await hostStubState(page)).kinds.slice(from).filter((k) => k === 'edit')
+      .length
+
+  for (const place of [
+    {
+      name: 'over a selection',
+      doc: 'Read the paper today.\n',
+      target: ['the paper', 0, 'the paper'.length] as const,
+      paste: 'WORDS',
+      expected: (text: string) => expect(text).toBe('Read WORDS today.\n'),
+    },
+    {
+      name: 'a URL at a caret',
+      doc: '# Notes\n\nSee also: \n',
+      target: ['See also:', 'See also:'.length, 0] as const,
+      paste: 'https://example.com/a-paper',
+      expected: (text: string) =>
+        expect(text).toContain('https://example.com/a-paper'),
+    },
+  ]) {
+    test(`a paste ${place.name} after the switch to Source reaches the host`, async ({
+      page,
+    }) => {
+      await openSourceSet(page, 'none', place.doc)
+      await page.waitForTimeout(SETTLE_MS)
+      await switchMode(page, 'sv')
+      await page.waitForTimeout(SETTLE_MS)
+      const from = (await hostStubState(page)).kinds.length
+      await page.evaluate(selectEditorText, place.target)
+      await pasteInSource(page, place.paste)
+      await page.waitForTimeout(SETTLE_MS)
+      place.expected(await stubText(page))
+      expect(await editsSince(page, from), 'edit posts').toBe(1)
+    })
+  }
+})

@@ -94,8 +94,21 @@ function installRestoreProbe(): boolean {
   return true
 }
 
-function readProbe(): { restores: number; maxMs: number } {
-  return (window as any).__t597
+// Task 733 / 034: `unit` is whether the unit engine holds the history, and `changeSites` counts its
+// Undo and Redo moves that placed the caret at the restored change (the old engine's `restores`).
+function readProbe(): {
+  restores: number
+  maxMs: number
+  unit: boolean
+  changeSites: number
+} {
+  const inner = (window as any).vditor.vditor
+  const unitHistory = (globalThis as any).__vmdeUnitHistory
+  return {
+    ...(window as any).__t597,
+    unit: Boolean(unitHistory?.holds(inner)),
+    changeSites: unitHistory?.changeSites?.(inner) ?? 0,
+  }
 }
 
 function readHistory(): { undo: number; redo: number; marker: boolean } {
@@ -415,7 +428,10 @@ const published = (doc: Doc, text: string) =>
     : text
 
 // Types one OS key and checks it landed at `expected` (derived from the serialization captured
-// just before it); the host must publish exactly that serialization.
+// just before it). The old engine's host must publish exactly that serialization. Task 733 / 034: the
+// unit engine publishes exact bytes (shared rules 1.2 P3, 3.6), and the large fixture's
+// serialization differs from its bytes, so its host text is the host text before the key with the
+// key spliced in (both read just before the key).
 async function typeAndExpect(
   s: Session,
   doc: Doc,
@@ -424,6 +440,8 @@ async function typeAndExpect(
   what: string,
 ) {
   const next = expected(await rendered(doc))
+  const unit = (await probe(doc)).unit
+  const host = unit ? expected(await hostText(s, doc)) : published(doc, next)
   await s.xtest.type(key)
   await expect
     .poll(async () => (await rendered(doc)) === next, {
@@ -431,12 +449,7 @@ async function typeAndExpect(
       message: `${doc.mode}: ${what}: ${key} lands at the restored caret`,
     })
     .toBe(true)
-  await expectHost(
-    s,
-    doc,
-    published(doc, next),
-    `${what}: host publishes the typed key`,
-  )
+  await expectHost(s, doc, host, `${what}: host publishes the typed key`)
 }
 
 async function save(s: Session, doc: Doc) {
@@ -449,17 +462,27 @@ async function save(s: Session, doc: Doc) {
 
 // Logs the leg's measured facts. A leg that needs the unusable-marker path also proves the bridge
 // fallback ran (`restores`), so a reproduction that stopped exercising it cannot pass silently.
+// Task 733 / 034: Task 597's purpose ("proves a leg exercised the unusable-marker path") applies to the
+// old engine only: the unit engine never calls Vditor's marker fallback (its entries hold no marker).
+// There the Replace One Undo and Redo legs (`changeSite`) prove the change-site placement instead.
 async function record(
   s: Session,
   doc: Doc,
   leg: string,
   extra: Record<string, unknown> = {},
   fallback = true,
+  changeSite = false,
 ) {
   const fact = { leg, mode: doc.mode, ...(await probe(doc)), ...extra }
   s.facts.push(fact)
   console.log('[Task 597 real-VS-Code leg]', JSON.stringify(fact))
-  if (fallback)
+  if (fact.unit) {
+    if (changeSite)
+      expect(
+        fact.changeSites,
+        `${leg}: change-site placements`,
+      ).toBeGreaterThan(0)
+  } else if (fallback)
     expect(fact.restores, `${leg}: fallback restores`).toBeGreaterThan(0)
 }
 
@@ -480,7 +503,7 @@ async function undoLeg(s: Session, mode: Mode) {
     (r) => spliceAtUnique(r, TOKEN, 0, 'Q'),
     'Undo',
   )
-  await record(s, doc, 'replace-undo', { toolbarMs })
+  await record(s, doc, 'replace-undo', { toolbarMs }, true, true)
   await save(s, doc)
 }
 
@@ -501,7 +524,7 @@ async function redoLeg(s: Session, mode: Mode) {
     (r) => spliceAtUnique(r, REPLACEMENT, REPLACEMENT.length, 'Q'),
     'Redo',
   )
-  await record(s, doc, 'replace-redo', { toolbarMs })
+  await record(s, doc, 'replace-redo', { toolbarMs }, true, true)
   await save(s, doc)
 }
 
@@ -541,7 +564,13 @@ async function findCheckpointLeg(s: Session) {
   await expectToolbar(doc, { headings: 'current' }, 'heading click')
   await s.xtest.key('ctrl+z')
   await expect.poll(async () => (await rendered(doc)) === withX).toBe(true)
-  await expectHost(s, doc, withX, 'Undo publishes the X state')
+  // Task 733 / 034: the unit engine publishes exact bytes (shared rules 1.2 P3, 3.6): X and Y went out
+  // as one-character deltas and the Undo removes Y, so the host holds the fixture bytes with X, not the
+  // serialization `withX` (the large fixture's `getValue()` differs from its bytes).
+  const hostWithX = (await probe(doc)).unit
+    ? spliceAtUnique(LARGE, TOKEN, 0, 'X')
+    : withX
+  await expectHost(s, doc, hostWithX, 'Undo publishes the X state')
   await expectCaret(
     doc,
     { before: 'X', after: TOKEN },

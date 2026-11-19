@@ -223,6 +223,23 @@ test('Esc collapses the inline marker, then selects its block; Esc→Tab still e
     .toBe(true)
 })
 
+// Task 733 / 034 (row 3): the selection change of Escape scheduled a marker-reveal frame that expanded
+// the node again 9 to 40 ms later; the test above reads at once and missed it (real VS Code
+// `structural-selection.spec.ts`, IR Escape).
+test('034: the collapsed marker stays collapsed after Escape', async ({
+  page,
+}) => {
+  await waitForInitialUndoSnapshot(page)
+  expect(await focusText(page, 'bold scope')).toBe(true)
+  await expect.poll(() => expandedTypes(page)).toContain('strong')
+
+  await page.keyboard.press('Escape')
+  // Negative-assertion wait: nothing to poll for; the reveal frame and its dwell land well inside it.
+  await page.waitForTimeout(300)
+  expect(await expandedTypes(page)).not.toContain('strong')
+  expect(await selectionText(page)).toBe('')
+})
+
 test('triple-click normalizes a fence to marker-inclusive block copy', async ({
   page,
 }) => {

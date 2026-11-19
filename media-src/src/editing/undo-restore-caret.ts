@@ -27,7 +27,12 @@ import {
 } from '../chrome/toolbar-scroll-guard'
 import { isCompositionActive } from '../util/caret-gesture'
 import { activeModeElement } from '../util/source-map'
-import { hasLiveCaretIntent, resolveCaretIntent } from './caret'
+import {
+  hasLiveCaretIntent,
+  invalidateCaret,
+  requestCaret,
+  resolveCaretIntent,
+} from './caret'
 import { caretLineRect } from './nav-geometry'
 import {
   GAP_ATTR,
@@ -698,14 +703,20 @@ function revealCaret(root: HTMLElement, inset = 0): RevealOutcome {
 // blocks a scroll passed have their real height) and correct, at most REVEAL_STEPS times. Dropped
 // after a newer restore, a root or mode change, a composition, or a user gesture (which
 // invalidates the authority's intent).
+// Task 733 / 034: `settled` runs when the reveal ends with the line shown or its steps spent (not when a
+// newer restore, a mode change, a composition or a gesture dropped it).
 function revealChangeSite(
   root: HTMLElement,
   generation: number,
   step = 0,
   scrolled = false,
+  settled?: () => void,
 ): void {
   const outcome = revealCaret(root, scrolled ? REVEAL_MARGIN : 0)
-  if (outcome === 'shown' || step >= REVEAL_STEPS) return
+  if (outcome === 'shown' || step >= REVEAL_STEPS) {
+    settled?.()
+    return
+  }
   const revealed = scrolled || outcome === 'scrolled'
   revealFrame = requestAnimationFrame(() => {
     revealFrame = 0
@@ -718,7 +729,7 @@ function revealChangeSite(
         !hasLiveCaretIntent()
       )
         return
-      revealChangeSite(root, generation, step + 1, revealed)
+      revealChangeSite(root, generation, step + 1, revealed, settled)
     })
   })
 }
@@ -741,6 +752,87 @@ function restore(capture: UndoRestoreCapture): boolean {
   root.focus({ preventScroll: true })
   request(intent)
   if (site) revealChangeSite(root, restoreGeneration)
+  return true
+}
+
+/**
+ * Task 733 / 034: the source text of a unit restore window, read before it is written (a cell or a list
+ * restored in place keeps its element). Only the window's own nodes are read, never the root.
+ */
+export function windowSourceText(nodes: readonly Node[]): string {
+  let text = ''
+  for (const node of nodes) text += sourceText(node)
+  return text
+}
+
+/**
+ * Task 733 / 034: the unit history's caret endpoint for a restored window, as `restore` finds the change
+ * site for Vditor's snapshots: the start of the change for Undo and its end for Redo, in the elements
+ * the window wrote. Null when the window's source text did not change. Bounded to the window.
+ */
+export function windowChangeEndpoint(
+  previousText: string,
+  restored: readonly Element[],
+  isRedo: boolean,
+): Endpoint | null {
+  const texts = restored.map(sourceText)
+  const restoredText = texts.join('')
+  if (restoredText === previousText) return null
+  const offset = alignToCodePoint(
+    restoredText,
+    isRedo
+      ? changeEnd(previousText, restoredText)
+      : commonPrefix(previousText, restoredText),
+    isRedo,
+  )
+  let start = 0
+  for (let at = 0; at < restored.length; at++) {
+    const end = start + texts[at].length
+    const last = at === restored.length - 1
+    // Undo lands before the character at `offset`, Redo after the one before it.
+    const holds = isRedo
+      ? offset <= end && (offset > start || at === 0)
+      : offset < end || last
+    if (holds) return endpointIn(restored[at], offset - start, !isRedo)
+    start = end
+  }
+  return null
+}
+
+// Task 733 / 034 (review A3): the placement's intent lasts through its reveal only, as `finishMove`'s
+// rule requires (unit-history.ts): an intent left armed rewrites every later selection that is not a
+// user gesture. Dropped only while this placement's restore is still the newest.
+let placedGeneration = 0
+const dropPlacedIntent = (): void => {
+  if (placedGeneration === restoreGeneration) invalidateCaret()
+}
+
+/**
+ * Task 733 / 034: places the caret the unit history computed for a restore whose step had no usable
+ * caret (`windowChangeEndpoint`) and reveals it as a change site, as `restore` does for Vditor's
+ * snapshots. The intent stays armed through the reveal (a user gesture still cancels it) and is
+ * dropped once the reveal settles. False when nothing was placed (a stale root, a composition, a
+ * position outside the blocks).
+ */
+export function placeRestoredCaret(
+  root: HTMLElement,
+  endpoint: Endpoint,
+): boolean {
+  restoreGeneration++
+  cancelReveal()
+  if (
+    !root.isConnected ||
+    activeRoot() !== root ||
+    !root.contains(endpoint.node) ||
+    isCompositionActive()
+  )
+    return false
+  const intent = intentFor(root, endpoint)
+  if (!intent) return false
+  root.focus({ preventScroll: true })
+  requestCaret(intent)
+  placedGeneration = restoreGeneration
+  revealChangeSite(root, restoreGeneration, 0, false, dropPlacedIntent)
   return true
 }
 
@@ -780,4 +872,5 @@ export function installUndoRestoreCaret(): void {
 export function resetUndoRestoreCaretForTests(): void {
   cancelReveal()
   restoreGeneration = 0
+  placedGeneration = 0
 }

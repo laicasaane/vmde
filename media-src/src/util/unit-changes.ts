@@ -48,8 +48,22 @@ export interface HistoryModelPort {
   pending(): boolean
   /** The windows of units whose HTML changed since the previous capture, with their HTML then and now; undefined when nothing changed. */
   capture(): HistoryCapture | undefined
-  /** Put the capture's `before` (undo) or `after` (redo) HTML back; false when a window's anchor is gone (nothing written). */
-  restore(capture: HistoryCapture, side: 'before' | 'after'): boolean
+  /**
+   * Put the capture's `before` (undo) or `after` (redo) HTML back; false when a window's anchor is gone (nothing written).
+   * Task 733 / 034: `caret`, passed only when the history has no usable caret for this step, receives the
+   * restored change's start (undo) or end (redo) once every window is written; it stays unset when the
+   * restore changed no source text.
+   */
+  restore(
+    capture: HistoryCapture,
+    side: 'before' | 'after',
+    caret?: RestoredCaret,
+  ): boolean
+}
+
+/** Task 733 / 034: the caret endpoint a unit restore hands back (`HistoryModelPort.restore`). */
+export interface RestoredCaret {
+  endpoint: { node: Node; offset: number } | undefined
 }
 
 export interface UnitLines {

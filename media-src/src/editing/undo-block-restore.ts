@@ -70,7 +70,8 @@ function parseSnapshot(html: string): Node[] {
 
 // Lute's callout render of a blockquote: the type and title it derives from the `[!TYPE] Title` text
 // the blockquote holds. A block re-spin adds them to a blockquote written without them.
-const CALLOUT_ATTRIBUTE = /^data-callout(?:-title)?$/
+// Task 733 / 034: `data-callout-editing` is view state (callouts.ts flags a caret inside the source).
+const CALLOUT_ATTRIBUTE = /^data-callout(?:-title|-editing)?$/
 
 /** Whether an attribute is view state; `history` and `callout` add the unit history's exclusions. */
 function viewOnlyAttribute(

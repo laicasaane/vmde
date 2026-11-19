@@ -27,6 +27,7 @@ import {
   resolveCaretIntent,
   writeSelection,
 } from './caret'
+import { holdRevealAt } from './editor-caret'
 import { discardCommandSelection } from './format-hotkey-guard'
 import { resetTextFieldHistory } from './text-field-history'
 import { activeModeElement } from '../util/source-map'
@@ -677,6 +678,11 @@ function handleEscape(win: Window & typeof globalThis): boolean {
       invalidateCaret()
     }
     expanded.classList.remove('vditor-ir__node--expand')
+    // Task 733 / 034: the reveal frame of this selection change would expand the node again; hold the
+    // live caret (read back after the placement). One Range per Escape.
+    const selection = win.getSelection()
+    if (selection?.rangeCount)
+      holdRevealAt(selection.getRangeAt(0).cloneRange())
     return true
   }
   const block = structuralScopes(current.editor, current.range).find(

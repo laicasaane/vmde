@@ -835,6 +835,17 @@ for (const [action, mode, chord] of EDIT_MODE_ACTIONS) {
 // one narrow hook that revokes an in-progress host-owned seed before that cut changes the DOM.
 ;(window as any).__vmdeMarkCutInput = () =>
   sessionState.editSync?.markUserInput()
+// Task 733 / 034: Vditor's Source paste (`processPaste`) edits by Range calls and emits no `input` event; mark it
+// as user input before Vditor's bubble handler runs, so the publication does not take it for a mode switch.
+document.addEventListener(
+  'paste',
+  (event) => {
+    if (innerVditor()?.currentMode !== 'sv' || !isActiveEditorInput(event))
+      return
+    sessionState.editSync?.markUserInput()
+  },
+  true,
+)
 ;(window as any).__vmdeMarkEmojiInput = () =>
   sessionState.editSync?.markUserInput()
 ;(window as any).__vmdeScheduleEmojiInput = () =>

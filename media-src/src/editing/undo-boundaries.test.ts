@@ -965,6 +965,70 @@ describe('first-action undo seed (Task 598)', () => {
     },
   )
 
+  // Task 733 / 034 (row 7): Enter or Space on a focused toolbar Undo or Redo button activates it
+  // through the native click. The keydown took a seed and a boundary whose timer published the
+  // restored document after the Undo ran. Enter in the editor keeps both.
+  it.each([
+    ['undo', 'Enter'],
+    ['undo', ' '],
+    ['redo', 'Enter'],
+    ['redo', ' '],
+  ] as const)(
+    'a %s button keydown %j takes no seed and no boundary; Enter in the editor takes both',
+    (type, name) => {
+      vi.useFakeTimers()
+      const { root, toolbar, seed, inner, input, order, dispose } = setup()
+      // The registered toolbar item, as Vditor's `toolbar.elements` holds it: a wrapper whose
+      // first child is the button.
+      const item = document.createElement('div')
+      item.innerHTML = `<button data-type="${type}"><svg></svg></button>`
+      toolbar.parentElement!.append(item)
+      inner.toolbar = { elements: { [type]: item } }
+      key(item.querySelector('svg')!, { key: name })
+      vi.runAllTimers()
+      expect(seed).not.toHaveBeenCalled()
+      expect(input).not.toHaveBeenCalled()
+      expect(inner.undo.addToUndoStack).not.toHaveBeenCalled()
+      expect(order).toEqual([])
+      key(root, { key: 'Enter' })
+      vi.runAllTimers()
+      expect(seed).toHaveBeenCalled()
+      expect(order).toEqual([
+        'seed',
+        'seed:refused',
+        'getValue',
+        'input',
+        'add',
+      ])
+      dispose()
+    },
+  )
+
+  // Task 733 / 034 (repair 5): the guard matches the registered buttons by identity. A lookalike
+  // `button[data-type="undo"]` elsewhere in the webview is not the toolbar Undo, so its Enter keeps
+  // the seed and the boundary; so does a modified Enter on the registered button.
+  it('a lookalike Undo button and a modified Enter keep the seed and the boundary', () => {
+    vi.useFakeTimers()
+    const { toolbar, seed, inner, order, dispose } = setup()
+    const item = document.createElement('div')
+    item.innerHTML = '<button data-type="undo"><svg></svg></button>'
+    toolbar.parentElement!.append(item)
+    inner.toolbar = { elements: { undo: item } }
+    const lookalike = document.createElement('button')
+    lookalike.dataset.type = 'undo'
+    document.body.append(lookalike)
+    key(lookalike, { key: 'Enter' })
+    vi.runAllTimers()
+    expect(seed).toHaveBeenCalledTimes(2)
+    expect(order).toEqual(['seed', 'seed:refused', 'getValue', 'input', 'add'])
+    order.length = 0
+    key(item.firstElementChild!, { key: 'Enter', ctrlKey: true })
+    vi.runAllTimers()
+    expect(seed).toHaveBeenCalledTimes(3)
+    expect(order).toEqual(['seed:refused'])
+    dispose()
+  })
+
   it('excludes the Find widget, composing keys and an active composition', () => {
     const { root, find, seed, dispose } = setup()
     key(find, { key: 'x' })
@@ -1322,6 +1386,37 @@ describe('pending checkpoint before history (Task 601)', () => {
       expect(inner.undo[mode].redoStack).toEqual(['entry'])
       vi.runAllTimers()
       expect(order).toEqual(['run', 'input', 'add', 'flush', 'undo'])
+      dispose()
+    },
+  )
+
+  // Task 733 / 034 (repair 5): Enter, or Space with its keyup, on the focused toolbar Undo button
+  // with a pending edit. The keydown takes no boundary; the native click that follows prepares once
+  // and runs one engine Undo, and the restored text is exact.
+  it.each([
+    ['Enter', false],
+    [' ', true],
+  ] as const)(
+    'a focused Undo button activated by %j prepares once and undoes once',
+    (name, keyup) => {
+      vi.useFakeTimers()
+      const { order, inner, arm, button, getValue, dispose } = setup()
+      arm()
+      const undo = button('undo')
+      undo.focus()
+      undo.dispatchEvent(
+        new KeyboardEvent('keydown', { key: name, bubbles: true }),
+      )
+      if (keyup)
+        undo.dispatchEvent(
+          new KeyboardEvent('keyup', { key: name, bubbles: true }),
+        )
+      undo.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      vi.runAllTimers()
+      expect(order).toEqual(['run', 'input', 'add', 'flush', 'undo'])
+      expect(inner.undo.undo).toHaveBeenCalledTimes(1)
+      expect(inner.options.input).toHaveBeenCalledTimes(1)
+      expect(getValue()).toBe('Alpha delta.X')
       dispose()
     },
   )

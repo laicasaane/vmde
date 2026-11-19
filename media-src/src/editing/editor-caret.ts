@@ -461,6 +461,16 @@ function normalizeRootNavigation(
   return landed
 }
 
+// Task 733 / 034: the installed controller's hold (see `holdRevealAt`); undefined without a controller.
+let heldReveal: ((range: Range) => void) | undefined
+// The `lastCurrent` of a hold: shared and never written, so a hold allocates no set.
+const NO_TARGETS: ReadonlySet<HTMLElement> = new Set()
+
+/** Task 733 / 034: Escape collapsed the node at the caret; the reveal keeps it collapsed until the range changes. */
+export function holdRevealAt(range: Range): void {
+  heldReveal?.(range)
+}
+
 /**
  * Reveal IR Markdown markers from the live selection instead of a key whitelist. Selection changes
  * are frame-coalesced so Home/End/Page navigation, pointer drags, and programmatic caret moves all
@@ -475,7 +485,7 @@ export function installIrMarkerReveal(
   let dwell = 0
   let generation = 0
   let lastRange: Range | null = null
-  let lastCurrent = new Set<HTMLElement>()
+  let lastCurrent: ReadonlySet<HTMLElement> = new Set<HTMLElement>()
   let dwellPrevious = new Set<HTMLElement>()
   let pendingComposition = false
   let allowVisibleMarkerEdit = false
@@ -571,6 +581,11 @@ export function installIrMarkerReveal(
 
     lastRange = normalizedRange
     lastCurrent = current
+    startDwell()
+  }
+
+  /** Collapses the nodes in `dwellPrevious` after the dwell, unless a newer frame or a hold applied. */
+  const startDwell = () => {
     const appliedGeneration = ++generation
     clearDwell()
     const expiring = new Set(dwellPrevious)
@@ -585,6 +600,20 @@ export function installIrMarkerReveal(
       }
     }, MARKER_DWELL_MS)
   }
+
+  // Task 733 / 034: Escape's selection change schedules a frame whose targets hold the node next to the
+  // collapsed caret, and that frame expanded it again (real VS Code `structural-selection.spec.ts`).
+  // With `range` as the last range and no current targets, the frame's early return holds until the
+  // selection moves. That return never reaches the dwell, so the hold starts it for the nodes it
+  // releases, as `apply` does. One Set copy per Escape (the dwell's own); no document-sized work.
+  const hold = (range: Range) => {
+    for (const node of lastCurrent)
+      if (node.isConnected) dwellPrevious.add(node)
+    lastRange = range
+    lastCurrent = NO_TARGETS
+    startDwell()
+  }
+  heldReveal = hold
 
   const schedule = () => {
     if (frame) return
@@ -653,6 +682,7 @@ export function installIrMarkerReveal(
     unsubscribeComposition()
     if (frame) runtime.cancelFrame(frame)
     clearDwell()
+    if (heldReveal === hold) heldReveal = undefined
   }
 }
 

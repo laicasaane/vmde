@@ -459,7 +459,13 @@ const SELECT_ALL_KEY = 'ctrl+a'
 
 type Stage = 'whole' | 'table' | 'collapsed' | 'range' | 'none'
 interface ProbeEvent {
-  kind: 'typed' | 'respin' | 'selection' | 'pointerdown' | 'pointerup'
+  kind:
+    | 'typed'
+    | 'respin'
+    | 'selection'
+    | 'pointerdown'
+    | 'pointerup'
+    | 'command'
   at: number
   stage?: Stage
 }
@@ -467,6 +473,10 @@ interface ProbeEvent {
 // Page-side recorder. `typed` is a trusted `input` event (the keystroke), `respin` is edit-activity's
 // untrusted `insertText` input with empty data, `selection` is every `selectionchange` with the
 // selection's shape. It only listens; it never touches the selection, timers or the source.
+// Task 733 / 034 (row 4a): since 012-15 (`91622a08`) a cell or list item settles by a unit spin with no
+// dispatched input (`settleRespin` returns at `spinSettleUnit`, edit-activity.ts), so a settle call of
+// `__vmdeSpinUnit` (no event) that spun is a `respin` too. (Row 4b) `command` is each `select-all`
+// `editor-action` message the webview receives (Select All is a VS Code command, then a message).
 const installSettleProbe = () => {
   const w = window as any
   const editor = w.vditor.vditor.ir.element as HTMLElement
@@ -509,6 +519,26 @@ const installSettleProbe = () => {
   )
   document.addEventListener('selectionchange', () =>
     log.push({ kind: 'selection', at: performance.now(), stage: stage() }),
+  )
+  const spinUnit = w.__vmdeSpinUnit as
+    | ((...args: unknown[]) => boolean)
+    | undefined
+  if (spinUnit) {
+    w.__vmdeSpinUnit = (...args: unknown[]) => {
+      const spun = spinUnit(...args)
+      if (spun && args[3] === undefined)
+        log.push({ kind: 'respin', at: performance.now() })
+      return spun
+    }
+  }
+  window.addEventListener(
+    'message',
+    (event) => {
+      const data = event.data as { command?: unknown; action?: unknown }
+      if (data?.command === 'editor-action' && data.action === 'select-all')
+        log.push({ kind: 'command', at: performance.now() })
+    },
+    true,
   )
   window.addEventListener(
     'pointerdown',
@@ -589,6 +619,8 @@ interface WindowRecord {
   keyCostMs: number
   selectedAfterTypedMs: number
   respinAfterTypedMs: number
+  /** Task 733 / 034 (row 4b): attempts whose last Select All command arrived after the re-spin. */
+  inconclusive: number
 }
 
 async function openIrFixture(
@@ -669,6 +701,37 @@ async function selectAllInsideSettleWindow(
     source: string
   },
 ): Promise<WindowRecord> {
+  // Task 733 / 034 (row 4b, Q-204 item 4): the settle fires 220 ms after the key (the designed
+  // timing), and under load two XTEST presses plus their VS Code commands can take longer. The
+  // contract is narrower: a Select All that arrives inside the window keeps its selection through the
+  // re-spin. An attempt whose last command arrived after the re-spin is inconclusive: it is undone
+  // and run once more; a second late attempt fails with the measured times.
+  let inconclusive = 0
+  for (;;) {
+    const result = await selectAllAttempt(s, options, inconclusive > 0)
+    if (result !== 'late') return { ...result, inconclusive }
+    inconclusive += 1
+  }
+}
+
+async function selectAllAttempt(
+  s: {
+    frame: VmdeFrame
+    workbox: Page
+    xtest: XtestInput
+    keyCostMs: number
+  },
+  options: {
+    label: string
+    needle: string
+    letter: string
+    targetMs: number
+    presses: number
+    want: 'whole' | 'table'
+    source: string
+  },
+  retried: boolean,
+): Promise<Omit<WindowRecord, 'inconclusive'> | 'late'> {
   const { frame, workbox, xtest } = s
   expect(await placeText(frame, options.needle)).toBe(true)
   const depth = await undoDepthOf(frame)
@@ -700,9 +763,27 @@ async function selectAllInsideSettleWindow(
       event.at > typedAt,
   )!.at
   const respinAt = log.find((event) => event.kind === 'respin')!.at
-  expect(selectedAt, 'the selection landed before the re-spin').toBeLessThan(
-    respinAt,
-  )
+  let commandAt: number | undefined
+  for (const event of log) if (event.kind === 'command') commandAt = event.at
+  const times = `typed ${Math.round(typedAt)}, command ${commandAt === undefined ? 'none' : Math.round(commandAt)}, selected ${Math.round(selectedAt)}, re-spin ${Math.round(respinAt)} ms`
+  if (commandAt !== undefined && commandAt > respinAt) {
+    expect(
+      retried,
+      `the Select All arrived after the re-spin twice (${times})`,
+    ).toBe(false)
+    // Undo the attempt's key: its snapshot first (depth + 1), then one Ctrl+Z back to the source.
+    await expect.poll(() => undoDepthOf(frame)).toBe(depth + 1)
+    await xtest.key('ctrl+z')
+    await expect
+      .poll(async () => (await markdown(frame)).includes(options.source))
+      .toBe(false)
+    await expect.poll(() => undoDepthOf(frame)).toBe(depth)
+    return 'late'
+  }
+  expect(
+    selectedAt,
+    `the selection landed before the re-spin (${times})`,
+  ).toBeLessThan(respinAt)
   expect(await markdown(frame)).toContain(options.source) // the keystroke itself landed
   expect(await stageOf(frame), 'kept through the settle re-spin').toBe(
     options.want,

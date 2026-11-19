@@ -5,6 +5,7 @@ import {
 } from 'vditor/src/ts/toolbar/setToolbar'
 import {
   type HistoryModelPort,
+  type RestoredCaret,
   SOURCE_UNITS,
   type UnitMode,
   unitModeOf,
@@ -30,6 +31,7 @@ import {
   hasRewrapDocumentHistoryTransition,
   moveRewrapDocumentHistory,
 } from './rewrap-command'
+import { placeRestoredCaret } from './undo-restore-caret'
 
 // Task 733 (task 004): the unit history engine for IR. An entry holds the capture of the units that
 // changed between two checkpoints (bridge/unit-capture.ts), the caret before and after, and the
@@ -71,6 +73,11 @@ interface UnitHistoryHook {
   settled(vditor: unknown): boolean
   /** The depth of the stacks in the form Vditor's slots have (the base counts as one Undo entry); a read for the end-to-end specs. */
   depth(vditor: unknown): { undo: number; redo: number }
+  /**
+   * Task 733 / 034 (Q-205 item 1): the Undo and Redo moves that placed the caret at the restored change
+   * site (`placeRestoredCaret`); the unit engine's counterpart of the old engine's marker fallback count.
+   */
+  changeSites(vditor: unknown): number
 }
 
 declare global {
@@ -92,6 +99,13 @@ interface Entry {
   readonly capture: Parameters<HistoryModelPort['restore']>[0]
   readonly caretBefore: CaretIntent | undefined
   caretAfter: CaretIntent | undefined
+  /**
+   * Task 733 / 034: the checkpoint before (after) the change found no editor selection (focus in Find, a
+   * popover field): `caretBefore` (`caretAfter`) is an older position or none, and the restore supplies
+   * the caret from the change itself.
+   */
+  readonly beforeMissing: boolean
+  afterMissing: boolean
   /** Native host steps this entry spans; 0 when only whole-text posts lay in it. */
   steps: number
   epoch: number | undefined
@@ -102,6 +116,8 @@ interface Open {
   epoch: number | undefined
   sequence: number
   caret: CaretIntent | undefined
+  /** Task 733 / 034: the last checkpoint found no editor selection; `caret` is older or absent. */
+  missing: boolean
 }
 
 interface State {
@@ -117,6 +133,8 @@ interface State {
   claimed: boolean | undefined
   /** Task 733 / 013: the mode the kept history describes; a claim in another mode starts a new one. */
   claimedMode?: EngineMode
+  /** Task 733 / 034: see `UnitHistoryHook.changeSites`. */
+  changeSites: number
 }
 
 /** Task 733 / 015: the modes the engine can hold: IR and WYSIWYG units (013) and Source (D-7). */
@@ -200,10 +218,33 @@ function sameIntent(
   return samePoint(a, b)
 }
 
+/**
+ * Task 733 / 034 (repair 2): no usable caret: none, or one collapsed on the editable root (`pointOf`
+ * keeps the root itself). A checkpoint right after a rebuild finds the latter: Find's keybinding
+ * Replace One checkpoints after its `setValue` and asks for its caret one frame later
+ * (`replaceFindMatch`, selection-scope.ts), and putting that caret back lands outside every block.
+ * O(1), no allocation.
+ */
+const missingCaret = (caret: CaretIntent | undefined): boolean =>
+  caret === undefined || 'node' in ('anchor' in caret ? caret.anchor : caret)
+
+/**
+ * Task 733 / 034: the holder a restore fills with the change's caret, only when the step has no usable
+ * caret of its own; the only allocation of that path.
+ */
+const caretRequest = (
+  entry: Entry,
+  kind: 'undo' | 'redo',
+): RestoredCaret | undefined =>
+  (kind === 'undo' ? entry.beforeMissing : entry.afterMissing)
+    ? { endpoint: undefined }
+    : undefined
+
 const emptyOpen = (): Open => ({
   epoch: undefined,
   sequence: 0,
   caret: undefined,
+  missing: true,
 })
 
 const CARET_BLOCK =
@@ -312,6 +353,21 @@ function splitAtRangeStart(range: Range): void {
     (start as Text).splitText(range.startOffset)
 }
 
+/**
+ * A checkpoint with no change (before an action, after a caret move): the next entry starts at the
+ * caret it found, so its Undo puts the caret where the action began. Task 733 / 034: one that found no
+ * editor selection (Find's Replace checkpoints while its input has the focus) keeps the older caret but
+ * marks it, so the restore supplies the change's own.
+ */
+function noteCheckpointCaret(vditor: Vditor, open: Open): Open {
+  const caret = caretNow(vditor)
+  const missing = missingCaret(caret)
+  if (!missing && (open.missing || !sameIntent(caret, open.caret)))
+    return { ...open, caret, missing: false }
+  if (missing && !open.missing) return { ...open, missing: true }
+  return open
+}
+
 export function installUnitHistory(
   win: Window,
   deps: UnitHistoryDeps,
@@ -331,6 +387,7 @@ export function installUnitHistory(
         open: emptyOpen(),
         moved: false,
         claimed: undefined,
+        changeSites: 0,
       }
       states.set(vditor, state)
     }
@@ -445,6 +502,7 @@ export function installUnitHistory(
       epoch: deps.epoch(),
       sequence: deps.lastPostedSequence(),
       caret,
+      missing: missingCaret(caret),
     }
     state.revision += 1
   }
@@ -459,10 +517,13 @@ export function installUnitHistory(
       state.redo.length = 0
       state.moved = false
     }
+    const caretAfter = caretNow(vditor)
     const entry: Entry = {
       capture,
       caretBefore: state.open.caret,
-      caretAfter: caretNow(vditor),
+      caretAfter,
+      beforeMissing: state.open.missing || missingCaret(state.open.caret),
+      afterMissing: missingCaret(caretAfter),
       steps: 0,
       epoch: undefined,
       token: token<HistoryEntryToken>(),
@@ -479,7 +540,12 @@ export function installUnitHistory(
       epoch !== undefined && epoch === state.open.epoch
         ? Math.max(0, sequence - state.open.sequence)
         : 0
-    state.open = { epoch, sequence, caret: entry.caretAfter }
+    state.open = {
+      epoch,
+      sequence,
+      caret: entry.caretAfter,
+      missing: entry.afterMissing,
+    }
   }
 
   const record = (raw: unknown): void => {
@@ -500,11 +566,7 @@ export function installUnitHistory(
         true,
       )
     } else {
-      // A checkpoint with no change (before an action, after a caret move): the next entry starts at
-      // the caret it found, so its Undo puts the caret where the action began.
-      const caret = caretNow(vditor)
-      if (caret && !sameIntent(caret, state.open.caret))
-        state.open = { ...state.open, caret }
+      state.open = noteCheckpointCaret(vditor, state.open)
       return
     }
     resetIcon(vditor)
@@ -520,20 +582,44 @@ export function installUnitHistory(
     logToHost(`[unit-history] restore refused (${refused} so far)`)
   }
 
+  /**
+   * Puts the caret back after an Undo or Redo and returns the caret the next entry starts from.
+   * Task 733 / 034: a step without a usable caret puts it at the restored change and reveals it, as
+   * Vditor's restore of a snapshot without a marker does (Task 597, undo-restore-caret.ts).
+   */
+  const placeMoveCaret = (
+    vditor: Vditor,
+    state: State,
+    entry: Entry,
+    kind: 'undo' | 'redo',
+    restored: RestoredCaret | undefined,
+  ): CaretIntent | undefined => {
+    const endpoint = restored?.endpoint
+    const root = endpoint ? stateOfMode(vditor)?.element : undefined
+    if (root && endpoint && placeRestoredCaret(root, endpoint)) {
+      state.changeSites += 1
+      return caretNow(vditor)
+    }
+    const caret = kind === 'undo' ? entry.caretBefore : entry.caretAfter
+    // One placement, as Vditor's marker restore made: the restored DOM is complete when this runs.
+    // An intent left armed would rewrite every later selection that is not a user gesture (a
+    // selection set by a command or a test) for up to five seconds; it stays armed only when the
+    // placement found no position yet. The change-site placement above drops its intent itself once
+    // its reveal settles.
+    if (caret && requestCaret(caret as Parameters<typeof requestCaret>[0]))
+      invalidateCaret()
+    return caret
+  }
+
   /** After a restore: the caret, the host's history delta and the engine's own bookkeeping. */
   const finishMove = (
     vditor: Vditor,
     state: State,
     entry: Entry,
     kind: 'undo' | 'redo',
+    restored?: RestoredCaret,
   ): void => {
-    const caret = kind === 'undo' ? entry.caretBefore : entry.caretAfter
-    // One placement, as Vditor's marker restore made: the restored DOM is complete when this runs.
-    // An intent left armed would rewrite every later selection that is not a user gesture (a
-    // selection set by a command or a test) for up to five seconds; it stays armed only when the
-    // placement found no position yet.
-    if (caret && requestCaret(caret as Parameters<typeof requestCaret>[0]))
-      invalidateCaret()
+    const caret = placeMoveCaret(vditor, state, entry, kind, restored)
     // An exact action's record (`recordRewrapDocumentHistory`) moves with the history, as the
     // replay after Vditor's own Undo moved it; left behind, it would decline every source proof.
     if (hasRewrapDocumentHistoryTransition(vditor as never))
@@ -546,6 +632,7 @@ export function installUnitHistory(
       epoch: deps.epoch(),
       sequence: deps.lastPostedSequence(),
       caret,
+      missing: missingCaret(caret),
     }
     state.moved = true
     state.revision += 1
@@ -581,12 +668,13 @@ export function installUnitHistory(
     const entry = (kind === 'undo' ? state.undo : state.redo).pop()
     if (!entry) return
     const side = kind === 'undo' ? 'before' : 'after'
-    if (!port.restore(entry.capture, side)) {
+    const restored = caretRequest(entry, kind)
+    if (!port.restore(entry.capture, side, restored)) {
       refuse(vditor, state)
       return
     }
     ;(kind === 'undo' ? state.redo : state.undo).push(entry)
-    finishMove(vditor, state, entry, kind)
+    finishMove(vditor, state, entry, kind, restored)
   }
 
   /** Stops the pending first-edit record; false while a held IME timer owns the first edit. */
@@ -663,6 +751,7 @@ export function installUnitHistory(
   const hook: UnitHistoryHook = {
     claims,
     holds: (vditor) => holds(vditor as Vditor),
+    changeSites: (raw) => states.get(raw as object)?.changeSites ?? 0,
     depth: (raw) => {
       const state = states.get(raw as object)
       if (!state) return { undo: 0, redo: 0 }
@@ -702,7 +791,11 @@ export function installUnitHistory(
       // split, which leaves a textless Range across the two halves.
       if (deps.port()?.pending() === false) {
         state.base.caret = caretNow(vditor)
-        state.open = { ...state.open, caret: state.base.caret }
+        state.open = {
+          ...state.open,
+          caret: state.base.caret,
+          missing: missingCaret(state.base.caret),
+        }
       }
       splitAtCaret(vditor)
     },
@@ -798,11 +891,12 @@ export function installUnitHistory(
       if (!top) {
         if (!state.base) return 'refused'
         state.base.caret = caret
-        state.open = { ...state.open, caret }
+        state.open = { ...state.open, caret, missing: missingCaret(caret) }
         return 'coalesced'
       }
       top.caretAfter = caret
-      state.open = { ...state.open, caret }
+      top.afterMissing = missingCaret(caret)
+      state.open = { ...state.open, caret, missing: missingCaret(caret) }
       state.revision += 1
       return 'coalesced'
     },

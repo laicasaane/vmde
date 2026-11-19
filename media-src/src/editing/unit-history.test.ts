@@ -16,14 +16,20 @@ import type { UnitLute } from '../bridge/unit-lute'
 import { countBudget, type Factor, irFixture } from '../testing/budget-harness'
 import { createRealLute, svFixture } from '../testing/real-lute'
 import { historyStoreOf, type RecordedEntry } from './history-store'
-import { invalidateCaret, requestCaret } from './caret'
+import {
+  hasLiveCaretIntent,
+  invalidateCaret,
+  requestCaret,
+  resetCaretAuthorityForTests,
+  setCaretPaintabilityProbeForTests,
+} from './caret'
 import { tagCodeSource } from './code-source'
 import {
   hasRewrapDocumentHistoryTransition,
   recordRewrapDocumentHistory,
 } from './rewrap-command'
 import { installUnitHistory } from './unit-history'
-import type { HistoryCapture } from '../util/unit-changes'
+import type { HistoryCapture, RestoredCaret } from '../util/unit-changes'
 
 // Task 733 / 013 (Q-129): the 013 WYSIWYG cases prove the WYSIWYG path while the shipped
 // `WYSIWYG_UNITS` stays false. `wysiwygUnitsOn` turns the default of `unitModeOf` on for those
@@ -166,6 +172,10 @@ function rig(
     publishResult: 'delta' as 'delta' | 'nothing' | 'fallback',
     sequence: 0,
     epoch: 1 as number | undefined,
+    /** Task 733 / 034: sees the caret request of each restore (undefined: none was asked). */
+    restoreHook: undefined as
+      | ((caret: RestoredCaret | undefined) => void)
+      | undefined,
   }
   const port =
     options.port === false
@@ -175,8 +185,13 @@ function rig(
           claimable: () => state.claimable,
           pending: () => state.pending,
           capture: () => state.captures.shift(),
-          restore: (c: HistoryCapture, side: 'before' | 'after') => {
+          restore: (
+            c: HistoryCapture,
+            side: 'before' | 'after',
+            caret?: RestoredCaret,
+          ) => {
             state.restores.push([c, side])
+            state.restoreHook?.(caret)
             return state.restoreResult
           },
         }
@@ -599,6 +614,161 @@ describe('caret', () => {
     r.hook.undo(r.vditor)
     expect(r.root.querySelector('wbr')).toBeNull()
     expect(r.root.innerHTML).not.toContain('VDITOR-CARET')
+  })
+})
+
+// Task 733 / 034 (row 7): Find's Replace checkpoints while its input has the focus, so the checkpoint
+// before the change and the one after it find no editor selection. The entry kept the older caret, and
+// Undo put the caret there without a reveal (real VS Code `undo-restore-caret.spec.ts`, IR Replace One).
+// The restore now supplies the change's own caret on that path only, and the engine places and reveals it.
+describe('034 a step without a usable caret takes the restored change site', () => {
+  /** Moves the selection into an input outside the editor, as Find's input holds it. */
+  const focusOutside = (): void => {
+    const input = document.createElement('input')
+    document.body.append(input)
+    input.focus()
+    const range = document.createRange()
+    range.selectNodeContents(input.parentNode as Node)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+  }
+
+  /** The port answers a caret request with a point in paragraph `index`; it records each request. */
+  function answering(r: ReturnType<typeof rig>, index: number) {
+    const asked: boolean[] = []
+    const text = () => r.root.querySelectorAll('p')[index].firstChild as Text
+    r.state.restoreHook = (caret) => {
+      asked.push(caret !== undefined)
+      if (caret) caret.endpoint = { node: text(), offset: 2 }
+    }
+    return asked
+  }
+
+  /** A Replace entry: the base at paragraph 0, then two checkpoints with the focus in Find's input. */
+  function replaceEntry(r: ReturnType<typeof rig>): void {
+    ;(window as unknown as { vditor: unknown }).vditor = { vditor: r.vditor }
+    r.caretAt(0, 0)
+    r.record() // base: paragraph 0
+    focusOutside()
+    r.record() // the checkpoint before the replacement: no editor selection
+    r.record(cap('R')) // the replacement, still without one
+  }
+
+  beforeEach(() => {
+    ;(window as unknown as { vditor?: unknown }).vditor = undefined
+  })
+  afterEach(() => {
+    ;(window as unknown as { vditor?: unknown }).vditor = undefined
+  })
+
+  it('Undo and Redo of a Replace entry place the change site, not the older caret', () => {
+    const r = rig()
+    replaceEntry(r)
+    const asked = answering(r, 2)
+    vi.mocked(requestCaret).mockClear()
+    r.hook.undo(r.vditor)
+    expect(asked).toEqual([true])
+    expect(requestCaret).toHaveBeenCalledTimes(1)
+    expect(requestCaret).toHaveBeenLastCalledWith(
+      expect.objectContaining({ blockPath: [2], offsetInBlock: 2 }),
+    )
+    expect(requestCaret).not.toHaveBeenCalledWith(
+      expect.objectContaining({ blockPath: [0] }),
+    )
+    expect(document.activeElement).toBe(r.root)
+    r.hook.redo(r.vditor)
+    expect(asked).toEqual([true, true])
+  })
+
+  it('a step whose checkpoints found the caret asks for none and places the recorded one', () => {
+    const r = rig()
+    ;(window as unknown as { vditor: unknown }).vditor = { vditor: r.vditor }
+    r.caretAt(0, 0)
+    r.record()
+    r.caretAt(1, 3)
+    r.record(cap('A'))
+    const asked = answering(r, 2)
+    vi.mocked(requestCaret).mockClear()
+    r.hook.undo(r.vditor)
+    expect(asked).toEqual([false])
+    expect(requestCaret).toHaveBeenLastCalledWith(
+      expect.objectContaining({ blockPath: [0], offsetInBlock: 0 }),
+    )
+  })
+
+  it('a missing caret with no change site keeps the older caret', () => {
+    const r = rig()
+    replaceEntry(r)
+    r.state.restoreHook = () => undefined
+    vi.mocked(requestCaret).mockClear()
+    r.hook.undo(r.vditor)
+    expect(requestCaret).toHaveBeenLastCalledWith(
+      expect.objectContaining({ blockPath: [0], offsetInBlock: 0 }),
+    )
+  })
+
+  // Task 733 / 034 (repair 2): Ctrl+Shift+1 replaces with the editor focused; the checkpoint after the
+  // rebuild (`replaceFindMatch`, selection-scope.ts: `setValue`, then the checkpoint, then the caret one
+  // frame later) finds the selection collapsed on the editable root. That caret is outside every block:
+  // real VS Code `undo-restore-caret.spec.ts` keybinding leg, "Redo caret" outside a block.
+  it('a checkpoint caret collapsed on the root counts as missing: Redo takes the change site', () => {
+    const r = rig()
+    ;(window as unknown as { vditor: unknown }).vditor = { vditor: r.vditor }
+    r.caretAt(0, 0)
+    r.record() // base: paragraph 0
+    r.record() // the checkpoint before the replacement: the caret in the editor
+    const atRoot = document.createRange()
+    atRoot.setStart(r.root, 1)
+    atRoot.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(atRoot)
+    r.record(cap('R')) // the checkpoint after the rebuild
+    const asked = answering(r, 2)
+    r.hook.undo(r.vditor)
+    vi.mocked(requestCaret).mockClear()
+    r.hook.redo(r.vditor)
+    expect(asked).toEqual([false, true])
+    expect(requestCaret).toHaveBeenLastCalledWith(
+      expect.objectContaining({ blockPath: [2], offsetInBlock: 2 }),
+    )
+    expect(requestCaret).not.toHaveBeenCalledWith(
+      expect.objectContaining({ node: r.root }),
+    )
+  })
+
+  // Review A3: `finishMove` places once and drops the intent (an armed intent rewrites every later
+  // selection that is not a user gesture). The change-site placement keeps it only through the reveal.
+  it('after a change-site Undo, a programmatic selection write is kept', async () => {
+    caretMode.real = true
+    setCaretPaintabilityProbeForTests(() => true)
+    // jsdom has no Range geometry; the reveal measures one caret line in view.
+    const proto = Range.prototype as unknown as Record<string, unknown>
+    proto.getBoundingClientRect = () => new DOMRect(0, 20, 1, 16)
+    try {
+      const r = rig()
+      replaceEntry(r)
+      answering(r, 2)
+      r.hook.undo(r.vditor)
+      expect(window.getSelection()?.anchorNode).toBe(
+        r.root.querySelectorAll('p')[2].firstChild,
+      )
+      await vi.waitFor(() => expect(hasLiveCaretIntent()).toBe(false), {
+        timeout: 2000,
+      })
+      r.caretAt(0, 1)
+      // Negative-assertion wait: two frames in which an armed intent would write the selection back.
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      )
+      expect(window.getSelection()?.anchorNode).toBe(
+        r.root.querySelectorAll('p')[0].firstChild,
+      )
+      expect(window.getSelection()?.anchorOffset).toBe(1)
+    } finally {
+      delete proto.getBoundingClientRect
+      caretMode.real = false
+      resetCaretAuthorityForTests()
+    }
   })
 })
 

@@ -1,9 +1,14 @@
 import { historySourceProjection } from '../editing/undo-block-restore'
+import {
+  windowChangeEndpoint,
+  windowSourceText,
+} from '../editing/undo-restore-caret'
 import { flattenSourceHtml } from '../editing/wysiwyg-code-highlight'
 import { processCodeRender } from 'vditor/src/ts/util/processCode'
 import type {
   HistoryCapture,
   HistoryModelPort,
+  RestoredCaret,
   UnitMode,
 } from '../util/unit-changes'
 import { isHintSpan } from '../util/wrap-hint-mark'
@@ -37,6 +42,8 @@ interface Window {
   /** The bytes the units of `before` had, one per restored top-level element: an Undo hands them back to the model. */
   readonly forms?: Forms
   readonly after: string
+  /** Task 733 / 034: a table window for an `align` change, which the source projection does not see. */
+  readonly alignment?: true
 }
 
 interface Step {
@@ -84,6 +91,11 @@ interface TableSnap {
   readonly block: HTMLElement
   /** The table's bytes when the change was first seen (a structure change; not for a pre-key snapshot). */
   bytes?: string
+  /**
+   * Task 733 / 034: the snapshot of a table command's keydown, whose cells record their `align`. A
+   * trusted key records nothing (review A1: no added work on typed keys).
+   */
+  aligned?: boolean
   readonly rows: Array<{
     readonly tr: HTMLElement
     readonly section: string
@@ -91,6 +103,8 @@ interface TableSnap {
       unit: U
       el: HTMLElement
       was: string | undefined | null
+      /** Task 733 / 034: the cell's `align` (null when absent); recorded only in an `aligned` snapshot. */
+      align?: string | null
     }>
   }>
 }
@@ -122,8 +136,11 @@ export interface UnitCapture {
   invalidate(): void
 }
 
-const openTag = (el: Element): string => {
+const openTag = (el: Element, align?: string | null): string => {
   const shell = el.cloneNode(false) as Element
+  // Task 733 / 034: a cell of an `aligned` table snapshot gets the `align` it had at the snapshot.
+  if (align === null) shell.removeAttribute('align')
+  else if (align !== undefined) shell.setAttribute('align', align)
   const html = shell.outerHTML
   return html.slice(0, html.length - `</${shell.localName}>`.length)
 }
@@ -561,6 +578,11 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
    * what the cell held. Used to read `before`; it makes no window by itself.
    */
   const preTables = new Map<U, TableSnap>()
+  /**
+   * Task 733 / 034: the table a table command's keydown snapshotted with its cells' `align`. Vditor's
+   * alignment writes attributes only, which marks no unit changed, so this alone can make a step.
+   */
+  let alignedTable: { unit: U; snap: TableSnap } | undefined
   /** Steps held across a rebuild of the model over the same DOM. */
   let held: Step[] = []
   /** A restore is writing: its own mutations are not a change to capture. */
@@ -584,7 +606,10 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   let successors = new WeakMap<HTMLElement, string>()
 
   const hasPending = (): boolean =>
-    leaves.size > 0 || rootSnap !== undefined || tableSnaps.size > 0
+    leaves.size > 0 ||
+    rootSnap !== undefined ||
+    tableSnaps.size > 0 ||
+    (alignedTable !== undefined && alignChanged(alignedTable.snap))
 
   const clearPending = (): void => {
     leaves.clear()
@@ -593,6 +618,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     changedLists.clear()
     tableSnaps.clear()
     preTables.clear()
+    alignedTable = undefined
   }
 
   /**
@@ -724,6 +750,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   function snapTable(
     unit: U,
     typed?: { el: HTMLElement; html: string },
+    aligned = false,
   ): TableSnap {
     const rows: TableSnap['rows'] = []
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one pass over rows that records their section and each cell's HTML
@@ -739,6 +766,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
             unit: cell,
             el: cell.el,
             was: was === null && typed?.el === cell.el ? typed.html : was,
+            align: aligned ? cell.el.getAttribute('align') : undefined,
           })
         }
       }
@@ -749,7 +777,18 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         cells,
       })
     })
-    return { block: unit.members[0], rows }
+    return aligned
+      ? { block: unit.members[0], rows, aligned }
+      : { block: unit.members[0], rows }
+  }
+
+  /** Task 733 / 034: a cell of an `aligned` snapshot whose `align` changed since. O(table), table commands only. */
+  function alignChanged(snap: TableSnap): boolean {
+    if (!snap.aligned) return false
+    for (const row of snap.rows)
+      for (const cell of row.cells)
+        if (cell.el.getAttribute('align') !== cell.align) return true
+    return false
   }
 
   /** The table's outer HTML as the snapshot recorded it, or undefined when a cell was never proven. */
@@ -775,7 +814,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
               ? leaves.get(cell.unit)
               : normalized(cell.el, 'cell')
         if (then === undefined) return undefined
-        html += `${openTag(cell.el)}${then}</${cell.el.localName}>`
+        html += `${openTag(cell.el, snap.aligned ? cell.align : undefined)}${then}</${cell.el.localName}>`
       }
       html += '</tr>'
     }
@@ -1139,12 +1178,23 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
         windows.push(result)
       }
     }
+    // Task 733 / 034: Vditor's alignment writes `align` on the column's cells only. A cell window holds the
+    // cell's inner HTML, so both sides were equal and the alignment made no step; the next Undo then
+    // failed its verification on the aligned table. A changed `align` gives the table its window.
+    // The keydown snapshot is the earliest state; it keeps the bytes a structure notice read since.
+    if (alignedTable && alignChanged(alignedTable.snap)) {
+      const { unit, snap } = alignedTable
+      snap.bytes ??= tableSnaps.get(unit)?.bytes
+      tableSnaps.set(unit, snap)
+    }
     for (const snap of tableSnaps.values()) {
       const table = snap.block
       if (!table?.isConnected) continue
       const index = rootIndexOf(table)
       if (covered(index)) continue
+      const alignment = snap === alignedTable?.snap && alignChanged(snap)
       windows.push({
+        ...(alignment ? { alignment } : {}),
         kind: 'blocks',
         a: index,
         b: 0,
@@ -1175,7 +1225,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     const clicked = clickParagraphAtEnd(root)
     let rootCount: number | undefined
     const changed = windows.filter((window) => {
-      if (window.before === undefined) return true
+      if (window.before === undefined || window.alignment) return true
       let atEnd = false
       if (clicked && window.kind === 'blocks') {
         rootCount ??= countRootChildren(root)
@@ -1343,9 +1393,13 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     side: 'before' | 'after',
     inserted: HTMLElement[],
     forms?: Array<[Forms | undefined, HTMLElement[] | undefined]>,
+    caret?: RestoredCaret,
   ): boolean {
     const { windows } = step
     const toBefore = side === 'before'
+    // Task 733 / 034: the window that holds the caret endpoint: the first for Undo, the last for Redo.
+    const caretAt = caret ? (toBefore ? 0 : windows.length - 1) : -1
+    let caretText: string | undefined
     const plan: Array<{
       window: Window
       index: number
@@ -1363,6 +1417,8 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       const found = current(root, window, index, count)
       if (!found) return false
       if (keyOfCurrent(window, found.nodes) !== keyOf(parse(from))) return false
+      // Read before the write: a cell or a list restored in place keeps its element.
+      if (i === caretAt) caretText = windowSourceText(found.nodes)
       // A Redo needs the bytes of what this restore is about to replace.
       if (toBefore && !afterForms.has(window)) {
         afterForms.set(window, currentForms(found.nodes))
@@ -1374,6 +1430,10 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       const { window, index, count, html } = plan[i]
       const written = current(root, window, index, count)?.replace(html)
       if (written) inserted.push(...written)
+      if (caret && written && caretText !== undefined && i === caretAt) {
+        caret.endpoint =
+          windowChangeEndpoint(caretText, written, !toBefore) ?? caret.endpoint
+      }
       forms?.push([toBefore ? window.forms : afterForms.get(window), written])
     }
     return true
@@ -1481,6 +1541,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     root: HTMLElement,
     order: readonly Step[],
     side: 'before' | 'after',
+    caret?: RestoredCaret,
   ): boolean {
     const written: Step[] = []
     const inserted: HTMLElement[] = []
@@ -1488,7 +1549,8 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     restoring = true
     try {
       for (const step of order) {
-        if (!restoreStep(root, step, side, inserted, forms)) {
+        if (!restoreStep(root, step, side, inserted, forms, caret)) {
+          if (caret) caret.endpoint = undefined
           putBack(root, written, side)
           return false
         }
@@ -1533,16 +1595,33 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       held = []
       return { generation, steps } as unknown as HistoryCapture
     },
-    restore(raw, side) {
+    restore(raw, side, caret) {
       const capture = raw as unknown as Capture
       const root = deps.root()
       if (!root || capture.generation !== generation) return false
       const order =
         side === 'before' ? [...capture.steps].reverse() : capture.steps
-      if (!restoreSteps(root, order, side)) return false
+      if (!restoreSteps(root, order, side, caret)) return false
       rememberAll(root, capture.steps)
+      // A later step can replace the element an earlier step's endpoint was found in.
+      if (caret?.endpoint && !caret.endpoint.node.isConnected)
+        caret.endpoint = undefined
       return true
     },
+  }
+
+  /** The pre-key snapshot of the table of `cell` (see `preTables`). */
+  function snapPreTable(unit: U, cell: HTMLElement, event: Event): void {
+    // Task 733 / 034 (review A1): only a table command (an untrusted contained keydown,
+    // `dispatchContainedKeydown`) records the cells' `align`, before Vditor writes it.
+    const command = event.type === 'keydown' && !event.isTrusted
+    const snap = snapTable(
+      unit,
+      { el: cell, html: normalized(cell, 'cell') },
+      command,
+    )
+    preTables.set(unit, snap)
+    if (command) alignedTable = { unit, snap }
   }
 
   /**
@@ -1551,7 +1630,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
    */
   function watch(root: HTMLElement): () => void {
     const target: EventTarget = root.ownerDocument.defaultView ?? window
-    const handler = (): void => {
+    const handler = (event: Event): void => {
       const model = deps.model()
       const anchor = root.ownerDocument.getSelection()?.anchorNode
       const el = anchor instanceof Element ? anchor : anchor?.parentElement
@@ -1559,12 +1638,8 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       const table = cell?.closest('table')
       if (!model || !cell || !table || !root.contains(table)) return
       const unit = model.unitOf(table as HTMLElement)
-      if (unit?.kind === 'table' && !preTables.has(unit)) {
-        preTables.set(
-          unit,
-          snapTable(unit, { el: cell, html: normalized(cell, 'cell') }),
-        )
-      }
+      if (unit?.kind === 'table' && !preTables.has(unit))
+        snapPreTable(unit, cell, event)
     }
     // Vditor's IR click handler (on the root) appends an empty paragraph when a click lands below
     // the last block. The last child before the click (capture phase) and after the root's handlers
