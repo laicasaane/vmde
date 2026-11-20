@@ -81,17 +81,187 @@ export function expandToLine(editorElement: HTMLElement | null): boolean {
     return true
   }
 
-  const block = anchor.closest(BLOCK_SELECTOR)
-  // `closest` can walk out of the editor (the editor element itself matches `div[data-block]` in
-  // some modes); anything at or above the editor is not a line.
-  if (!block || block === editorElement || !editorElement.contains(block))
-    return false
-  if ((block.textContent ?? '') === '') return false
-
-  const lineRange = document.createRange()
-  lineRange.selectNodeContents(block)
-  writeSelection(lineRange) // Deliberate: a collapsed copy or cut selects the whole block.
+  const lineRange = lineRangeAt(
+    editorElement,
+    range.startContainer,
+    range.startOffset,
+    anchor,
+  )
+  if (!lineRange) return false
+  writeSelection(lineRange) // Deliberate: a collapsed copy or cut selects the whole line.
   return true
+}
+
+/**
+ * Task 733/037: block-level children for the element-point and mixed-content rules below. Tag
+ * names, not BLOCK_SELECTOR, because `.vditor-ir__node` also marks inline nodes (a strong span).
+ */
+const BLOCK_TAGS = new Set([
+  'P',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'LI',
+  'BLOCKQUOTE',
+  'TR',
+  'PRE',
+  'UL',
+  'OL',
+  'TABLE',
+  'THEAD',
+  'TBODY',
+  'TFOOT',
+  'HR',
+  'DIV',
+  'DETAILS',
+  'DL',
+  'DT',
+  'DD',
+  'FIGURE',
+  'SECTION',
+])
+const SPACE_ONLY = /^[\t\n\r ]*$/
+
+const isBlock = (node: Node | null): node is Element =>
+  node !== null &&
+  node.nodeType === Node.ELEMENT_NODE &&
+  BLOCK_TAGS.has((node as Element).tagName)
+
+/** The node next to a boundary, skipping whitespace-only text (`forward`: the one after it). */
+function besideBoundary(node: Node | null, forward: boolean): Node | null {
+  let n = node
+  while (
+    n &&
+    n.nodeType === Node.TEXT_NODE &&
+    SPACE_ONLY.test((n as Text).data)
+  )
+    n = forward ? n.nextSibling : n.previousSibling
+  return n
+}
+
+/** The first (`forward`) or last block child of `el`, or null when that end holds inline content. */
+function edgeBlock(el: Element, forward: boolean): Element | null {
+  const child = besideBoundary(forward ? el.firstChild : el.lastChild, forward)
+  return isBlock(child) ? child : null
+}
+
+/** Whether `block` holds another block as a direct child, so it is more than one line. */
+function holdsBlock(block: Element): boolean {
+  for (
+    let child = block.firstElementChild;
+    child;
+    child = child.nextElementSibling
+  )
+    if (BLOCK_TAGS.has(child.tagName)) return true
+  return false
+}
+
+/**
+ * Task 733/037: the line of a caret at (`container`, `offset`) as a range strictly inside
+ * `surface`, or null when there is no single unambiguous line. Before this, an element point
+ * between two blocks (`UL,1`, the surface `PRE,n`) reached the surface `<pre>` through `closest`
+ * and selected the whole document, so a collapsed Ctrl+C disclosed it and Ctrl+X deleted it.
+ *
+ * - A text point, or an element point with inline content beside it, starts at its element.
+ * - An element point with a block on both sides is between two lines: null.
+ * - An element point at the start or end of a container whose edge child is a block takes the
+ *   innermost block at that edge (`UL,0` after an arrow move over a rule takes the first item).
+ *
+ * The line is the closest BLOCK_SELECTOR block. When it holds a nested block (a tight list item
+ * with a nested list), it is several lines: the line is then the inline run of the block's own
+ * children around the point, and null when the point touches no inline run or the run is blank.
+ */
+function lineRangeAt(
+  surface: HTMLElement,
+  container: Node,
+  offset: number,
+  anchor: Element,
+): Range | null {
+  const point =
+    container.nodeType === Node.ELEMENT_NODE
+      ? elementPointStart(container as Element, offset)
+      : { start: anchor, node: container, offset }
+  if (!point) return null
+  const block = point.start.closest(BLOCK_SELECTOR)
+  // `closest` can walk out of the editor (the IR and WYSIWYG surface is itself a `pre`); anything
+  // at or above the surface is not a line.
+  if (!block || block === surface || !surface.contains(block)) return null
+  if (holdsBlock(block)) return inlineRunAt(block, point.node, point.offset)
+  if ((block.textContent ?? '') === '') return null
+  const lineRange = surface.ownerDocument.createRange()
+  lineRange.selectNodeContents(block)
+  return lineRange
+}
+
+/** Where `lineRangeAt` starts looking: the element, and the point the mixed-content rule reads. */
+interface LineStart {
+  start: Element
+  node: Node
+  offset: number
+}
+
+/** The element-point rules of `lineRangeAt` for (`el`, `offset`); null when ambiguous. */
+function elementPointStart(el: Element, offset: number): LineStart | null {
+  const before = besideBoundary(el.childNodes[offset - 1] ?? null, false)
+  const after = besideBoundary(el.childNodes[offset] ?? null, true)
+  const blockBefore = isBlock(before)
+  const blockAfter = isBlock(after)
+  if (blockBefore && blockAfter) return null
+  const edge =
+    blockAfter && !before ? after : blockBefore && !after ? before : null
+  if (!edge) return { start: el, node: el, offset }
+  const forward = edge === after
+  let inner: Element = edge
+  for (
+    let child = edgeBlock(inner, forward);
+    child;
+    child = edgeBlock(inner, forward)
+  )
+    inner = child
+  // A rule or helper element at the edge is not a line.
+  if (!inner.matches(BLOCK_SELECTOR)) return null
+  return {
+    start: inner,
+    node: inner,
+    offset: forward ? 0 : inner.childNodes.length,
+  }
+}
+
+/**
+ * The run of `block`'s own inline children that the point (`node`, `offset`) touches, for a block
+ * that also holds a nested block. Null when the point touches no inline run or the run is blank.
+ */
+function inlineRunAt(block: Element, node: Node, offset: number): Range | null {
+  const child = childAtPoint(block, node, offset)
+  if (!child || isBlock(child)) return null
+  let first: Node = child
+  let last: Node = child
+  while (first.previousSibling && !isBlock(first.previousSibling))
+    first = first.previousSibling
+  while (last.nextSibling && !isBlock(last.nextSibling)) last = last.nextSibling
+  const run = block.ownerDocument.createRange()
+  run.setStartBefore(first)
+  run.setEndAfter(last)
+  return SPACE_ONLY.test(run.toString()) ? null : run
+}
+
+/**
+ * The child of `block` that the point (`node`, `offset`) touches: the one holding `node`, or for a
+ * point on `block` itself the inline child before it, else the child after it.
+ */
+function childAtPoint(block: Element, node: Node, offset: number): Node | null {
+  if (node === block) {
+    const before = block.childNodes[offset - 1] ?? null
+    return before && !isBlock(before)
+      ? before
+      : (block.childNodes[offset] ?? null)
+  }
+  let child: Node | null = node
+  while (child && child.parentNode !== block) child = child.parentNode
+  return child
 }
 
 /**
@@ -219,12 +389,28 @@ function selectSvLineDelete(win: Window & typeof globalThis): boolean {
   return true
 }
 
-/** The editable surface the caret is in, whichever mode is live. */
+/**
+ * The editable surface the caret is in, whichever mode is live: exactly `vditor[mode].element`.
+ *
+ * Task 733/037: this used to return the `.vditor-ir` / `.vditor-wysiwyg` mode wrapper, whose
+ * editable `<pre>` then passed the "strictly inside the editor" test and was taken as a line. Vditor
+ * builds the IR and WYSIWYG surface as the wrapper's first element child,
+ * `pre.vditor-reset[contenteditable]` (ir/index.ts, wysiwyg/index.ts); VMDE and Vditor panels follow
+ * it. The shape is checked as well as the position, so a reordered panel never qualifies; any other
+ * shape returns null, which declines the expansion. The SV surface is the `.vditor-sv` element itself.
+ */
 function activeEditor(doc: Document): HTMLElement | null {
   const active = doc.activeElement
   if (!active) return null
-  return (active.closest('.vditor-ir, .vditor-wysiwyg, .vditor-sv') ??
-    null) as HTMLElement | null
+  const host = active.closest('.vditor-ir, .vditor-wysiwyg, .vditor-sv')
+  if (!host) return null
+  if (host.classList.contains('vditor-sv')) return host as HTMLElement
+  const surface = host.firstElementChild
+  return surface instanceof HTMLElement &&
+    surface.matches('pre.vditor-reset[contenteditable]') &&
+    surface.contains(active)
+    ? surface
+    : null
 }
 
 /**

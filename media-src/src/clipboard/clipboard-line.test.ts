@@ -213,7 +213,7 @@ describe('the before-event expansion', () => {
     ).__vmdeTakeCutIntent()
 
   function irEditor(html = '<p>a line</p><p>other</p>'): HTMLElement {
-    document.body.innerHTML = `<div class="vditor-ir"><div id="ed" contenteditable="true">${html}</div></div><input id="find">`
+    document.body.innerHTML = `<div class="vditor-ir"><pre class="vditor-reset" id="ed" contenteditable="true">${html}</pre></div><input id="find">`
     const ed = document.getElementById('ed') as HTMLElement
     ed.focus()
     return ed
@@ -633,4 +633,261 @@ describe('expandToLine — split mode takes the source line', () => {
       ).__vmdeTakeCutIntent(),
     ).toBe(false)
   })
+})
+
+// Task 733/037: a collapsed caret at an element point (`UL,1`, the surface `PRE,n`) used to reach the
+// mode wrapper's editable `<pre>` through `closest`, which passed the guard and selected the whole
+// document, so Ctrl+C disclosed it and Ctrl+X deleted it. These cases use Vditor's real surface
+// shape: `div.vditor-<mode> > pre.vditor-reset[contenteditable]` followed by VMDE's and Vditor's
+// panels, and check all three entry points (beforecopy, beforecut, and the copy fallback the Vditor
+// copy patch calls with the surface).
+describe('the collapsed line stays one line block inside the editable surface', () => {
+  const W = window as unknown as Window & typeof globalThis
+  const store = window as unknown as Record<string, unknown>
+  const FIXTURE =
+    '<p>Head ALPHA</p><ul><li>item one</li><li>item two</li></ul><hr><ul><li>item three</li><li>item four</li></ul><p>Tail ZULU</p>'
+  const NESTED =
+    '<p>Head</p><ul><li>item a<ul><li>sub b</li></ul></li></ul><hr><p>Tail</p>'
+
+  function surface(mode: 'ir' | 'wysiwyg', html = FIXTURE): HTMLElement {
+    document.body.innerHTML =
+      `<div class="vditor-${mode}"><pre class="vditor-reset" id="ed" contenteditable="true">${html}</pre>` +
+      '<div class="vmde-cell-selection-status"></div><div class="vditor-panel"><button id="panel">b</button></div></div><input id="find">'
+    const ed = document.getElementById('ed') as HTMLElement
+    ed.focus()
+    return ed
+  }
+  function caretAt(node: Node, offset: number) {
+    const range = document.createRange()
+    range.setStart(node, offset)
+    range.collapse(true)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+  }
+  function textCaret(ed: HTMLElement, needle: string, at = 2) {
+    const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT)
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const i = (n as Text).data.indexOf(needle)
+      if (i >= 0) return caretAt(n, i + at)
+    }
+    throw new Error(`no text ${needle}`)
+  }
+  const fire = (type: 'beforecopy' | 'beforecut') => {
+    const event = new Event(type, { bubbles: true, cancelable: true })
+    document.dispatchEvent(event)
+    return event.defaultPrevented
+  }
+  const take = () => (store.__vmdeTakeCutIntent as () => boolean | undefined)()
+  const fallback = (ed: HTMLElement) =>
+    (store.__vmdeExpandToLine as (e: HTMLElement) => boolean)(ed)
+  const collapsed = () => window.getSelection()?.getRangeAt(0).collapsed
+
+  beforeEach(() => {
+    installClipboardLine(W)
+    store.__vmdeCutIntent = undefined
+  })
+
+  /** Declined at all three entry points: not cancelled, caret kept, cut inert, fallback false. */
+  function expectDeclined(ed: HTMLElement, place: () => void) {
+    place()
+    expect(fire('beforecopy'), 'beforecopy not cancelled').toBe(false)
+    expect(collapsed(), 'caret kept after beforecopy').toBe(true)
+    place()
+    expect(fire('beforecut'), 'beforecut not cancelled').toBe(false)
+    expect(collapsed(), 'caret kept after beforecut').toBe(true)
+    expect(take(), 'cut stays inert').toBe(true)
+    place()
+    expect(fallback(ed), 'copy fallback declines').toBe(false)
+    expect(collapsed(), 'caret kept after the fallback').toBe(true)
+  }
+  /** Resolved at all three entry points to exactly `line`. */
+  function expectLine(ed: HTMLElement, line: string, place: () => void) {
+    place()
+    expect(fire('beforecopy'), 'beforecopy cancelled').toBe(true)
+    expect(selectedText()).toBe(line)
+    place()
+    expect(fire('beforecut'), 'beforecut cancelled').toBe(true)
+    expect(selectedText()).toBe(line)
+    expect(take(), 'cut deletes the line').toBe(false)
+    place()
+    expect(fallback(ed), 'copy fallback resolves').toBe(true)
+    expect(selectedText()).toBe(line)
+  }
+
+  for (const mode of ['ir', 'wysiwyg'] as const)
+    describe(mode, () => {
+      it('UL,1 between two items declines', () => {
+        const ed = surface(mode)
+        expectDeclined(ed, () => caretAt(ed.querySelector('ul') as Element, 1))
+      })
+      it('every interior surface point PRE,n declines', () => {
+        const ed = surface(mode)
+        for (let n = 1; n < ed.childNodes.length; n++)
+          expectDeclined(ed, () => caretAt(ed, n))
+      })
+      it('UL,0 (the arrow landing over a rule) takes the first item', () => {
+        const ed = surface(mode)
+        expectLine(ed, 'item three', () =>
+          caretAt(ed.querySelectorAll('ul')[1], 0),
+        )
+      })
+      it('UL,len takes the last item', () => {
+        const ed = surface(mode)
+        const ul = ed.querySelector('ul') as Element
+        expectLine(ed, 'item two', () => caretAt(ul, ul.childNodes.length))
+      })
+      it('the end of a nested list takes the innermost last item', () => {
+        const ed = surface(mode, NESTED)
+        const ul = ed.querySelector('ul') as Element
+        expectLine(ed, 'sub b', () => caretAt(ul, ul.childNodes.length))
+      })
+      it('PRE,0 and PRE,len take the first and the last block', () => {
+        const ed = surface(mode)
+        expectLine(ed, 'Head ALPHA', () => caretAt(ed, 0))
+        expectLine(ed, 'Tail ZULU', () => caretAt(ed, ed.childNodes.length))
+      })
+      it('an edge that is a rule declines', () => {
+        const ed = surface(mode, '<hr><p>after</p>')
+        expectDeclined(ed, () => caretAt(ed, 0))
+      })
+      it('text directly under the surface declines', () => {
+        const ed = surface(mode, 'stray<p>after</p>')
+        expectDeclined(ed, () => textCaret(ed, 'stray'))
+      })
+      it('whitespace text between items is skipped: still ambiguous', () => {
+        const ed = surface(mode, '<ul>\n<li>one</li>\n<li>two</li>\n</ul>')
+        expectDeclined(ed, () => caretAt(ed.querySelector('ul') as Element, 2))
+      })
+      it('table: TBODY,1 declines; TR,1 takes the row; TABLE,0 takes the header row', () => {
+        const ed = surface(
+          mode,
+          '<p>x</p><table><thead><tr><th>h1</th><th>h2</th></tr></thead><tbody><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></tbody></table><p>y</p>',
+        )
+        expectDeclined(ed, () =>
+          caretAt(ed.querySelector('tbody') as Element, 1),
+        )
+        const row = ed.querySelector('tbody tr') as Element
+        expectLine(ed, 'ab', () => caretAt(row, 1))
+        expectLine(ed, 'h1h2', () =>
+          caretAt(ed.querySelector('table') as Element, 0),
+        )
+      })
+      it('a blockquote point between two paragraphs declines', () => {
+        const ed = surface(mode, '<blockquote><p>q1</p><p>q2</p></blockquote>')
+        expectDeclined(ed, () =>
+          caretAt(ed.querySelector('blockquote') as Element, 1),
+        )
+      })
+      it('an inline element point P,1 takes the paragraph (an inline IR node is not a block)', () => {
+        const ed = surface(
+          mode,
+          '<p>a <span class="vditor-ir__node" data-type="strong">bold</span> c</p><p>z</p>',
+        )
+        expectLine(ed, 'a bold c', () =>
+          caretAt(ed.querySelector('p') as Element, 1),
+        )
+      })
+
+      // A tight list item that holds a nested list is two lines: its own text and the nested item.
+      it('mixed item: LI,1 after its text takes only its own text', () => {
+        const ed = surface(mode, NESTED)
+        expectLine(ed, 'item a', () =>
+          caretAt(ed.querySelector('li') as Element, 1),
+        )
+      })
+      it('mixed item: a text caret in its own text takes only that text', () => {
+        const ed = surface(mode, NESTED)
+        expectLine(ed, 'item a', () => textCaret(ed, 'item a'))
+      })
+      it('mixed item: the outer UL,0 takes only the first item text', () => {
+        const ed = surface(mode, NESTED)
+        expectLine(ed, 'item a', () =>
+          caretAt(ed.querySelector('ul') as Element, 0),
+        )
+      })
+      it('mixed item: a text caret in the nested item takes the nested item', () => {
+        const ed = surface(mode, NESTED)
+        expectLine(ed, 'sub b', () => textCaret(ed, 'sub b'))
+      })
+      it('mixed item: a point between two nested lists declines', () => {
+        const ed = surface(
+          mode,
+          '<ul><li>item a<ul><li>s1</li></ul><ul><li>s2</li></ul></li></ul>',
+        )
+        expectDeclined(ed, () => caretAt(ed.querySelector('li') as Element, 2))
+      })
+      it('mixed item: a whitespace-only run declines', () => {
+        const ed = surface(
+          mode,
+          '<ul><li><ul><li>s1</li></ul> <ul><li>s2</li></ul></li></ul>',
+        )
+        expectDeclined(ed, () => {
+          const li = ed.querySelector('li') as Element
+          caretAt(li.childNodes[1], 0)
+        })
+      })
+
+      it('control: a text caret takes its item', () => {
+        const ed = surface(mode)
+        expectLine(ed, 'item one', () => textCaret(ed, 'item one'))
+      })
+      it('control: an explicit selection is untouched and not cancelled', () => {
+        const ed = surface(mode)
+        const text = ed.querySelector('p')?.firstChild as Text
+        const range = document.createRange()
+        range.setStart(text, 0)
+        range.setEnd(text, 4)
+        window.getSelection()?.removeAllRanges()
+        window.getSelection()?.addRange(range)
+        expect(fire('beforecopy')).toBe(false)
+        expect(fire('beforecut')).toBe(false)
+        expect(selectedText()).toBe('Head')
+        expect(take()).toBe(false)
+        expect(fallback(ed)).toBe(true)
+        expect(selectedText()).toBe('Head')
+      })
+      it('control: an explicit selection across table cells is untouched', () => {
+        const ed = surface(
+          mode,
+          '<table><tbody><tr><td>a1</td><td>b1</td></tr><tr><td>a2</td><td>b2</td></tr></tbody></table>',
+        )
+        const cells = ed.querySelectorAll('td')
+        const range = document.createRange()
+        range.setStart(cells[0].firstChild as Text, 0)
+        range.setEnd(cells[3].firstChild as Text, 2)
+        window.getSelection()?.removeAllRanges()
+        window.getSelection()?.addRange(range)
+        expect(fire('beforecopy')).toBe(false)
+        expect(fire('beforecut')).toBe(false)
+        expect(selectedText()).toBe('a1b1a2b2')
+        expect(take()).toBe(false)
+      })
+      it('control: an empty paragraph declines', () => {
+        const ed = surface(mode, '<p></p><p>x</p>')
+        expectDeclined(ed, () => caretAt(ed.querySelector('p') as Element, 0))
+      })
+      it('focus on a control inside the mode wrapper but outside the surface does not expand', () => {
+        const ed = surface(mode)
+        ;(document.getElementById('panel') as HTMLButtonElement).focus()
+        textCaret(ed, 'item one')
+        expect(fire('beforecopy')).toBe(false)
+        expect(collapsed()).toBe(true)
+        textCaret(ed, 'item one')
+        expect(fire('beforecut')).toBe(false)
+        expect(take()).toBe(true)
+      })
+      it('a wrapper whose first child is not the editable pre does not expand', () => {
+        document.body.innerHTML =
+          `<div class="vditor-${mode}"><div class="vditor-panel" id="ed" contenteditable="true"><p>Head ALPHA</p></div>` +
+          '<pre class="vditor-reset" contenteditable="true"><p>other</p></pre></div>'
+        const ed = document.getElementById('ed') as HTMLElement
+        ed.focus()
+        textCaret(ed, 'Head')
+        expect(fire('beforecopy')).toBe(false)
+        expect(collapsed()).toBe(true)
+        textCaret(ed, 'Head')
+        expect(fire('beforecut')).toBe(false)
+        expect(take()).toBe(true)
+      })
+    })
 })
