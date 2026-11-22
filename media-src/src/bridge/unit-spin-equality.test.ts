@@ -20,6 +20,10 @@ beforeAll(() => {
   lute = real.lute
 })
 
+// Q-263 (Q-212): under coverage instrumentation "cells: none differ" alone takes 532-544 s (dev and the
+// candidate alike) and the full coverage run exceeded 600 s; the per-test limit leaves room for that.
+const SPIN_TIMEOUT_MS = 1_500_000
+
 const FIXTURE_DIR = 'test/vscode-e2e/fixtures'
 const sources = (): Array<{ name: string; markdown: string }> => {
   const out = [{ name: 'table-heavy-1', markdown: tableHeavyMarkdown(1) }]
@@ -149,7 +153,7 @@ function measureOnce(): Measured {
 describe('unit spin equals the block spin', () => {
   // A cell refused by the shape check falls back to the block spin, so only a differing result is
   // a defect; the refused count is reported.
-  it('cells: none differ', { timeout: 600_000 }, () => {
+  it('cells: none differ', { timeout: SPIN_TIMEOUT_MS }, () => {
     const { cells, fixtures } = measure()
     expect(fixtures).toBeGreaterThan(1)
     expect(cells.equal).toBeGreaterThan(0)
@@ -166,7 +170,7 @@ describe('unit spin equals the block spin', () => {
   // Item part of the decision of 002 action 6: items spin only when 0 differ and 0 are refused for
   // the cases the hook accepts. Ordered lists are reported apart: the isolated list renumbers an
   // item to `1.`, so a later item differs.
-  it('bullet items: none differ', { timeout: 600_000 }, () => {
+  it('bullet items: none differ', { timeout: SPIN_TIMEOUT_MS }, () => {
     const { items, orderedItems } = measure()
     // biome-ignore lint/suspicious/noConsole: counts only, read by the decision of 002 action 6
     console.info(
@@ -252,7 +256,7 @@ function measurePairs(): { bullet: Counts; ordered: Counts } {
 
 describe('two-item spin equals the block spin (011)', () => {
   it('every adjacent item pair of the fixtures: none differ', {
-    timeout: 600_000,
+    timeout: SPIN_TIMEOUT_MS,
   }, () => {
     const { bullet, ordered } = measurePairs()
     // biome-ignore lint/suspicious/noConsole: counts only, no document text

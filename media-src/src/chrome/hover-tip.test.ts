@@ -16,31 +16,46 @@ const box = { width: 100, height: 26 }
 describe('placeHoverTip', () => {
   it('centres the box under the anchor', () => {
     expect(
-      placeHoverTip({ left: 300, right: 400, top: 100, bottom: 120 }, box, viewport),
+      placeHoverTip(
+        { left: 300, right: 400, top: 100, bottom: 120 },
+        box,
+        viewport,
+      ),
     ).toEqual({ left: 300, top: 120 + ROW_HOVER_GAP_PX })
   })
 
   it('flips above when below does not fit', () => {
     expect(
-      placeHoverTip({ left: 300, right: 400, top: 580, bottom: 598 }, box, viewport),
+      placeHoverTip(
+        { left: 300, right: 400, top: 580, bottom: 598 },
+        box,
+        viewport,
+      ),
     ).toEqual({ left: 300, top: 580 - ROW_HOVER_GAP_PX - box.height })
   })
 
   it('stays inside the viewport at both side edges', () => {
     expect(
-      placeHoverTip({ left: 0, right: 20, top: 10, bottom: 30 }, box, viewport).left,
+      placeHoverTip({ left: 0, right: 20, top: 10, bottom: 30 }, box, viewport)
+        .left,
     ).toBe(0)
     expect(
-      placeHoverTip({ left: 780, right: 800, top: 10, bottom: 30 }, box, viewport)
-        .left,
+      placeHoverTip(
+        { left: 780, right: 800, top: 10, bottom: 30 },
+        box,
+        viewport,
+      ).left,
     ).toBe(700)
   })
 
   it('stays below and clamped when neither side fits', () => {
     const tall = { width: 100, height: 700 }
     expect(
-      placeHoverTip({ left: 300, right: 400, top: 10, bottom: 30 }, tall, viewport)
-        .top,
+      placeHoverTip(
+        { left: 300, right: 400, top: 10, bottom: 30 },
+        tall,
+        viewport,
+      ).top,
     ).toBe(0)
   })
 })

@@ -30,7 +30,11 @@ describe('outlineEntryLabel', () => {
 describe('outlineTipAt', () => {
   it('names the entry under the label or the chevron, and writes no title', () => {
     const [item] = build(['Heading'])
-    for (const target of [item, item.querySelector('span')!, item.querySelector('svg')!]) {
+    for (const target of [
+      item,
+      item.querySelector('span')!,
+      item.querySelector('svg')!,
+    ]) {
       expect(outlineTipAt(target)).toEqual({ element: item, text: 'Heading' })
     }
     expect(item.hasAttribute('title')).toBe(false)

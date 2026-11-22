@@ -43,8 +43,7 @@ export function placeHoverTip(
 ): { left: number; top: number } {
   const below = anchor.bottom + ROW_HOVER_GAP_PX
   const above = anchor.top - ROW_HOVER_GAP_PX - box.height
-  const top =
-    below + box.height <= viewport.height || above < 0 ? below : above
+  const top = below + box.height <= viewport.height || above < 0 ? below : above
   return {
     left: clamp(
       (anchor.left + anchor.right - box.width) / 2,
@@ -61,12 +60,7 @@ export function placeHoverTip(
  */
 export function anchorRect(element: Element, x: number, y: number): Box {
   for (const rect of Array.from(element.getClientRects())) {
-    if (
-      x >= rect.left &&
-      x <= rect.right &&
-      y >= rect.top &&
-      y <= rect.bottom
-    )
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom)
       return rect
   }
   return element.getBoundingClientRect()
@@ -88,7 +82,10 @@ export interface HoverTip {
 }
 
 /** One hover box appended to `doc.body`. */
-export function createHoverTip(doc: Document, delay = HOVER_TIP_DELAY_MS): HoverTip {
+export function createHoverTip(
+  doc: Document,
+  delay = HOVER_TIP_DELAY_MS,
+): HoverTip {
   const box = doc.createElement('div')
   box.className = HOVER_TIP_CLASS
   box.setAttribute('role', 'tooltip')

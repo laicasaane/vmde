@@ -157,7 +157,9 @@ test('toolbar tooltips and More row hovers share one look and follow the tooltip
 
   // Task 732: a content tooltip (here a link's target) is the same box, never a native title. The
   // More menu stays open (a hover closes nothing), so the row reads below still work.
-  const link = frame.locator('.vditor-ir .vditor-reset a, .vditor-ir [data-type="a"]').first()
+  const link = frame
+    .locator('.vditor-ir .vditor-reset a, .vditor-ir [data-type="a"]')
+    .first()
   const contentBox = frame.locator('body > .vmde-hover-tip:not([hidden])')
   const contentStyle = async () => {
     await link.hover()
@@ -189,7 +191,11 @@ test('toolbar tooltips and More row hovers share one look and follow the tooltip
     await undo.hover()
     const controlSize = (await controlStyle()).fontSize
     const row = (await rowHoverStyle()).fontSize
-    return { control: controlSize, row, content: (await contentStyle()).fontSize }
+    return {
+      control: controlSize,
+      row,
+      content: (await contentStyle()).fontSize,
+    }
   }
   try {
     await setSize(18)
