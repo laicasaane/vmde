@@ -1,6 +1,6 @@
 # Task 733 — Edit and Undo/Redo latency on large table-heavy files
 
-**Status:** in progress (2026-11-12). Task family 1 done (design steps S0 to S4). Task family 2 running (design steps S5 to S12, 18 tasks).
+**Status:** in progress (2026-11-23). Frozen release core done: exact Undo after Replace All in IR, with the editor owning the Undo and Redo keys (commit `c6d351e8`). Follow-up work continues in a lower-priority backlog.
 **Origin:** Owner report, 2026-11-10.
 **Severity:** high. Every editing operation, Undo and Redo on the Owner's 67 KB table-heavy document takes 100 to 570 ms, 2 to 11 times the Owner's 50 ms ceiling.
 **Tech stack:** webview serializer and edit sync (`media-src/src/bridge/edit-sync.ts`, `bridge/incremental-md.ts`, `src/shared/incremental-admission.ts`), Undo engine patches and restore (`media-src/esbuild-shared.mjs`, `media-src/src/editing/undo-*.ts`), content CSS (`media-src/src/main.css`), decorators and observers (`media-src/src/links/*-decorate.ts`, `util/mutation-impact.ts`, `nav/source-block-index.ts`, `chrome/diff-markers.ts`), per-key spin (`editing/edit-activity.ts`, Vditor `ir/input.ts`), host write-back (`src/writeback/writeback-controller.ts`).
@@ -230,3 +230,15 @@ State after task family 1 (2026-11-11). Each item names the design step that own
 
 - The link, code-reference, bare-URL, caret-link, inline-picture, SVG data-image, HTML subscript and front-matter table decorators, and the mutation-impact filter, work from the changed units of each batch instead of re-scanning the editor root; a caret move inside one block runs no full decorator pass. Every case without changed units keeps the previous full pass.
 - Real VS Code: the new decorators-on-units spec, bare-URL autolink, code-reference open, inline picture, unit feed and the counter gates pass. `front-matter-table.spec.ts:208` and `html-subscript-editing.spec.ts:106` fail the same way before this step and stay open for later steps. Unit tests: 446 files, 10348 passed.
+
+### Frozen release core: exact Undo after Replace All, editor-owned Undo and Redo keys — 2026-11-23
+
+- The work was re-planned around a core that can ship on its own; recovery-path hardening and the remaining latency classes moved to a lower-priority backlog.
+- In IR, Undo and Redo after Replace All and Replace One restore the exact text as a bounded, sliced replay at factors 1 and 4; a key typed right after Undo is kept and applied after it.
+- In IR the editor owns the Undo and Redo chords at keydown. New settings: `vmde.editor.undoRedoKeys.inEditor` (turn it off to let VS Code keep the keys), `vmde.editor.undoRedoKeys.undo` and `vmde.editor.undoRedoKeys.redo` (rebind the chords).
+- The host validates every replay change (count, length and order bounds). A replay the host refuses while the user typed is kept in a Recovered edits document, so no typed text is lost.
+- Known limits recorded for the release: some factor-4 and factor-16 interaction classes over the ceiling, an isolated emission spike, Undo of a Find action evicted from history, the Select All cost (also before this work), the Source end-of-file newline, a nested Undo during a replay is refused, and WYSIWYG and Source keep their earlier paths.
+- Unit tests: 475 files, 12452 passed. `npm run quality` passes every stage.
+- Real VS Code, full default suite (390 spec files): failures either pass on rerun or fail the same way before the core, except three that are follow-up work (Subscript from the narrow More menu, Source split view, the Undo time bound on a 112 KB IR document); none loses data.
+- Latency probe, gate violations at factors 1, 4 and 16: 0, 6 and 28 (0, 9 and 28 before the core).
+- Security review of the core: no high or medium finding; the low findings (a size cap for the recovery journal, error handling for one message, workspace trust for the new key settings, table row splitting) are follow-up work.
