@@ -14,6 +14,7 @@ import {
   sessionTableWidths,
   tableResizeHandleLayout,
 } from './table-resize'
+import { createReplayBudget, type ReplayBudget } from '../bridge/replay-budget'
 import { fixResponsiveTables } from './responsive-tables'
 import { findScroller } from './toolbar-scroll-guard'
 import {
@@ -98,6 +99,8 @@ describe('table resize on the unit feed (Task 733 007)', () => {
   let emit: (change: UnitsChange) => void
   let surface: HTMLElement
   let frames: FrameRequestCallback[]
+  let resizeCallback: ((entries: { target: Element }[]) => void) | undefined
+  let replayAccount: ReplayBudget | undefined
   let dispose: () => void
   let membershipScans: number
   let measuredTables: Set<string>
@@ -139,6 +142,7 @@ describe('table resize on the unit feed (Task 733 007)', () => {
       },
       confirmNow: () => true,
       confirmedLines: () => undefined,
+      replayAccount: () => replayAccount,
     }
   }
 
@@ -175,9 +179,15 @@ describe('table resize on the unit feed (Task 733 007)', () => {
       }
     }
     vi.stubGlobal('IntersectionObserver', FakeObserver)
+    resizeCallback = undefined
+    replayAccount = undefined
     vi.stubGlobal(
       'ResizeObserver',
       class {
+        constructor(cb: (entries: { target: Element }[]) => void) {
+          // Task 733 / 036 (D): kept so a test can report a resize of one observed element.
+          resizeCallback = cb
+        }
         observe() {
           // Nothing to observe in the fake.
         }
@@ -323,6 +333,55 @@ describe('table resize on the unit feed (Task 733 007)', () => {
 
     expect(findScroller).toHaveBeenCalledTimes(2)
     expect(findScroller).toHaveBeenLastCalledWith(next)
+  })
+
+  // Task 733 / 036 (fix design 4.3): the root and the kept scroller are observed with the header rows; only
+  // a resize of the root or the scroller can change which ancestor scrolls.
+  it('keeps the scroller for a row resize and resolves it again for a root resize', () => {
+    const row = document.querySelector('#ta tr') as HTMLElement
+    resizeCallback?.([{ target: row }])
+    runFrames()
+    window.dispatchEvent(new Event('scroll'))
+    runFrames()
+
+    expect(findScroller).toHaveBeenCalledTimes(1)
+
+    resizeCallback?.([{ target: row }, { target: surface }])
+    runFrames()
+
+    expect(findScroller).toHaveBeenCalledTimes(2)
+  })
+
+  // Task 733 / 036 (fix design 4.2): the frame a feed change or a resize schedules while a replay account is
+  // open is marked when it is scheduled and charged when it runs.
+  it('charges the frame of a feed change and of a resize to the open replay account', async () => {
+    let t = 0
+    const account = createReplayBudget({ now: () => t })
+    replayAccount = account
+    const token = account.open()
+    const cell = document.querySelector('#ta td') as HTMLElement
+    cell.firstChild!.textContent = 'ab'
+    await Promise.resolve()
+    emit(change({ changed: [cellUnit(cell)] }))
+    emit(change({ changed: [cellUnit(cell)] }))
+    expect(account.stats().marks).toBe(1)
+    t = 1
+    runFrames()
+    expect(account.stats().marks).toBe(0)
+    expect(account.stats().classes.deferred?.atomics).toBe(1)
+    resizeCallback?.([{ target: document.querySelector('#ta tr') as Element }])
+    expect(account.stats().marks).toBe(1)
+    runFrames()
+    expect(account.stats().marks).toBe(0)
+    expect(account.stats().classes.deferred?.atomics).toBe(2)
+    // A disposal releases the mark of a frame that never ran.
+    emit(change({ changed: [cellUnit(cell)] }))
+    expect(account.stats().marks).toBe(1)
+    dispose()
+    dispose = () => undefined
+    expect(account.stats().marks).toBe(0)
+    account.finish(token)
+    expect(account.isOpen()).toBe(false)
   })
 
   it('schedules nothing for a class toggle by a decorator outside a table', async () => {

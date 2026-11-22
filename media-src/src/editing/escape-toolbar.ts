@@ -262,6 +262,10 @@ interface ToolbarSelectionOriginRecord extends ToolbarSelectionOrigin {
 let provisionalToolbarSelectionOrigin: ToolbarSelectionOriginRecord | null =
   null
 let consumedToolbarSelectionOrigin: ToolbarSelectionOriginRecord | null = null
+// Task 733 / 036 (review of revision 4, point 2): an Escape→Tab handoff reached the toolbar, tracked
+// apart from its origin. The origin capture rejects some ranges (editor-root endpoints); the handoff
+// still happened, so a consumer must not fall back to the live (widened) range.
+let toolbarHandoffConsumed = false
 
 function endpointLeaf(editor: HTMLElement, node: Node): HTMLElement | null {
   let element = node instanceof HTMLElement ? node : node.parentElement
@@ -306,6 +310,7 @@ function validToolbarSelectionOrigin(
 function clearToolbarSelectionOrigin(): void {
   provisionalToolbarSelectionOrigin = null
   consumedToolbarSelectionOrigin = null
+  toolbarHandoffConsumed = false
 }
 
 /** Return a clone of the original editor selection after Escape→Tab reaches the toolbar. */
@@ -319,9 +324,14 @@ export function peekConsumedToolbarSelectionOrigin(): ToolbarSelectionOrigin | n
   }
 }
 
-/** Clear the consumed Escape→Tab session, reporting whether there was one to consume. */
+/**
+ * Clear the consumed Escape→Tab session, reporting whether there was one to consume. Task 733 / 036: true
+ * also when the handoff happened but its origin was rejected (`peekConsumedToolbarSelectionOrigin` then
+ * gives null), so the caller declines instead of capturing the live range.
+ */
 export function consumeToolbarSelectionOrigin(): boolean {
-  const consumed = consumedToolbarSelectionOrigin !== null
+  const consumed = toolbarHandoffConsumed
+  toolbarHandoffConsumed = false
   consumedToolbarSelectionOrigin = null
   return consumed
 }
@@ -501,6 +511,7 @@ function onKeydown(e: KeyboardEvent): void {
     if (!rangeBeforeToolbar) captureEditorRange(false)
     consumedToolbarSelectionOrigin = provisionalToolbarSelectionOrigin
     provisionalToolbarSelectionOrigin = null
+    toolbarHandoffConsumed = true
     retryFocusToolbarUntilItLands()
   }
   if (action === 'disarmed') provisionalToolbarSelectionOrigin = null

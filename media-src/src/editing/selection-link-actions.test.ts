@@ -254,3 +254,31 @@ it('passes the proof-only normalizing option to the range capture and applies on
   )
   expect(h.host.restored).toBe(0)
 })
+
+// 036 core C4 (M1, Q-269): `editor-command-refused-during-replay`, selection link family.
+const replayHook = window as unknown as {
+  __vmdeReplayAdmit?: (prepare: boolean) => boolean
+}
+
+it('a link command the replay does not admit writes nothing and posts nothing', () => {
+  replayHook.__vmdeReplayAdmit = () => false
+  try {
+    const refused = linkHarness(PLAIN)
+    expect(refused.run()).toBe(false)
+    expect(refused.postExact).not.toHaveBeenCalled()
+    expect(refused.shown()).toBe(PLAIN.exact)
+  } finally {
+    delete replayHook.__vmdeReplayAdmit
+  }
+})
+
+it('an admitted link command during a replay posts once', () => {
+  replayHook.__vmdeReplayAdmit = () => true
+  try {
+    const admitted = linkHarness(PLAIN)
+    expect(admitted.run()).toBe(true)
+    expect(admitted.postExact).toHaveBeenCalledTimes(1)
+  } finally {
+    delete replayHook.__vmdeReplayAdmit
+  }
+})

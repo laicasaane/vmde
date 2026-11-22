@@ -24,7 +24,15 @@ import {
   type BackgroundScheduler,
   backgroundSchedulerOf,
 } from '../util/background-budget'
-import { onUnitFeed, type UnitsChange } from '../util/unit-changes'
+import {
+  onUnitFeed,
+  type UnitFeed,
+  type UnitsChange,
+} from '../util/unit-changes'
+
+type ReplayAccount = NonNullable<
+  ReturnType<NonNullable<UnitFeed['replayAccount']>>
+>
 export type { SectionFoldState } from '../../../src/shared/protocol'
 
 const FOLD_HIDDEN_ATTR = 'data-vmde-fold-hidden'
@@ -808,12 +816,13 @@ function cloneState(state: SectionFoldState): SectionFoldState {
 function applyHeadingFolds(
   editor: HTMLElement,
   foldedHeadings: readonly HeadingFoldIdentity[],
-): void {
+): readonly HTMLElement[] {
   const blocks = foldBlocks(editor)
   // Task 721: one pass by index, and no identity read without a stored fold. A large streamed
   // Preview is folded in one task at the stream's end, with thousands of headings. The fold
   // attributes are view-only: the whole pass is one quiet write.
   writeQuietly(() => foldHeadings(blocks, foldedHeadings))
+  return blocks
 }
 
 function foldHeadings(
@@ -833,6 +842,53 @@ function foldHeadings(
     for (let index = range.start + 1; index < range.end; index++)
       blocks[index]?.setAttribute(FOLD_HIDDEN_ATTR, '1')
   }
+}
+
+/** Removes the heading-owned fold attributes of one top-level block (callers write quietly). */
+function clearHeadingOwned(block: HTMLElement): void {
+  block.removeAttribute(FOLDED_ATTR)
+  block.removeAttribute(FOLDABLE_ATTR)
+  block.removeAttribute(FOLD_HIDDEN_ATTR)
+  if (block.tagName !== 'UL' && block.tagName !== 'OL')
+    delete block.dataset.vmdeFoldCount
+}
+
+// Task 733 / 036: the neighbouring top-level blocks of the edit surface (`topLevelBlocks`), without a
+// pass over the root.
+function nextFoldBlock(block: HTMLElement): HTMLElement | undefined {
+  for (let el = block.nextElementSibling; el; el = el.nextElementSibling)
+    if (el instanceof HTMLElement && el.hasAttribute('data-block')) return el
+  return undefined
+}
+
+function previousFoldBlock(block: HTMLElement): HTMLElement | undefined {
+  for (
+    let el = block.previousElementSibling;
+    el;
+    el = el.previousElementSibling
+  )
+    if (el instanceof HTMLElement && el.hasAttribute('data-block')) return el
+  return undefined
+}
+
+/**
+ * Task 733 / 036: whether a heading of `level` after `previous` lies in a folded section. Its nearest
+ * enclosing heading (the first one before it of a lower level) is folded or itself hidden; the walk stops
+ * there, and a top-level heading has none.
+ */
+function hiddenByEnclosingFold(
+  previous: HTMLElement | undefined,
+  level: number,
+): boolean {
+  if (level <= 1) return false
+  for (let block = previous; block; block = previousFoldBlock(block)) {
+    const blockLevel = foldLevel(block)
+    if (blockLevel === null || blockLevel >= level) continue
+    return (
+      block.hasAttribute(FOLDED_ATTR) || block.hasAttribute(FOLD_HIDDEN_ATTR)
+    )
+  }
+  return false
 }
 
 function applyListFoldsWithin(
@@ -1076,6 +1132,23 @@ export function createSectionFoldController(
   let pendingWhole = false
   let pendingHeadings = false
   const pendingListBlocks = new Set<HTMLElement>()
+  // Task 733 / 036 (fix design 4.3): the headings a scoped feed change replaced, refolded one section each
+  // when their level is known to be unchanged; `headingsFull` keeps today's pass over the top-level blocks
+  // (a count change, or a heading whose former level is unknown).
+  const pendingHeadingTops = new Set<HTMLElement>()
+  let headingsFull = false
+  // The fold level (0: not a heading) of the block before each top-level block, as of the last pass over
+  // the top-level blocks. A replaced heading leaves its next block in place, so that block still tells
+  // the level the heading had before the change.
+  let levelBefore = new WeakMap<HTMLElement, number>()
+  const rememberLevels = (blocks: readonly HTMLElement[]) => {
+    levelBefore = new WeakMap()
+    let previous = 0
+    for (const block of blocks) {
+      levelBefore.set(block, previous)
+      previous = foldLevel(block) ?? 0
+    }
+  }
   const surface = options.surface ?? (() => blockModeElement(vditor))
   const scheduler = options.scheduler ?? backgroundSchedulerOf(window)
   let glyphFrame = 0
@@ -1350,7 +1423,9 @@ export function createSectionFoldController(
     },
     (_editor, budget) => visitList(budget, clearFold),
     (editor) => {
-      foldHeadings(foldBlocks(editor), stored.headings)
+      const blocks = foldBlocks(editor)
+      foldHeadings(blocks, stored.headings)
+      rememberLevels(blocks)
       return true
     },
     (editor) => {
@@ -1417,7 +1492,7 @@ export function createSectionFoldController(
     applying = true
     try {
       clearFoldAttributes(editor)
-      applyHeadingFolds(editor, stored.headings)
+      rememberLevels(applyHeadingFolds(editor, stored.headings))
       applyListFolds(editor, stored.lists, markGlyphDirty)
       observeGlyphs(editor)
     } finally {
@@ -1464,12 +1539,27 @@ export function createSectionFoldController(
     scheduleFlush()
   }
 
+  // Task 733 / 036 (fix design 4.2): the replay account that a feed change marked for the scheduled
+  // flush. The flush runs charged to it (`charged(fn, true)` releases the mark); a cancelled flush
+  // releases the mark. One field read when no replay account is open.
+  let markedAccount: ReplayAccount | undefined
+  const markReplay = (feed: UnitFeed) => {
+    if (markedAccount) return
+    const account = feed.replayAccount?.()
+    if (!account?.isOpen()) return
+    account.expect()
+    markedAccount = account
+  }
+  const runFlush = () => {
+    frame = 0
+    const account = markedAccount
+    markedAccount = undefined
+    if (account) account.charged(flushPending, true)
+    else flushPending()
+  }
   const scheduleFlush = () => {
     if (frame || disposed) return
-    frame = requestAnimationFrame(() => {
-      frame = 0
-      flushPending()
-    })
+    frame = requestAnimationFrame(runFlush)
   }
 
   // Task 733 (D-13 binding rules 1 to 4): a feed change names what to reconcile. A whole change runs
@@ -1478,7 +1568,10 @@ export function createSectionFoldController(
   // non-whole change can move a fold, and nothing reads the root.
   const noteTop = (top: HTMLElement) => {
     if (top.tagName === 'UL' || top.tagName === 'OL') pendingListBlocks.add(top)
-    else if (foldLevel(top) !== null) pendingHeadings = true
+    else if (foldLevel(top) !== null) {
+      pendingHeadings = true
+      pendingHeadingTops.add(top)
+    }
   }
   const noteScoped = (change: UnitsChange, editor: HTMLElement) => {
     for (const top of change.structural)
@@ -1491,21 +1584,31 @@ export function createSectionFoldController(
   // The top-level block count at the last feed change. A spun block of the same count (a paragraph
   // respun by typing) moves no section; a changed count (an Enter split, a merge) can.
   let topCount = -1
-  const onFeedChange = (change: UnitsChange, editor: HTMLElement) => {
+  const onFeedChange = (
+    change: UnitsChange,
+    editor: HTMLElement,
+    feed: UnitFeed,
+  ) => {
     const count = editor.childElementCount
     const moved = topCount >= 0 && count !== topCount
     topCount = count
     if (change.whole) {
       pendingWhole = true
       pendingHeadings = false
+      clearPendingHeadings()
       pendingListBlocks.clear()
     } else if (!pendingWhole && !pendingFull) {
-      if (moved) pendingHeadings = true
+      if (moved) {
+        pendingHeadings = true
+        headingsFull = true
+      }
       noteScoped(change, editor)
     }
     recordFeedPass()
-    if (pendingWhole || pendingHeadings || pendingListBlocks.size > 0)
+    if (pendingWhole || pendingHeadings || pendingListBlocks.size > 0) {
+      markReplay(feed)
       scheduleFlush()
+    }
   }
   // Task 733 (run 1, R-2): the feed path keeps the observable pass statistics of the observer path
   // (`section-fold-surface`, end-to-end runs only): a whole change or a heading refold is a full
@@ -1531,22 +1634,66 @@ export function createSectionFoldController(
       isPreviewSurface(editor)
     )
       return
-    onFeedChange(change, editor)
+    onFeedChange(change, editor, feed)
   })
+
+  const clearPendingHeadings = () => {
+    pendingHeadingTops.clear()
+    headingsFull = false
+  }
 
   // The top-level blocks of a feed heading change: heading-owned attributes cleared and refolded.
   const refoldHeadings = (editor: HTMLElement) => {
     const blocks = foldBlocks(editor)
     writeQuietly(() => {
-      for (const block of blocks) {
-        block.removeAttribute(FOLDED_ATTR)
-        block.removeAttribute(FOLDABLE_ATTR)
-        block.removeAttribute(FOLD_HIDDEN_ATTR)
-        if (block.tagName !== 'UL' && block.tagName !== 'OL')
-          delete block.dataset.vmdeFoldCount
-      }
+      for (const block of blocks) clearHeadingOwned(block)
       foldHeadings(blocks, stored.headings)
     })
+    rememberLevels(blocks)
+  }
+
+  // Task 733 / 036 (fix design 4.3): a replaced heading whose level did not change moves no section
+  // boundary, so only its own section is refolded: the stored fold re-matched (`matchesStoredFold`), the
+  // section's heading-owned attributes rewritten, and the hiding of an enclosing fold kept. False, with
+  // nothing written, when the former level is unknown or differs (the caller runs the full refold).
+  const refoldSection = (
+    editor: HTMLElement,
+    heading: HTMLElement,
+  ): boolean => {
+    const level = foldLevel(heading)
+    if (level === null || heading.parentElement !== editor) return false
+    const next = nextFoldBlock(heading)
+    if (!next || levelBefore.get(next) !== level) return false
+    const previous = previousFoldBlock(heading)
+    const section: HTMLElement[] = [heading]
+    for (let block = next; block; block = nextFoldBlock(block)) {
+      const blockLevel = foldLevel(block)
+      if (blockLevel !== null && blockLevel <= level) break
+      section.push(block)
+    }
+    const hidden = hiddenByEnclosingFold(previous, level)
+    writeQuietly(() => {
+      for (const block of section) clearHeadingOwned(block)
+      foldHeadings(section, stored.headings)
+      if (hidden)
+        for (const block of section) block.setAttribute(FOLD_HIDDEN_ATTR, '1')
+    })
+    levelBefore.set(heading, previous ? (foldLevel(previous) ?? 0) : 0)
+    return true
+  }
+
+  // The scoped heading work of a frame: one section per replaced heading, or one full refold.
+  const flushHeadings = (editor: HTMLElement) => {
+    if (!headingsFull && pendingHeadingTops.size > 0) {
+      let scoped = true
+      for (const heading of pendingHeadingTops)
+        if (heading.isConnected && !refoldSection(editor, heading)) {
+          scoped = false
+          break
+        }
+      if (scoped) return
+    }
+    refoldHeadings(editor)
   }
 
   // One list of a scoped change: one query of the list, its list-owned attributes cleared, its
@@ -1584,7 +1731,7 @@ export function createSectionFoldController(
   function flushScoped(editor: HTMLElement, live: boolean): void {
     applying = true
     try {
-      if (pendingHeadings) refoldHeadings(editor)
+      if (pendingHeadings) flushHeadings(editor)
       for (const block of pendingListBlocks) {
         // The top-level list itself may be hidden by a folded heading. Reconcile only list-owned
         // descendant attributes so local list work never steals that heading-owned visibility.
@@ -1608,6 +1755,7 @@ export function createSectionFoldController(
     pendingFull = false
     pendingWhole = false
     pendingHeadings = false
+    clearPendingHeadings()
     pendingListBlocks.clear()
   }
 
@@ -1756,6 +1904,8 @@ export function createSectionFoldController(
       window.removeEventListener('resize', scheduleGlyphRefresh)
       document.fonts?.removeEventListener?.('loadingdone', scheduleGlyphRefresh)
       if (frame) cancelAnimationFrame(frame)
+      markedAccount?.release()
+      markedAccount = undefined
       if (glyphFrame) cancelAnimationFrame(glyphFrame)
       if (flushFrame) cancelAnimationFrame(flushFrame)
       cancelPreviewPass()

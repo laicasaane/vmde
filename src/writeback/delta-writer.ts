@@ -135,6 +135,25 @@ export class DeltaWriter {
     return this.run(message, walker)
   }
 
+  /** Task 733 / 036 (B0, review point 1): the payload of a reserved Undo or Redo whose restore changed
+   * no text. The webview allocated its sequence at the reservation, before later typing, so the sequence
+   * is consumed in execution order without a write; checked like any delta (epoch, then sequence). */
+  consumeEmpty(message: DeltaMessage): DeltaOutcome {
+    if (this.isLatched()) return { kind: 'dropped', why: 'refusal-limit' }
+    if (message.epoch !== this.deps.syncState.getEpoch())
+      return { kind: 'dropped', why: 'epoch' }
+    if (message.sequence !== this.accepted + 1) {
+      const outcome: DeltaOutcome = { kind: 'resync', why: 'sequence' }
+      this.countRefusal()
+      this.logOutcome(message, outcome, undefined, true)
+      return outcome
+    }
+    this.accepted = message.sequence as number
+    const outcome: DeltaOutcome = { kind: 'applied' }
+    this.logOutcome(message, outcome, undefined, true)
+    return outcome
+  }
+
   private async run(
     message: DeltaMessage,
     walker: HistoryWalker | undefined,

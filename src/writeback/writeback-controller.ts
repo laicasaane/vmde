@@ -43,6 +43,9 @@ interface WritebackDeps {
 // Task 61 v2 minimal-diff write-back, extracted from EditorSession. Owns the CLEAN
 // baseline + the per-block reserialize cache; EditorSession delegates syncToEditor +
 // setCleanBaseline to it.
+/** Task 733 / 036: what one guarded apply did (`syncExact`). */
+type ApplyResult = 'applied' | 'unchanged' | 'refused' | 'failed'
+
 export class WritebackController {
   // Task 61 — minimal-diff write-back. Keep the ORIGINAL source bytes for every block
   // the user didn't actually change; only changed blocks take Vditor's reserialized
@@ -369,6 +372,55 @@ export class WritebackController {
     }
   }
 
+  /**
+   * Task 733 / 036: the guarded exact write with `applyEdit`'s own result. `syncToEditor` reports a failed
+   * apply as written, and a concurrent write of the same bytes passes as an echo, so neither proves the
+   * apply. `applied` only when this write's `applyEdit` succeeded and the bytes re-read after it equal
+   * `content`.
+   */
+  async syncExact(
+    content: string,
+    before: string,
+    perfId?: string,
+  ): Promise<'applied' | 'unchanged' | 'refused' | 'failed'> {
+    return (await this.syncExactHeld(content, before, perfId)).result
+  }
+
+  /** Task 733 / 036 (B0, 3.4): `syncExact` plus the raw document text its guard held when it passed
+   * (the guard compares with line endings normalized, so a CRLF document may hold `before` only up to
+   * line endings). The replay pair admits that raw text, which the raw proof later compares with. */
+  async syncExactHeld(
+    content: string,
+    before: string,
+    perfId?: string,
+  ): Promise<{
+    result: 'applied' | 'unchanged' | 'refused' | 'failed'
+    heldBefore?: string
+  }> {
+    let result: ApplyResult | undefined
+    let heldBefore: string | undefined
+    const outcome = await this.syncToEditor(
+      content,
+      undefined,
+      true,
+      perfId,
+      before,
+      (reported) => {
+        result = reported
+      },
+      (held) => {
+        heldBefore = held
+      },
+    )
+    if (outcome === 'unchanged') return { result: 'unchanged' }
+    if (result === 'applied')
+      return normalize(this.deps.getDocument().getText()) === normalize(content)
+        ? { result: 'applied', heldBefore }
+        : { result: 'failed' }
+    if (outcome === 'refused') return { result: 'refused' }
+    return { result: 'failed' }
+  }
+
   /** Task 607 INV-B: an exact edit is written only while the host still holds `expectedBefore`
    * (line endings compared normalized); otherwise nothing is written and the result is `refused`.
    * Content the host already holds is `unchanged`, so a replayed history state stays harmless. */
@@ -378,6 +430,8 @@ export class WritebackController {
     exact = false,
     perfId?: string,
     expectedBefore?: string,
+    report?: (result: ApplyResult) => void,
+    noteHeld?: (held: string) => void,
   ): Promise<'written' | 'unchanged' | 'refused'> {
     this.syncsInFlight++
     try {
@@ -387,6 +441,8 @@ export class WritebackController {
         exact,
         perfId,
         expectedBefore,
+        report,
+        noteHeld,
       )
     } finally {
       if (--this.syncsInFlight === 0 && this.syncIdleWaiters.length > 0) {
@@ -403,6 +459,8 @@ export class WritebackController {
     exact: boolean,
     perfId: string | undefined,
     expectedBefore: string | undefined,
+    report?: (result: ApplyResult) => void,
+    noteHeld?: (held: string) => void,
   ): Promise<'written' | 'unchanged' | 'refused'> {
     const syncStarted = performance.now()
     this.deps.recordPerf?.(perfId, {
@@ -429,9 +487,14 @@ export class WritebackController {
       })
       return 'unchanged'
     }
-    const holdsBefore = (): boolean =>
-      expectedBefore !== undefined &&
-      normalize(expectedBefore) === normalize(document.getText())
+    // Task 733 / 036 (B0): the raw text the passing guard held, read once, for the replay pair.
+    const holdsBefore = (): boolean => {
+      if (expectedBefore === undefined) return false
+      const held = document.getText()
+      if (normalize(expectedBefore) !== normalize(held)) return false
+      noteHeld?.(held)
+      return true
+    }
     if (exact && !holdsBefore()) return 'refused'
     this.deps.recordPerf?.(perfId, {
       equalityMs: performance.now() - equalityStarted,
@@ -501,6 +564,7 @@ export class WritebackController {
       'VMDE: could not write your edit (the document changed underneath). Your change is still in the editor — save again.',
       perfId,
       exact ? holdsBefore : undefined,
+      report,
     )
     this.deps.recordPerf?.(perfId, {
       syncTotalMs: performance.now() - syncStarted,
@@ -547,6 +611,7 @@ export class WritebackController {
     errorMessage: string,
     perfId?: string,
     guard?: () => boolean,
+    report?: (result: ApplyResult) => void,
   ): Promise<boolean> {
     const queuedAt = performance.now()
     const turn = this.applyChain.then(() =>
@@ -558,6 +623,7 @@ export class WritebackController {
         perfId,
         queuedAt,
         guard,
+        report,
       ),
     )
     // Swallow so a failed turn doesn't break the chain for whatever runs after it —
@@ -577,6 +643,7 @@ export class WritebackController {
     perfId?: string,
     queuedAt = performance.now(),
     guard?: () => boolean,
+    report?: (result: ApplyResult) => void,
   ): Promise<boolean> {
     this.deps.recordPerf?.(perfId, {
       applyQueueMs: performance.now() - queuedAt,
@@ -586,9 +653,13 @@ export class WritebackController {
     // content, or made it a no-op, while this call was waiting in line.
     if (normalize(toWrite) === normalize(document.getText())) {
       this.deps.setLastSyncedContent(document.getText())
+      report?.('unchanged')
       return true
     }
-    if (guard && !guard()) return false
+    if (guard && !guard()) {
+      report?.('refused')
+      return false
+    }
     // Task 477 (instrumentation) — snapshot BEFORE the await, since these are only
     // meaningful as "what was true when this write started," not after this call's own
     // applyEdit has itself moved things. Two field reads + one Date.now() — cheap on
@@ -666,9 +737,11 @@ export class WritebackController {
           },
         )
         this.deps.showError(errorMessage)
+        report?.('failed')
         return true
       }
       this.deps.setLastSyncedContent(document.getText())
+      report?.('applied')
       return true
     } finally {
       this.deps.setActivePerf?.(undefined)

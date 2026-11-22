@@ -5,6 +5,7 @@
 // (task 151). Reads/writes the fields of sessionState it shares with vditor-init.ts;
 // state that's purely internal to message handling (lastDiffChanges,
 // inlineInitedContent) stays local to this module.
+import { escapeTableCodePipes } from '../../../src/shared/table-code-pipes'
 import {
   firstShapeViolation,
   type RequiredField,
@@ -72,6 +73,7 @@ import {
 } from '../editing/preview-task-checkboxes'
 import {
   checkpointEditorUndo,
+  exactHistoryTarget,
   recordRewrapDocumentHistory,
 } from '../editing/rewrap-command'
 import { refreshVisiblePreviewAfterHostUpdate } from '../editing/preview-state'
@@ -121,6 +123,7 @@ import {
 import { scrollToHeadingIndex } from '../nav/outline'
 import { type LineRevealRequest, revealLineOnSurface } from './line-reveal'
 import { innerVditor, type InnerVditor } from '../util/inner-vditor'
+import { applyUndoRedoKeys } from '../editing/undo-redo-keys'
 import { singleSpanDiff } from './change-set'
 import {
   openFindReplace,
@@ -422,6 +425,8 @@ function applyHostUpdate(msg: UpdateMessage): void {
 function adoptInlineInitEpoch(msg: UpdateMessage): void {
   const { sessionState } = getRouterDeps()
   const session = sessionState.modelSession
+  // 036 core C5 (R34.3): the echo waits for an active composition during a replay, as an update does.
+  if (session?.deferUpdateForComposition?.(msg, adoptInlineInitEpoch)) return
   const epoch = msg.epoch ?? 0
   if (session?.deltaPort().epoch() === epoch) {
     sessionState.deltaSync?.onUpdate(msg)
@@ -722,8 +727,49 @@ export function handleUpdate(msg: UpdateMessage) {
   }
 }
 
+/**
+ * Task 733 / 036 (E, fix design 3.5): an update with a newer epoch during a replay goes to the replay
+ * recovery first, before the unit path and the whole-document `getValue()` below: the replay ends and the
+ * host text renders through the bounded writer. false when no replay is active (today's path).
+ */
+function recoverReplayUpdate(msg: UpdateMessage): boolean {
+  const { sessionState } = getRouterDeps()
+  const session = sessionState.modelSession
+  const content = msg.raw ?? msg.content
+  const outcome = session?.recoverReplay?.(
+    content,
+    msg.epoch ?? 0,
+    msg.replayAfterOp,
+    // 036 core C5 (R3.1, R4.1): the whole render renders the recovery's updated target, with the host's
+    // content contract (`doc-sync.ts`); the seed belongs to the original text, so it is dropped.
+    (text) =>
+      applyHostUpdate({
+        ...msg,
+        content: escapeTableCodePipes(text),
+        raw: text,
+        incrementalSeed: undefined,
+      }),
+  )
+  if (outcome === undefined || outcome === 'none') return false
+  // The host text cannot render by units: whole, with no compare against the DOM's serialization.
+  if (outcome === 'fallback') {
+    applyHostUpdate(msg)
+    return true
+  }
+  getRouterDeps().cancelAutoWrap()
+  sessionState.hostRevision = msg.revision
+  // An outside text: the Undo history follows today's rule (cleared unless an owned checkbox transaction).
+  if (!ownedCheckboxHistory(msg)) historyStoreOf(innerVditor())?.reset()
+  sessionState.editSync?.reseed(msg.incrementalSeed, msg.content)
+  sessionState.editSync?.reportDocMode()
+  if (!refreshVisiblePreviewAfterHostUpdate(msg.content))
+    (window as any).__vmdeInvalidatePreview?.('content')
+  return true
+}
+
 /** A non-init update outside a deferred view and a stream: by units, by setValue, or the same text. */
 function applyLiveUpdate(msg: UpdateMessage, adoptRevision: () => void): void {
+  if (recoverReplayUpdate(msg)) return
   const byUnits = applyHostUpdateByUnits(msg)
   if (byUnits === 'applied') return
   if (byUnits === 'fallback' && vditor.getValue() !== msg.content) {
@@ -832,6 +878,8 @@ function handleConfigChanged(
   )
   // Link-open policy is a plain runtime flag — apply it live (no re-init needed).
   applyLinkOpenSetting(msg.options?.linkOpenWithModifier)
+  // Task 733 / 036 D-18: the IR-owned Undo/Redo chords apply live (validated, swapped whole).
+  applyUndoRedoKeys(msg.options?.undoRedoKeys)
   // Task 392 — paste-a-URL-as-a-link, on by default and switchable off.
   applyPasteUrlSetting(msg.options?.pasteUrlAsLink)
   // Task 640 — the wrap-hint last-piece rule applies live, before any init-only re-init below.
@@ -1273,6 +1321,36 @@ function handleRenormalizeAllLists() {
   fixAllListNumbering(window.vditor.vditor as never, editor)
 }
 
+/**
+ * Task 733 / 036 D-18: one Undo or Redo through the wrapped history store, as the `undo`/`redo` toolbar
+ * route runs it. Shared by that route (command-time) and by the IR-owned keydown (injected from
+ * boot/main.ts into editing/format-hotkey-guard.ts, which may not import this module).
+ */
+export function runHistoryMove(kind: 'undo' | 'redo'): void {
+  discardCommandSelection()
+  // Task 597: drop any caret request still live from an earlier undo checkpoint or restore (it
+  // stays armed for up to 5 s). A Palette or menu Undo reaches here with no webview key or
+  // pointer to invalidate it, and it would pull the caret this Undo restores back to the older
+  // position. The restore's own fallback (undo-restore-caret.ts) arms a fresh request.
+  invalidateCaret()
+  // Task 603 item 2: VS Code routes its Undo/Redo keys here even while the webview's Find,
+  // Replace or link-popover field has focus, where the user expects the field's own typing
+  // undone, not the document. The field's own history (editing/text-field-history.ts) runs, never
+  // `document.execCommand`: that pops Chromium's one frame-wide undo stack, whose top step
+  // belongs to the editor whenever the field has nothing left, and it unapplied that editor step
+  // (IR and SV recorded a same-text entry, a typed IR character could vanish, a WYSIWYG/SV Redo
+  // moved focus into the editor). Return even when the field has nothing to undo, so it never
+  // falls through and undoes the document instead. The editor-focused case is untouched: the
+  // engine runs exactly once (Tasks 463/580).
+  const field = focusedTextInput()
+  if (field) {
+    applyTextFieldHistory(field, kind)
+    return
+  }
+  const inner = innerVditor()
+  historyStoreOf(inner)?.[kind]()
+}
+
 // Task 505 — one of the `vmde.format.*` VS Code commands fired. There is no dedupe check here
 // any more (task 492 Phase 4's `toolbar-hotkey-dedupe.ts`, now deleted): every toolbar item a
 // command clicks has `hotkey: ''` in toolbar.ts, so Vditor's own in-webview handler never sees its
@@ -1303,28 +1381,7 @@ function handleTriggerToolbarHotkey(
   if (msg.name === 'undo' || msg.name === 'redo') {
     // Undo keeps the live selection, but its chord's snapshot is consumed here, not left for a
     // later chord-less command to restore.
-    discardCommandSelection()
-    // Task 597: drop any caret request still live from an earlier undo checkpoint or restore (it
-    // stays armed for up to 5 s). A Palette or menu Undo reaches here with no webview key or
-    // pointer to invalidate it, and it would pull the caret this Undo restores back to the older
-    // position. The restore's own fallback (undo-restore-caret.ts) arms a fresh request.
-    invalidateCaret()
-    // Task 603 item 2: VS Code routes its Undo/Redo keys here even while the webview's Find,
-    // Replace or link-popover field has focus, where the user expects the field's own typing
-    // undone, not the document. The field's own history (editing/text-field-history.ts) runs, never
-    // `document.execCommand`: that pops Chromium's one frame-wide undo stack, whose top step
-    // belongs to the editor whenever the field has nothing left, and it unapplied that editor step
-    // (IR and SV recorded a same-text entry, a typed IR character could vanish, a WYSIWYG/SV Redo
-    // moved focus into the editor). Return even when the field has nothing to undo, so it never
-    // falls through and undoes the document instead. The editor-focused case is untouched: the
-    // engine runs exactly once (Tasks 463/580).
-    const field = focusedTextInput()
-    if (field) {
-      applyTextFieldHistory(field, msg.name)
-      return
-    }
-    const inner = innerVditor()
-    historyStoreOf(inner)?.[msg.name]()
+    runHistoryMove(msg.name)
     return
   }
   // Task 580 policy 7: restore the originating chord's selection (any key, any binding); a
@@ -1373,6 +1430,25 @@ const REQUIRED_HOST_MESSAGE_FIELDS: Partial<
   'restore-baseline': [
     ['epoch', 'number'],
     ['afterSequence', 'number'],
+    ['content', 'string'],
+  ],
+  // Task 733 / 036 (B0, fix design 3.2).
+  'replay-ack': [
+    ['epoch', 'number'],
+    ['replayOp', 'number'],
+    ['acceptedSequence', 'number'],
+  ],
+  'replay-status': [
+    ['epoch', 'number'],
+    ['replayOp', 'number'],
+    ['state', 'string'],
+    ['applied', 'number'],
+    ['acceptedSequence', 'number'],
+  ],
+  'host-state': [
+    ['requestId', 'string'],
+    ['epoch', 'number'],
+    ['revision', 'number'],
     ['content', 'string'],
   ],
   'config-changed': [], // options is read via optional chaining throughout handleConfigChanged
@@ -1485,13 +1561,39 @@ function withHistorySeed<M extends HostMessage>(
   }
 }
 
+// Task 733 / 036 (B0, 3.2): a `host-state` newer than the tracked epoch is the lost epoch-changing `update`
+// and is handled exactly as that update; an older or equal one is ignored.
+function handleHostState(
+  message: Extract<HostMessage, { command: 'host-state' }>,
+): void {
+  if (!getRouterDeps().sessionState.deltaSync?.isNewerEpoch(message.epoch))
+    return
+  const { command: _command, requestId: _requestId, ...fields } = message
+  messageHandlers.update({ command: 'update', type: 'update', ...fields })
+}
+
 const messageHandlers: HostMessageHandlers = {
   // Task 733 (007): the delta publisher sees the epoch change first, so that it counts a refused delta
   // against the epoch the update ends; the session then adopts the new epoch.
   update: (msg) => {
+    // 036 core C5 (R34.3, R35.3): while a composition is active during a replay the update is queued
+    // before any publisher sees it (no op of the new epoch is allocated); its release runs this handler.
+    if (
+      getRouterDeps().sessionState.modelSession?.deferUpdateForComposition?.(
+        msg,
+        messageHandlers.update,
+      )
+    )
+      return
     // The inline-init echo is handled in `adoptInlineInitEpoch`, which tells the publisher itself.
-    if (!isInlineInitEcho(msg))
+    // H2 fix design rev2 (D6.1): an abandoned replay's pending typing is posted first, while the publisher
+    // still allocates the old epoch's operations; then it follows the new epoch.
+    if (!isInlineInitEcho(msg)) {
+      getRouterDeps().sessionState.modelSession?.flushAbandonedInput?.(
+        msg.epoch,
+      )
       getRouterDeps().sessionState.deltaSync?.onUpdate(msg)
+    }
     const { sessionState } = getRouterDeps()
     // A deferred view or a stream keeps the update for later: the host text is not shown yet.
     const shownNow = !sessionState.deferredEditView && !sessionState.streaming
@@ -1513,6 +1615,19 @@ const messageHandlers: HostMessageHandlers = {
     getRouterDeps().sessionState.deltaSync?.onRebind(message)
     getRouterDeps().sessionState.modelSession?.onRebind(message)
   },
+  // Task 733 / 036 (B0, 3.5, 3.7): the publisher drops acknowledged operations from its ledger and counts
+  // `acceptedSequence`; the session completes an awaited history move with the record's target text.
+  'replay-ack': (message) => {
+    const { sessionState } = getRouterDeps()
+    sessionState.deltaSync?.onReplayAck(message)
+    sessionState.modelSession?.onReplayAck(message, exactHistoryTarget)
+  },
+  'replay-status': (message) => {
+    const { sessionState } = getRouterDeps()
+    sessionState.deltaSync?.onReplayStatus(message)
+    sessionState.modelSession?.onReplayStatus(message, exactHistoryTarget)
+  },
+  'host-state': handleHostState,
   // Task 733 (007): the delta publisher decides by epoch and sequence whether to apply them.
   baseline: (message) =>
     getRouterDeps().sessionState.deltaSync?.onBaseline(message),
@@ -1663,7 +1778,7 @@ const messageHandlers: HostMessageHandlers = {
     const editSync = getRouterDeps().sessionState.editSync
     answerFlushForSave(
       msg.requestId,
-      editSync ? () => editSync.flush() : undefined,
+      editSync ? (done) => editSync.flushForSave(() => done()) : undefined,
       (reply) => vscode.postMessage(reply),
     )
     // Task 733: the host is about to save; the text model audits one full pass in its idle slices.

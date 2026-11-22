@@ -176,7 +176,8 @@ interface LinkTransaction {
   scrollTop: number
 }
 
-function applyLinkTransaction(transaction: LinkTransaction): void {
+/** False when a replay refused the write (nothing written); true once applied. */
+function applyLinkTransaction(transaction: LinkTransaction): boolean {
   const {
     owner,
     inner,
@@ -192,6 +193,13 @@ function applyLinkTransaction(transaction: LinkTransaction): void {
   owner.editor.focus({ preventScroll: true })
   // Transparent: puts back the range captured before the link command; doubtful, so it keeps the intent.
   writeSelectionKeepingIntent(live.range)
+  // 036 core C4 (M1, Q-269): during a replay the write is prepared and admitted, then rechecked right
+  // before it; a refused link command writes nothing.
+  if (
+    window.__vmdeReplayAdmit?.(true) === false ||
+    window.__vmdeReplayAdmit?.(false) === false
+  )
+    return false
   const insertion = marker
     ? `${plan.insertion.slice(0, -1)}${marker})`
     : plan.insertion
@@ -217,6 +225,7 @@ function applyLinkTransaction(transaction: LinkTransaction): void {
   findScroller(owner.editor).scrollTop = scrollTop
   owner.editor.focus({ preventScroll: true })
   if (urlPath) focusEmptyLinkUrl(owner.editor, urlPath)
+  return true
 }
 
 /** Replace only a validated live selection with text; publish exact bytes after Lute agrees. */
@@ -247,8 +256,9 @@ export function runSelectedLink(
   const marker =
     kind === 'link' && owner.mode === 'ir' ? uniqueLinkMarker(before) : null
   deps.setApplying(true)
+  let applied = false
   try {
-    applyLinkTransaction({
+    applied = applyLinkTransaction({
       owner,
       inner,
       before,
@@ -272,6 +282,8 @@ export function runSelectedLink(
   } finally {
     deps.setApplying(false)
   }
+  // 036 core C4 (Q-269): refused during a replay: nothing was written, nothing is posted.
+  if (!applied) return false
   deps.postExact(plan.markdown, {
     before,
     rollback: {

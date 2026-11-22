@@ -337,3 +337,41 @@ describe('runEditorAction gates', () => {
     expect(restoreSelection).not.toHaveBeenCalled()
   })
 })
+
+// 036 core C4 (M1, Q-269): `editor-command-refused-during-replay`, dispatcher family (table, heading,
+// block move and task actions): prepared and admitted, then rechecked before the runner.
+describe('036 core C4 editor-command-refused-during-replay (dispatcher)', () => {
+  it('refuses an editing action the replay does not admit, and runs an admitted one once', () => {
+    const calls: boolean[] = []
+    const admitted = { value: false }
+    cleanups.push(
+      configureEditorActionHooks({
+        admitInput: (prepare) => {
+          calls.push(prepare)
+          return admitted.value
+        },
+      }),
+    )
+    const rewrap = register('heading-2')
+    placeCaretInSurface()
+    runEditorAction('heading-2')
+    expect(rewrap).not.toHaveBeenCalled()
+    expect(h.logToHost).toHaveBeenCalledWith(
+      '[editor-action] heading-2 dropped: replay input refused',
+    )
+    admitted.value = true
+    calls.length = 0
+    runEditorAction('heading-2')
+    expect(rewrap).toHaveBeenCalledTimes(1)
+    // Prepared and admitted, then rechecked immediately before the runner.
+    expect(calls).toEqual([true, false])
+  })
+
+  it('refuses a table action in a cell the replay does not admit', () => {
+    cleanups.push(configureEditorActionHooks({ admitInput: () => false }))
+    const align = register('table-align-left')
+    placeCaretInSurface('td')
+    runEditorAction('table-align-left')
+    expect(align).not.toHaveBeenCalled()
+  })
+})

@@ -615,6 +615,46 @@ describe('commands: vmde.format.* (shared shortcut table toolbar rows)', () => {
     }
   })
 
+  // Task 733 / 036 D-18 (Q-238 as amended): the reserved `vmdeKey` tag is refused by presence, even falsy.
+  it.each([
+    ['vmde.format.undo', { vmdeKey: 'ctrl+z' }],
+    ['vmde.format.redo', { vmdeKey: '' }],
+    ['vmde.format.undo', { vmdeKey: undefined }],
+    ['vmde.format.undo', { vmdeKey: 0, other: 1 }],
+  ])(
+    'refuses %s with a reserved vmdeKey argument (%o)',
+    async (command, args) => {
+      const uri = Uri.file('/workspace/note.md')
+      mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
+      resolveProvider(uri.fsPath)
+      const run = activateAndGetCommand(command)
+      await run(args)
+      expect(mock.calls.postMessage).not.toContainEqual(
+        expect.objectContaining({ command: 'trigger-toolbar-hotkey' }),
+      )
+    },
+  )
+
+  it.each([
+    ['vmde.format.undo', 'undo', undefined],
+    ['vmde.format.undo', 'undo', { other: true }],
+    ['vmde.format.redo', 'redo', 'text'],
+    ['vmde.format.bold', 'bold', { vmdeKey: 'x' }],
+  ])(
+    'keeps posting %s for ordinary arguments (%s, %o)',
+    async (command, name, args) => {
+      const uri = Uri.file('/workspace/note.md')
+      mock.setActiveTab(new TabInputCustom(uri, VIEW_TYPE))
+      resolveProvider(uri.fsPath)
+      const run = activateAndGetCommand(command)
+      await run(args)
+      expect(mock.calls.postMessage).toContainEqual({
+        command: 'trigger-toolbar-hotkey',
+        name,
+      })
+    },
+  )
+
   it('registers all 14 toolbar-routed table commands as real VS Code commands', () => {
     const context = mock.createExtensionContext()
     activate(context as any)

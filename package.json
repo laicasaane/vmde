@@ -993,6 +993,40 @@
             "default": true,
             "description": "Open links with Ctrl+click (Cmd+click on macOS). Disable to open links with a regular click instead."
           },
+          "vmde.editor.undoRedoKeys.inEditor": {
+            "order": 9.1,
+            "scope": "window",
+            "type": "boolean",
+            "default": true,
+            "description": "In the Instant Rendering (IR) editor, handle the Undo and Redo keys listed in `#vmde.editor.undoRedoKeys.undo#` and `#vmde.editor.undoRedoKeys.redo#` inside the editor, so a key typed right after Undo is never undone by it. Turn off to let VS Code keybindings handle these keys in IR too. WYSIWYG and Source always use VS Code keybindings."
+          },
+          "vmde.editor.undoRedoKeys.undo": {
+            "order": 9.2,
+            "scope": "window",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "default": [
+              "mod+z"
+            ],
+            "description": "Undo keys handled inside the IR editor (see `#vmde.editor.undoRedoKeys.inEditor#`). Each entry is a chord such as `mod+z` or `ctrl+alt+u`: modifiers `ctrl`, `shift`, `alt`, `meta` (or `cmd`), and `mod` (Cmd on macOS, Ctrl elsewhere), plus one key; it needs Ctrl, Alt or Meta. An optional platform prefix (`mac:`, `win:`, `linux:`, `!mac:`, `!win:`, `!linux:`) limits an entry to a platform. IR only: WYSIWYG and Source use VS Code keybindings."
+          },
+          "vmde.editor.undoRedoKeys.redo": {
+            "order": 9.3,
+            "scope": "window",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "default": [
+              "mod+shift+z",
+              "!mac:ctrl+y"
+            ],
+            "description": "Redo keys handled inside the IR editor (see `#vmde.editor.undoRedoKeys.inEditor#`), in the same format as `#vmde.editor.undoRedoKeys.undo#`. IR only: WYSIWYG and Source use VS Code keybindings."
+          },
           "vmde.editor.slugifyMode": {
             "order": 10,
             "scope": "resource",

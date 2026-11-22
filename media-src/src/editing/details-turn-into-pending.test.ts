@@ -219,8 +219,12 @@ for (const mode of ['ir', 'wysiwyg'] as const) {
         )
       }
       // Lifecycle completion must schedule the deferred fallback without a fresh selection event.
+      // Task 733 / 036 (Q8 (a), edited): the resumed passive state no longer captures (no markers); it
+      // shows the enabled `wrap`. A disabled sentinel proves the deferred update ran.
+      view.button.disabled = true
       vi.advanceTimersByTime(40)
-      expect(insertNode.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(view.button.disabled).toBe(false)
+      expect(insertNode).not.toHaveBeenCalled()
     })
   }
 }
@@ -248,8 +252,12 @@ it('resumes deferred Details after the host cancels a handle-origin token', {
   vi.advanceTimersByTime(40)
   expect(insertNode).not.toHaveBeenCalled()
   cancelBlockTransformChoice(handle.token)
+  // Task 733 / 036 (Q8 (a), edited): the resumed passive state no longer captures (no markers); it
+  // shows the enabled `wrap`. A disabled sentinel proves the deferred update ran.
+  view.button.disabled = true
   vi.advanceTimersByTime(40)
-  expect(insertNode.mock.calls.length).toBeGreaterThanOrEqual(2)
+  expect(view.button.disabled).toBe(false)
+  expect(insertNode).not.toHaveBeenCalled()
 })
 
 it('keeps indexed Details state active while a Turn Into choice is pending', {
@@ -296,7 +304,11 @@ it.each(['find', 'outside'] as const)(
     ).toBe(false)
     expect(view.setValue).not.toHaveBeenCalled()
     expect(insertNode).not.toHaveBeenCalled()
+    // Task 733 / 036 (Q8 (a), edited): the resumed passive state no longer captures (no markers); it
+    // shows the enabled `wrap`. A disabled sentinel proves the deferred update ran.
+    view.button.disabled = true
     vi.advanceTimersByTime(40)
-    expect(insertNode.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(view.button.disabled).toBe(false)
+    expect(insertNode).not.toHaveBeenCalled()
   },
 )

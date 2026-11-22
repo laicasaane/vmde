@@ -34,6 +34,18 @@ interface TableActionDeps {
 }
 
 let deps: TableActionDeps | undefined
+// Task 733 / 036 (step C, fix design 2.6): the logical bytes of a table during an exact history replay
+// (its `l` range); undefined outside a replay. Provided by boot/finish-init.ts.
+let replayTableSource:
+  | ((table: HTMLTableElement) => string | undefined)
+  | undefined
+
+/** Task 733 / 036 (step C): installs the replay's table reader (undefined removes it). */
+export function provideReplayTableSource(
+  reader: ((table: HTMLTableElement) => string | undefined) | undefined,
+): void {
+  replayTableSource = reader
+}
 let transactionGeneration = 0
 let applyingTableTransaction = false
 let expectedTableMutation = false
@@ -369,6 +381,18 @@ export function tableRectangleClipboard(
   if (!deps || !window.vditor) return null
   const root = activeModeElement(window.vditor)
   if (!root?.contains(table)) return null
+  // Task 733 / 036 (step C, 2.6): during a replay the table index is not resolved against a whole
+  // `getValue()` of a DOM whose other groups are still pending; the table's own logical bytes are read.
+  const replaySource = replayTableSource?.(table)
+  if (replaySource !== undefined)
+    return tableRectangleMarkdownAt(
+      replaySource,
+      0,
+      anchorRow,
+      focusRow,
+      anchorColumn,
+      focusColumn,
+    )
   const tableIndex = tableIndexFor(root, table)
   // Task 607: a clipboard copy never waits for authority; without an owned exact source the
   // rectangle has no markdown form, so copy falls back to the plain cell text.

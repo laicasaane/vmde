@@ -97,6 +97,20 @@ async function settleSelection(ctx: Ctx) {
   await ctx.kit.workbox.waitForTimeout(TOOLBAR_SETTLE_MS)
 }
 
+// Task 733 / 036 D-18: `vmde.editor.undoRedoKeys.inEditor` (undefined restores the default).
+// The host bridge cannot pass `null` or `undefined`: 'default' is mapped to `undefined` in the host.
+async function setUndoOwnership(kit: Kit, value: boolean | undefined) {
+  await kit.host(async (vscode, next: boolean | 'default') => {
+    await vscode.workspace
+      .getConfiguration('vmde')
+      .update(
+        'editor.undoRedoKeys.inEditor',
+        next === 'default' ? undefined : next,
+        vscode.ConfigurationTarget.Global,
+      )
+  }, value ?? 'default')
+}
+
 const LINK_TARGET = 'remap-link-target.txt'
 const LINK_DOC = `see [linkword](${LINK_TARGET}) here\n`
 
@@ -449,6 +463,9 @@ test.describe('Task 580 CP4-2 user keybindings rebind VMDE commands (OS-level XT
         : null
       mkdirSync(path.dirname(keybindings), { recursive: true })
       writeFileSync(keybindings, JSON.stringify(USER_KEYBINDINGS, null, 2))
+      // Task 733 / 036 D-18: the IR editor owns its Undo/Redo keys by default, so a user keybinding
+      // does not move them there; this spec proves the keybinding path, with ownership off.
+      await setUndoOwnership(kit, false)
       await kit.workbox.waitForTimeout(KEYBINDINGS_RELOAD_MS)
       const results: Record<string, unknown>[] = []
       const contexts: Ctx[] = []
@@ -475,6 +492,7 @@ test.describe('Task 580 CP4-2 user keybindings rebind VMDE commands (OS-level XT
       } finally {
         if (previous === null) writeFileSync(keybindings, '[]')
         else writeFileSync(keybindings, previous)
+        await setUndoOwnership(kit, undefined)
         await disposeObservers(kit)
         for (const ctx of contexts) {
           results.push(...ctx.results)

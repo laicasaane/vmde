@@ -286,3 +286,68 @@ describe('020 mode switch text between IR and WYSIWYG', () => {
     },
   )
 })
+
+// 036 core C2 (R5.2, stop test `source-handoff-after-replay`, order case): a switch out of IR during a live
+// replay opens with the logical replay text, asked before the `SOURCE_UNITS` and unit-mode conditions.
+describe('036 core C2 Source handoff after a replay', () => {
+  interface SwitchHooks {
+    __vmdeModeSwitchText?(vditor: unknown, mode: string): string | undefined
+  }
+  const LOGICAL = 'logical text\n'
+  async function installWith(
+    replayText: () => string | undefined,
+    modeSwitchText: () => string | undefined = () => 'owned\n',
+  ): Promise<SwitchHooks> {
+    const module = (await import(/* @vite-ignore */ SPIN)) as {
+      installSourceInputHooks(
+        win: Window,
+        deps: {
+          modeSwitchText?(): string | undefined
+          replayText?(): string | undefined
+        },
+      ): () => void
+    }
+    uninstall = module.installSourceInputHooks(window, {
+      modeSwitchText,
+      replayText,
+    })
+    return window as unknown as SwitchHooks
+  }
+  afterEach(() => {
+    sourceUnitsOn.value = false
+  })
+
+  it('answers IR to Source with L while a replay is live, with SOURCE_UNITS off', async () => {
+    sourceUnitsOn.value = false
+    const win = await installWith(() => LOGICAL)
+    expect(win.__vmdeModeSwitchText?.({ currentMode: 'ir' }, 'sv')).toBe(
+      LOGICAL,
+    )
+    expect(win.__vmdeModeSwitchText?.({ currentMode: 'ir' }, 'wysiwyg')).toBe(
+      LOGICAL,
+    )
+  })
+
+  it('takes L before the model text when SOURCE_UNITS is on', async () => {
+    sourceUnitsOn.value = true
+    const win = await installWith(() => LOGICAL)
+    expect(win.__vmdeModeSwitchText?.({ currentMode: 'ir' }, 'sv')).toBe(
+      LOGICAL,
+    )
+  })
+
+  it('keeps the old answer with no live replay, and never asks for L outside IR', async () => {
+    const replayText = vi.fn(() => undefined)
+    const win = await installWith(replayText)
+    expect(
+      win.__vmdeModeSwitchText?.({ currentMode: 'ir' }, 'sv'),
+    ).toBeUndefined()
+    replayText.mockClear()
+    const asked = vi.fn(() => LOGICAL)
+    const other = await installWith(asked)
+    expect(
+      other.__vmdeModeSwitchText?.({ currentMode: 'sv' }, 'ir'),
+    ).toBeUndefined()
+    expect(asked).not.toHaveBeenCalled()
+  })
+})

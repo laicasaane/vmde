@@ -34,6 +34,7 @@ import {
   handleUpdate,
   installMessageRouter,
   markInlineInited,
+  runHistoryMove,
 } from '../bridge/message-router'
 // Vditor's index.css is NOT bundled here. The host links the COPIED media/vditor/dist/index.css
 // (html-builder.ts) — the same single copy the harness and HTML-export load — so build.mjs
@@ -82,6 +83,7 @@ import {
 import { type HistoryMode, historyStoreOf } from '../editing/history-store'
 import {
   configureEditorActionHooks,
+  focusedTextInput,
   registerEditorActionRunner,
 } from '../bridge/editor-actions'
 import { foldAtCaret, unfoldAtCaret } from '../nav/section-fold'
@@ -132,6 +134,7 @@ import {
   isPrimaryPointerHeld,
 } from '../editing/caret'
 import { installUndoRestoreCaret } from '../editing/undo-restore-caret'
+import { currentUndoRedoMatcher } from '../editing/undo-redo-keys'
 import {
   guardComposition,
   installCompositionState,
@@ -319,7 +322,7 @@ const acquireActionAuthority = (opts?: {
   sessionState.editSync?.acquireExactAuthority(opts) ?? Promise.resolve(null)
 const postActionExact = (
   markdown: string,
-  opts?: { rollback?: { restore(): void } },
+  opts?: { rollback?: { restore(): void }; replayableBefore?: string },
 ) => sessionState.editSync?.postExact(markdown, opts)
 
 // Task 630: both outline routes pull the host text (publish) and use the host-planned handshake;
@@ -766,7 +769,20 @@ installMessageRouter(window)
 // Task 505 / Task 580 policy 7 — must be installed before the first keypress: blocks the
 // browser's native contenteditable Ctrl/Cmd+B/I/U (and select-all on the editing surface) whatever
 // the user binds, and takes the command selection snapshot. See format-hotkey-guard.ts's header.
-setupFormatHotkeyGuard(window)
+// Task 733 / 036 D-18: the IR editor owns its Undo/Redo chords at keydown (settings
+// vmde.editor.undoRedoKeys.*). Getters: this listener outlives every editor instance.
+setupFormatHotkeyGuard(window, {
+  matcher: currentUndoRedoMatcher,
+  viewReady: () =>
+    sessionState.deferredEditView === null && !sessionState.streaming,
+  ownsHistoryNow: (inner) =>
+    window.__vmdeUnitHistory?.ownsHistoryNow(inner) ?? false,
+  focusedField: focusedTextInput,
+  cancelAutoWrap: () => autoWrapController.cancel(),
+  run: runHistoryMove,
+  // 036 core C3 (L1): the replay's next frame yields to a user input.
+  noteInput: () => sessionState.modelSession?.noteInput?.(),
+})
 // Task 603 item 2: record every Find, Replace and popover text field's own edits from the first
 // keypress, so Undo/Redo in a focused field can run that field's history (message-router.ts) and
 // never the browser's frame-wide undo stack.
@@ -781,6 +797,8 @@ configureEditorActionHooks({
   takeUndoBoundary: (action) => {
     takeEditorActionUndoBoundary(action)
   },
+  // 036 core C4 (M1, Q-269): the replay admission (boot/finish-init.ts `installReplayAdmission`).
+  admitInput: (prepare) => window.__vmdeReplayAdmit?.(prepare) ?? true,
 })
 // Task 580 CP2-4 — Fold and Unfold (`vmde.fold` / `vmde.unfold`, VS Code's editor.fold and
 // editor.unfold keys) act on the section-fold controller of the current editor.

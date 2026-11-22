@@ -451,16 +451,27 @@ interface UndoBoundaryOptions {
   /** Task 733 / 009: publish the boundary's state through the text model now; true when it did,
    * so the boundary skips its whole-document serialization. Read inside the boundary's timeout. */
   publishNow?: () => boolean
+  /**
+   * Task 733 / 036 (re-review finding 1): the unit history's `peekExact`, asked after the checkpoint drain.
+   * True: the move is a tagged exact replay with nothing pending, so the outstanding-input flush is
+   * skipped (a pending post holds no recorded change and would publish whole text first).
+   */
+  exactMove?: (inner: unknown, kind: 'undo' | 'redo') => boolean
 }
 
 // The installed editor's history preparation, or undefined before init and after dispose.
-let historyPreparation: ((inner: unknown) => boolean) | undefined
+let historyPreparation:
+  | ((inner: unknown, kind?: 'undo' | 'redo') => boolean)
+  | undefined
 
 /** Task 601 — settle the pending edit before an Undo/Redo engine call (undo-keybind.ts wrapper and
  * the toolbar Undo/Redo capture). Returns false when the history call must not run (IME
  * composition); true otherwise, including for another editor instance and before install. */
-export function preparePendingHistory(inner: unknown): boolean {
-  return historyPreparation?.(inner) ?? true
+export function preparePendingHistory(
+  inner: unknown,
+  kind?: 'undo' | 'redo',
+): boolean {
+  return historyPreparation?.(inner, kind) ?? true
 }
 
 const HISTORY_BUTTONS = ['undo', 'redo'] as const
@@ -669,7 +680,7 @@ export function installUndoBoundaries(
   // composition the history call is refused outright (the handoff's rule): Vditor's callback cannot
   // record a half-composed word, the host flush must not publish one, and an engine call would
   // rewrite the DOM under the composition. Refused, not queued: nothing replays after compositionend.
-  const prepareHistory = (target: unknown): boolean => {
+  const prepareHistory = (target: unknown, kind?: 'undo' | 'redo'): boolean => {
     const current = inner()
     if (target !== current) return true
     if (isCompositionActive()) {
@@ -685,6 +696,8 @@ export function installUndoBoundaries(
       // A failing callback must not also cancel the Undo the user asked for.
       reportError(error, 'undo-boundaries: pending checkpoint')
     }
+    // Task 733 / 036: a tagged exact move with nothing pending takes no flush (see `exactMove`).
+    if (kind !== undefined && options.exactMove?.(current, kind)) return true
     options.flushHistoryInput?.()
     return true
   }
@@ -695,11 +708,12 @@ export function installUndoBoundaries(
     const current = inner()
     if (!(event.target instanceof Node)) return
     const target = event.target
-    const clicked = HISTORY_BUTTONS.some((name) =>
+    const clicked = HISTORY_BUTTONS.find((name) =>
       current.toolbar?.elements?.[name]?.children[0]?.contains(target),
     )
     // A refused click (IME composition) never reaches Vditor's handler, so no engine call follows.
-    if (clicked && !prepareHistory(current)) {
+    // Task 733 / 036: the clicked button's name is the direction.
+    if (clicked && !prepareHistory(current, clicked)) {
       event.preventDefault()
       event.stopImmediatePropagation()
     }

@@ -8,7 +8,7 @@ import { isHelper } from '../editing/trailing-paragraph'
 import { domKind } from '../nav/unit-pairing'
 import { DEFINITION_UNITS } from '../util/unit-changes'
 import { serializeFootnoteHtml, unitKindOf } from './definition-units'
-import { registerQuietObserver } from '../util/mutation-impact'
+import { registerQuietObserver, writeQuietly } from '../util/mutation-impact'
 import type { UnitMode } from '../util/unit-changes'
 import { isOwnHintRecord, stripWrapHints } from '../util/wrap-hint-mark'
 import { installApplyText } from './apply-text'
@@ -34,12 +34,44 @@ import {
 // host units, serializes them through the live Lute, and keeps the model's dirty flags current with
 // one MutationObserver (shared rules 2.4, 3.1, 3.4).
 
+/** A checked replacement that `UnitDomControl.prepareRender` built and has not written yet. */
+export interface PreparedRender {
+  /** Writes the replacement; returns the rendered units in source order. */
+  commit(): HostUnit<HTMLElement>[]
+}
+
 /** The observer half of the adapter; the model is attached once it is built. */
 export interface UnitDomControl {
   /** Start observing the root and mark units of `model` dirty from now on. */
   attach(model: TextModel<HTMLElement>): void
   /** Process the queued records now (before a publication reads the model). */
   drain(): void
+  /**
+   * Task 733 / 036 (fix design 2.7): one synchronous replay write (the IR adapter only; the Source adapter has none). The genuine records queued before it
+   * are handed to their handlers first (this observer and the quiet observers); the write's own records
+   * are then taken and handed to each registered write drain (the page-context stamp), and dropped for
+   * the model, which the write commits itself. A later user edit of the same nodes is a new record.
+   */
+  writeOwn?<T>(write: () => T): T
+  /** Task 733 / 036 (fix design 2.7): a handler that receives the records of each `writeOwn` write. */
+  addWriteDrain?(drain: WriteDrain): () => void
+  /**
+   * H2 fix design rev2 (D8.1): a heading written inside `writeOwn` (a replay write) skips Vditor's outline
+   * render, which spins the whole IR DOM (20-125 ms measured). True while such a render is owed.
+   */
+  outlinePending?(): boolean
+  /** H2 fix design rev2 (D8.1): runs the owed outline render once; nothing when none is owed. */
+  flushOutline?(): void
+  /**
+   * H2 fix design rev2 (D3.3, render preflight): builds and checks the replacement of `replace` by
+   * `sources` as `render` would, writing nothing; the returned commit writes exactly that replacement
+   * (and is `render`'s own write). Undefined when `render` would refuse (a detached anchor, a list
+   * placement, a row shape, a kind). The caller commits before any other DOM change.
+   */
+  prepareRender?(
+    sources: readonly ApplySource[],
+    replace: readonly HTMLElement[],
+  ): PreparedRender | undefined
   /** Stop observing and drop what is queued. */
   detach(): void
   /**
@@ -48,6 +80,15 @@ export interface UnitDomControl {
    * unit-shaped elements); undefined when a root notice has another cause. Valid only inside `onBatch`.
    */
   takeSpun(): ReadonlySet<HTMLElement> | undefined
+}
+
+/** Task 733 / 036: an observer whose records of a replay write are handled inside the write (2.7). */
+interface WriteDrain {
+  readonly observer: MutationObserver
+  /** Genuine records queued before the write. */
+  genuine(records: MutationRecord[]): void
+  /** The write's own records. */
+  own(records: MutationRecord[]): void
 }
 
 const VIEW_ONLY_ATTRIBUTES = [
@@ -256,6 +297,11 @@ export interface UnitDomOptions {
   vditor?(): unknown
   /** Task 733 / 013: the mode of the root; absent means 'ir'. Selects the fresh-preview class and the caption mode of `render`. */
   mode?: UnitMode
+  /**
+   * 036 core C4 (R34.1): the browser delivered this observer's records (the microtask after the mutating
+   * task). Never called from `drain()`, `writeOwn` or a quiet write's hand-over.
+   */
+  onDelivered?(): void
 }
 
 interface RenderVditor {
@@ -348,12 +394,13 @@ function buildBlock(
 }
 
 /** Swaps the rows `replace` for the body rows of the row sources (same-shape tables). */
-function renderRows(
+/** The rows of a row plan, built and checked; undefined when a row does not fit its replaced row. */
+function prepareRows(
   root: HTMLElement,
   lute: UnitLute,
   sources: readonly ApplySource[],
   replace: readonly HTMLElement[],
-): HostUnit<HTMLElement>[] {
+): PreparedRender | undefined {
   const fresh: HTMLElement[] = []
   for (const [n, source] of sources.entries()) {
     const [table] = parseElements(root, lute.Md2VditorIRDOM(source.source))
@@ -363,15 +410,19 @@ function renderRows(
       !row ||
       row.children.length !== replace[n].children.length
     )
-      return sources.map((s) => ({ kind: otherKind(s.kind), members: [] }))
+      return undefined
     fresh.push(row)
   }
-  for (const [n, row] of fresh.entries()) replace[n].replaceWith(row)
-  return fresh.map((row) => ({
-    kind: 'table',
-    members: [row],
-    rows: [Array.from(row.children) as HTMLElement[]],
-  }))
+  return {
+    commit() {
+      for (const [n, row] of fresh.entries()) replace[n].replaceWith(row)
+      return fresh.map((row) => ({
+        kind: 'table',
+        members: [row],
+        rows: [Array.from(row.children) as HTMLElement[]],
+      }))
+    },
+  }
 }
 
 export function createUnitDom(
@@ -382,6 +433,7 @@ export function createUnitDom(
   // Task 733 / 017: the definition kinds exist in IR only (WYSIWYG renders definitions differently).
   const definitions = DEFINITION_UNITS && options?.mode !== 'wysiwyg'
   let model: TextModel<HTMLElement> | undefined
+  const writeDrains = new Set<WriteDrain>()
   // Created on the first mark of a batch, so a batch that marks nothing allocates nothing (R-2).
   let batchChanged: Set<Unit<HTMLElement>> | undefined
   let batchStructure: Set<'root' | Unit<HTMLElement>> | undefined
@@ -646,6 +698,25 @@ export function createUnitDom(
   // Task 733 / 010: the apply's planning and commit run on models built over this adapter.
   installApplyText()
 
+  // H2 fix design rev2 (D8.1): the depth of `writeOwn` writes, and an outline render they skipped.
+  let owning = 0
+  let outlineOwed = false
+
+  /** The code renders and image captions of one inserted element (part of `afterRender`). */
+  const renderInserted = (
+    element: HTMLElement,
+    vditor: RenderVditor,
+    mode: Parameters<typeof renderImageCaptions>[1],
+    fresh: string,
+    captions: boolean,
+  ): void => {
+    const previews = Array.from(element.querySelectorAll(fresh))
+    if (element.matches(fresh)) previews.push(element)
+    for (const preview of previews)
+      processCodeRender(preview as HTMLElement, vditor as never)
+    renderImageCaptions(element, mode, captions)
+  }
+
   /** The post-render steps of `setValue` (vditor/src/index.ts:329-343) on the inserted elements only. */
   const afterRender = (
     inserted: readonly HTMLElement[],
@@ -655,41 +726,28 @@ export function createUnitDom(
     if (!vditor) return
     const mode = options?.mode ?? 'ir'
     const fresh = mode === 'ir' ? PREVIEW_FRESH : WYSIWYG_PREVIEW_FRESH
-    for (const element of inserted) {
-      const previews = Array.from(element.querySelectorAll(fresh))
-      if (element.matches(fresh)) previews.push(element)
-      for (const preview of previews)
-        processCodeRender(preview as HTMLElement, vditor as never)
-      renderImageCaptions(
-        element,
-        mode,
-        Boolean(vditor.options?.preview?.markdown?.imageCaption),
-      )
-    }
-    if (heading) vditor.outline?.render?.(vditor)
+    const captions = Boolean(vditor.options?.preview?.markdown?.imageCaption)
+    for (const element of inserted)
+      renderInserted(element, vditor, mode, fresh, captions)
+    if (!heading) return
+    // D8.1: a replay write owes the render instead; the session runs one after the replay's last group.
+    if (owning > 0) outlineOwed = true
+    else vditor.outline?.render?.(vditor)
   }
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: build, kind check, list placement and insert are one transaction that writes nothing on any refusal
-  function render(
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: build, kind check and list placement are one check that writes nothing on any refusal
+  function prepareRender(
     sources: readonly ApplySource[],
     replace: readonly HTMLElement[],
-  ): HostUnit<HTMLElement>[] | undefined {
+  ): PreparedRender | undefined {
     if (replace.length > 0 && replace.every((el) => el.tagName === 'TR'))
-      return renderRows(root, lute, sources, replace)
-    // A deletion has no source to differ from: one extra entry makes the listing differ (010-R N1).
-    const refused = (): HostUnit<HTMLElement>[] =>
-      sources.length === 0
-        ? [{ kind: 'html', members: [] }]
-        : sources.map((source) => ({
-            kind: otherKind(source.kind),
-            members: [],
-          }))
+      return prepareRows(root, lute, sources, replace)
     const anchor = replace[0]
-    if (!anchor?.parentElement) return refused()
+    if (!anchor?.parentElement) return undefined
     const built: Built[] = []
     for (const source of sources) {
       const one = buildBlock(root, lute, source)
-      if (!one) return refused()
+      if (!one) return undefined
       built.push(one)
     }
     // Inside a list only items can be placed; replaced items must all belong to that one list.
@@ -702,13 +760,13 @@ export function createUnitDom(
       ) ||
       (inList && sources.some((source) => source.kind !== 'list-item'))
     )
-      return refused()
+      return undefined
     if (inList) {
       const list = anchor.parentElement as HTMLElement
       // A new item of another list style, or a new first number of an ordered list, would render as
       // another list or another `start` in a whole render.
       if (built.some((one) => listKey(one.nodes[0]) !== listKey(list)))
-        return refused()
+        return undefined
       // Removing the first item of an ordered list moves its `start` to the next one, which a kept
       // list does not follow (010-R N1).
       if (
@@ -717,7 +775,7 @@ export function createUnitDom(
         (built.length === 0 ||
           numberShell(built[0].nodes[0]) !== numberShell(list))
       )
-        return refused()
+        return undefined
     }
     // A new list next to a list of the same tag would render as one list in a whole render.
     if (!inList) {
@@ -729,8 +787,19 @@ export function createUnitDom(
           listKey(anchor.previousElementSibling) === listKey(firstNew)) ||
         (isList(lastNew) && listKey(after) === listKey(lastNew))
       )
-        return refused()
+        return undefined
     }
+    return { commit: () => insertBuilt(built, replace, inList, sources) }
+  }
+
+  /** Writes a checked replacement: the built nodes go before the first replaced element, which leave. */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the list grouping, insert, removal and post-render steps are the write `render` always made
+  function insertBuilt(
+    built: readonly Built[],
+    replace: readonly HTMLElement[],
+    inList: boolean,
+    sources: readonly ApplySource[],
+  ): HostUnit<HTMLElement>[] {
     const nodes: HTMLElement[] = []
     for (const one of built) {
       if (inList) {
@@ -750,7 +819,7 @@ export function createUnitDom(
       }
       nodes.push(...one.nodes)
     }
-    anchor.before(...nodes)
+    replace[0].before(...nodes)
     const lists = new Set<HTMLElement>()
     for (const el of replace) {
       if (inList && el.parentElement) lists.add(el.parentElement)
@@ -764,8 +833,25 @@ export function createUnitDom(
     return built.map((one) => one.unit)
   }
 
+  function render(
+    sources: readonly ApplySource[],
+    replace: readonly HTMLElement[],
+  ): HostUnit<HTMLElement>[] | undefined {
+    const prepared = prepareRender(sources, replace)
+    if (prepared) return prepared.commit()
+    // A refusal writes nothing and lists kinds that differ from the sources; a deletion has no source
+    // to differ from, so one extra entry makes the listing differ (010-R N1).
+    return sources.length === 0
+      ? [{ kind: 'html', members: [] }]
+      : sources.map((source) => ({
+          kind: otherKind(source.kind),
+          members: [],
+        }))
+  }
+
   return {
     render,
+    prepareRender,
     listUnits: () => listUnitsOf(root, definitions),
     html: (kind: UnitKind, el: HTMLElement) =>
       stripWrapHints(kind === 'cell' ? el.innerHTML : el.outerHTML),
@@ -805,7 +891,16 @@ export function createUnitDom(
     attach(next) {
       this.detach()
       model = next
-      observer = new MutationObserver(process)
+      // 036 core C4 (R34.1): only a browser delivery runs the hook; `drain` and `writeOwn` call `process`.
+      const onDelivered = options?.onDelivered
+      observer = new MutationObserver(
+        onDelivered
+          ? (records) => {
+              process(records)
+              onDelivered()
+            }
+          : process,
+      )
       observer.observe(root, {
         subtree: true,
         childList: true,
@@ -817,6 +912,37 @@ export function createUnitDom(
     },
     drain() {
       if (observer) process(observer.takeRecords())
+    },
+    writeOwn<T>(write: () => T): T {
+      if (observer) process(observer.takeRecords())
+      for (const extra of writeDrains)
+        extra.genuine(extra.observer.takeRecords())
+      let result: T | undefined
+      owning++
+      try {
+        writeQuietly(() => {
+          result = write()
+        })
+      } finally {
+        owning--
+        // Also when the write throws: its partial records are not a content edit.
+        observer?.takeRecords()
+        for (const extra of writeDrains) extra.own(extra.observer.takeRecords())
+      }
+      return result as T
+    },
+    outlinePending: () => outlineOwed,
+    flushOutline() {
+      if (!outlineOwed) return
+      outlineOwed = false
+      const vditor = options?.vditor?.() as RenderVditor | undefined
+      vditor?.outline?.render?.(vditor)
+    },
+    addWriteDrain(drain) {
+      writeDrains.add(drain)
+      return () => {
+        writeDrains.delete(drain)
+      }
     },
     takeSpun: () => (rootUnexplained ? undefined : spunTops),
     detach() {

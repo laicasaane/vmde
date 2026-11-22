@@ -427,7 +427,11 @@ describe('VS Code Find widget reference behavior (Task 579)', () => {
       expect(document.activeElement).toBe(view.replace)
       expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
         action === 'replace-all' ? 'omega beta omega' : 'omega beta alpha',
-        { rollback: { restore: expect.any(Function) } },
+        {
+          rollback: { restore: expect.any(Function) },
+          // Task 733 / 036: Find asks for a replay pair against its plan source.
+          replayableBefore: expect.any(String),
+        },
       )
       expect(view.addToUndoStack).toHaveBeenCalledTimes(2)
       expect(view.status()).toBe(
@@ -867,6 +871,8 @@ describe('VS Code Find widget reference behavior (Task 579)', () => {
     vi.advanceTimersByTime(32)
     expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta alpha', {
       rollback: { restore: expect.any(Function) },
+      // Task 733 / 036: Find asks for a replay pair against its plan source.
+      replayableBefore: expect.any(String),
     })
     expect(document.activeElement).toBe(view.editor)
     expect(view.status()).toBe('1 of 1')
@@ -1097,6 +1103,8 @@ describe('local widget keys and workbench forwarding', () => {
     vi.advanceTimersByTime(32)
     expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta omega', {
       rollback: { restore: expect.any(Function) },
+      // Task 733 / 036: Find asks for a replay pair against its plan source.
+      replayableBefore: expect.any(String),
     })
     expect(document.activeElement).toBe(view.replace)
   })
@@ -1551,6 +1559,8 @@ describe('Find close after a replacement (Task 599)', () => {
     vi.advanceTimersByTime(64)
     expect(view.postExact).toHaveBeenCalledExactlyOnceWith('omega beta alpha', {
       rollback: { restore: expect.any(Function) },
+      // Task 733 / 036: Find asks for a replay pair against its plan source.
+      replayableBefore: expect.any(String),
     })
     expect(view.root.hidden).toBe(true)
     expect(document.activeElement).toBe(view.editor)
@@ -1782,5 +1792,33 @@ describe('Replace after Find moved to Preview (task 643)', () => {
     expect(view.setValue).not.toHaveBeenCalled()
     expect(view.postExact).not.toHaveBeenCalled()
     expect(view.editor.textContent).toBe('alpha beta alpha')
+  })
+})
+
+// Task 733 / 036 (fix design 2.2, step A): Replace All records its hunks on the Find record of its exact
+// post, in raw offsets of the plan source, by reference to the result Replace returned.
+describe('036 Find record hunks', () => {
+  it('Replace All records the hunks of every match on the record of its request ID', async () => {
+    const view = mount('alpha beta alpha')
+    const inner = (window as any).vditor.vditor
+    inner.undo.sv = { undoStack: [{}], redoStack: [] }
+    view.addToUndoStack.mockImplementation(() =>
+      inner.undo.sv.undoStack.push({}),
+    )
+    view.postExact.mockReturnValue('036-find-hunks')
+    openFindReplace('replace')
+    view.query('alpha')
+    view.replace.value = 'omega'
+    runFindWidgetAction('replace-all')
+    vi.advanceTimersByTime(32)
+    const { exactHistoryHunks } = (await import('./rewrap-command')) as any
+    const read = exactHistoryHunks('036-find-hunks')
+    expect(read).toBeDefined()
+    expect(Array.from(read.hunks.starts)).toEqual([0, 11])
+    expect(Array.from(read.hunks.ends)).toEqual([5, 16])
+    expect(read.hunks.insert).toBe('omega')
+    expect(read.beforeExact).toBe('alpha beta alpha')
+    expect(read.afterExact).toBe('omega beta omega')
+    expect(read.normalized.incremental).toBe(true)
   })
 })

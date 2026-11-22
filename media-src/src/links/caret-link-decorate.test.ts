@@ -462,3 +462,81 @@ describe('013 B-04 observeCaretLink on the WYSIWYG fixture', () => {
     }, 60_000)
   })
 })
+
+// H2 fix design rev2 (D5.5): a scoped change away from the caret runs no leading selection pass; a change
+// that holds the caret still runs it. The stale-class cleanup of the scopes is unchanged.
+describe('observeCaretLink scoped changes away from the caret (036 H2 D5.5)', () => {
+  const listeners = new Set<(change: UnitsChange) => void>()
+  afterEach(() => {
+    provideUnitFeed(window, undefined)
+    listeners.clear()
+  })
+
+  function setup() {
+    document.body.innerHTML =
+      '<div id="app"><pre class="vditor-reset"><p>one <span data-wiki-link="1">Link</span> x</p><p>two</p><p>three <span class="vmde-caret-inside">old</span></p></pre></div>'
+    const app = document.getElementById('app') as HTMLElement
+    const ir = app.querySelector('pre') as HTMLElement
+    const feed: UnitFeed = {
+      root: ir,
+      isLive: () => true,
+      liveUnitOf: () => undefined,
+      liveUnits: () => [],
+      onUnitsChanged: (listener) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+      confirmNow: () => true,
+      confirmedLines: () => undefined,
+    }
+    provideUnitFeed(window, feed)
+    dispose = observeCaretLink(app)
+    fireFrame()
+    const [p1, p2, p3] = Array.from(ir.querySelectorAll('p')) as HTMLElement[]
+    const emit = (scope: HTMLElement) => {
+      const change = {
+        cause: 'sync',
+        whole: false,
+        changed: [
+          {
+            el: scope,
+            members: [scope],
+            kind: 'paragraph',
+            top: scope,
+          } as LiveUnit,
+        ],
+        structural: [],
+        scopes: [scope],
+      } as UnitsChange
+      for (const listener of Array.from(listeners)) listener(change)
+    }
+    return { p1, p2, p3, emit }
+  }
+
+  it('a change in another unit reads no selection; its stale class is still stripped', () => {
+    const { p1, p3, emit } = setup()
+    placeCaretIn(p1.querySelector('span')?.firstChild as Node)
+    expect(
+      p1.querySelector('span')?.classList.contains(CARET_INSIDE_CLASS),
+    ).toBe(true)
+    const reads = vi.spyOn(document, 'getSelection')
+    emit(p3)
+    expect(reads).not.toHaveBeenCalled()
+    expect(p3.querySelector(`.${CARET_INSIDE_CLASS}`)).toBeNull()
+    expect(
+      p1.querySelector('span')?.classList.contains(CARET_INSIDE_CLASS),
+    ).toBe(true)
+  })
+
+  it('a change that holds the caret runs the selection pass and decorates again', () => {
+    const { p1, emit } = setup()
+    placeCaretIn(p1.querySelector('span')?.firstChild as Node)
+    fireFrame()
+    const reads = vi.spyOn(document, 'getSelection')
+    emit(p1)
+    expect(reads).toHaveBeenCalled()
+    expect(
+      p1.querySelector('span')?.classList.contains(CARET_INSIDE_CLASS),
+    ).toBe(true)
+  })
+})

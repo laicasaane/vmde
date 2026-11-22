@@ -112,6 +112,11 @@ export interface EditorActionHooks {
   restoreSelection: (action: EditorAction) => void
   /** Take an undo boundary where the P5 baseline shows one for the action. */
   takeUndoBoundary: (action: EditorAction) => void
+  /**
+   * 036 core C4 (M1, Q-269): during a replay, whether an editing action may write at the selection
+   * (`prepare`: render the endpoint groups first). False refuses the action; the refusal is counted.
+   */
+  admitInput: (prepare: boolean) => boolean
 }
 
 const NO_HOOKS: EditorActionHooks = {
@@ -121,6 +126,7 @@ const NO_HOOKS: EditorActionHooks = {
   takeUndoBoundary: () => {
     /* no action boundary installed */
   },
+  admitInput: () => true,
 }
 
 const runners = new Map<EditorAction, EditorActionRunner>()
@@ -242,6 +248,16 @@ export function runEditorAction(action: EditorAction): void {
     return
   }
   hooks.restoreSelection(action)
+  // 036 core C4 (M1, Q-269): an editing action during a replay is prepared, admitted, and rechecked
+  // immediately before it runs; a refused one writes nothing.
+  if (spec.needsEditableSurface && !hooks.admitInput(true)) {
+    logToHost(`[editor-action] ${action} dropped: replay input refused`)
+    return
+  }
   hooks.takeUndoBoundary(action)
+  if (spec.needsEditableSurface && !hooks.admitInput(false)) {
+    logToHost(`[editor-action] ${action} dropped: replay input refused`)
+    return
+  }
   runInsideActivity(action, runner)
 }

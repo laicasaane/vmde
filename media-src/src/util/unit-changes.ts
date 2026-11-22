@@ -59,6 +59,16 @@ export interface HistoryModelPort {
     side: 'before' | 'after',
     caret?: RestoredCaret,
   ): boolean
+  /**
+   * Task 733 / 036 (F8): restore a tagged entry in prepared element chunks, one slice per animation frame
+   * within `budgetMs`; resolves true after the final slice and false when a slice's anchor no longer
+   * matches (nothing more is written). Absent until the sliced restore exists.
+   */
+  restoreSliced?(
+    capture: HistoryCapture,
+    side: 'before' | 'after',
+    budgetMs?: number,
+  ): Promise<boolean>
 }
 
 /** Task 733 / 034: the caret endpoint a unit restore hands back (`HistoryModelPort.restore`). */
@@ -88,6 +98,19 @@ export interface UnitFeed {
   confirmNow(): boolean
   /** Line ranges of the top-level units of the confirmed text; `undefined` when not confirmed. */
   confirmedLines(): readonly UnitLines[] | undefined
+  /**
+   * Task 733 / 036 (fix design 4.2): the session's replay account. A consumer that schedules deferred work
+   * from a change while it is open marks it (`expect`) and runs it inside `charged(fn, true)`, or releases
+   * the mark when the work is dropped. Absent or undefined: no account.
+   */
+  replayAccount?():
+    | {
+        isOpen(): boolean
+        expect(): void
+        release(): void
+        charged<T>(fn: () => T, marked?: boolean): T
+      }
+    | undefined
 }
 
 type FeedListener = (change: UnitsChange, feed: UnitFeed) => void

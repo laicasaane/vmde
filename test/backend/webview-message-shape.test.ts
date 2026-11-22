@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { firstWebviewMessageShapeViolation } from '../../src/webview-host/webview-message-shape'
+import {
+  firstWebviewMessageShapeViolation,
+  validReplayChanges,
+} from '../../src/webview-host/webview-message-shape'
 
 // Task 148 item 3 (payload-shape validation, host side — HALF of the fix, the other half is
 // wiring this into extension.ts's onDidReceiveMessage once that file is clear to edit). Mirrors
@@ -292,5 +295,85 @@ describe('firstWebviewMessageShapeViolation', () => {
         'history-delta',
       ),
     ).toBe('changes')
+  })
+
+  // Task 733 / 036 (F6 protocol): the shape table checks primitive types only. `history-exact` needs its
+  // sequence, direction and request ID as a number and two strings; the handler pre-checks the enum, the
+  // ID length (1 to 64) and a positive safe-integer sequence before the shape check (editor-session block
+  // "036 history-exact"). `history-exact-abandon` needs a number sequence. Absent from the table before
+  // step 2, so both commands pass unchecked today.
+  // B0 (fix design 3.2): `history-exact` also needs `epoch` and `replayOp`; `history-exact-abandon` is
+  // removed (replaced by `replay-abandon`), so it has no table entry any more.
+  it('036: requires kind, requestId, sequence, epoch and replayOp on a history-exact', () => {
+    const ok = {
+      kind: 'undo',
+      requestId: 'find-1',
+      sequence: 3,
+      epoch: 0,
+      replayOp: 1,
+    }
+    const check = (message: object, command: string) =>
+      firstWebviewMessageShapeViolation(message, command as never)
+    expect(check(ok, 'history-exact')).toBeNull()
+    expect(check({ ...ok, kind: 1 }, 'history-exact')).toBe('kind')
+    expect(check({ ...ok, requestId: 7 }, 'history-exact')).toBe('requestId')
+    expect(check({ ...ok, sequence: '3' }, 'history-exact')).toBe('sequence')
+    expect(check({ ...ok, epoch: undefined }, 'history-exact')).toBe('epoch')
+    expect(check({ ...ok, replayOp: '1' }, 'history-exact')).toBe('replayOp')
+  })
+
+  // Task 733 / 036 (B0, fix design 3.2): the new replay commands carry numbers (and a direction or a
+  // request ID); the handlers check safe integers and the enum.
+  it('036 B0: requires the fields of replay-reserve, replay-query, host-state-query, replay-abandon and recovery-done', () => {
+    const check = (message: object, command: string) =>
+      firstWebviewMessageShapeViolation(message, command as never)
+    expect(
+      check({ epoch: 0, replayOp: 1, kind: 'undo' }, 'replay-reserve'),
+    ).toBeNull()
+    expect(check({ epoch: 0, replayOp: 1 }, 'replay-reserve')).toBe('kind')
+    expect(check({ epoch: 0, replayOp: 1 }, 'replay-query')).toBeNull()
+    expect(check({ epoch: 0 }, 'replay-query')).toBe('replayOp')
+    expect(check({ requestId: 'q' }, 'host-state-query')).toBeNull()
+    expect(check({ requestId: 1 }, 'host-state-query')).toBe('requestId')
+    expect(check({ epoch: 0, replayOp: 1 }, 'replay-abandon')).toBeNull()
+    expect(check({ epoch: '0', replayOp: 1 }, 'replay-abandon')).toBe('epoch')
+    expect(check({ epoch: 2 }, 'recovery-done')).toBeNull()
+    expect(check({}, 'recovery-done')).toBe('epoch')
+  })
+})
+
+// 036 core C7 (R34.4): the replay change contract, checked before use and journaling.
+describe('validReplayChanges (036 core C7)', () => {
+  const change = (
+    start = { line: 2, character: 4 },
+    end = { line: 2, character: 8 },
+  ) => ({ start, end, oldText: 'ncjw', text: 'ZZZZ' })
+  it('accepts production deltas and the empty reserved history', () => {
+    expect(validReplayChanges([change()])).toBe(true)
+    expect(
+      validReplayChanges([
+        change({ line: 0, character: 0 }, { line: 0, character: 0 }),
+        change({ line: 3, character: 1 }, { line: 5, character: 0 }),
+      ]),
+    ).toBe(true)
+    expect(validReplayChanges([])).toBe(true)
+  })
+  it('rejects malformed changes', () => {
+    expect(validReplayChanges(undefined)).toBe(false)
+    expect(validReplayChanges([null])).toBe(false)
+    expect(validReplayChanges([{}])).toBe(false)
+    expect(validReplayChanges([change({ line: -1, character: 0 })])).toBe(false)
+    expect(
+      validReplayChanges([
+        change({ line: 2, character: 8 }, { line: 2, character: 4 }),
+      ]),
+    ).toBe(false)
+    expect(validReplayChanges([change({ line: 1.5, character: 0 })])).toBe(
+      false,
+    )
+    expect(validReplayChanges([{ ...change(), text: 7 }])).toBe(false)
+    expect(
+      validReplayChanges(Array.from({ length: 257 }, () => change())),
+    ).toBe(false)
   })
 })

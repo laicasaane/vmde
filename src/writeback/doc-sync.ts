@@ -53,6 +53,9 @@ export class DocSyncController {
   // Task 733: accepted-delta count of the epoch that a new epoch ended, until an `update` or a
   // `rebind` tells the webview. Only the first ended epoch counts: the webview last applied that one.
   private endedEpochSequence: number | undefined
+  // Task 733 / 036 (B0): the replay watermark (`replayAfterOp`) of that same ended epoch, when it carried
+  // replay operations.
+  private endedEpochReplayOp: number | undefined
 
   constructor(
     private readonly deps: DocSyncDeps,
@@ -82,7 +85,9 @@ export class DocSyncController {
     const epoch = this.syncState.getEpoch()
     this.syncState.markPostedEpoch(epoch)
     const afterSequence = this.endedEpochSequence
+    const replayAfterOp = this.endedEpochReplayOp
     this.endedEpochSequence = undefined
+    this.endedEpochReplayOp = undefined
     const normalizedContent = escapeTableCodePipes(content)
     const { previewTaskCheckboxHistory, deferIncrementalSeed, ...rest } = props
     const incrementalSeed = deferIncrementalSeed
@@ -105,6 +110,9 @@ export class DocSyncController {
       // The document text, when escaping table code pipes changed what the webview renders.
       ...(normalizedContent === content ? {} : { raw: content }),
       ...(afterSequence === undefined ? {} : { afterSequence }),
+      ...(afterSequence === undefined || replayAfterOp === undefined
+        ? {}
+        : { replayAfterOp }),
       ...rest,
       incrementalSeed,
       ...(ownedHistory
@@ -121,23 +129,58 @@ export class DocSyncController {
   }
 
   // Task 733: a new epoch ended one that had accepted `accepted` deltas; the next `update` says so.
-  noteEpochEnded(accepted: number): void {
-    this.endedEpochSequence ??= accepted
+  // Task 733 / 036 (B0): `replayApplied` is the ended epoch's replay watermark, undefined when it carried
+  // no replay operation; it is attached only together with the first ended epoch's `afterSequence`.
+  noteEpochEnded(accepted: number, replayApplied?: number): void {
+    if (this.endedEpochSequence !== undefined) return
+    this.endedEpochSequence = accepted
+    this.endedEpochReplayOp = replayApplied
+  }
+
+  // Task 733 / 036 (B0): answers `host-state-query` with the fields an `update` carries. It starts no
+  // epoch and marks nothing as posted: the webview applies it only when its epoch is newer than its own.
+  postHostState(
+    requestId: string,
+    ended: { afterSequence?: number; replayAfterOp?: number },
+  ): void {
+    const content = this.deps.getDocument().getText()
+    const normalizedContent = escapeTableCodePipes(content)
+    this.deps.postMessage({
+      command: 'host-state',
+      requestId,
+      epoch: this.syncState.getEpoch(),
+      revision: this.syncState.getExternalRevision(),
+      content: normalizedContent,
+      ...(normalizedContent === content ? {} : { raw: content }),
+      ...(ended.afterSequence === undefined
+        ? {}
+        : { afterSequence: ended.afterSequence }),
+      ...(ended.afterSequence === undefined || ended.replayAfterOp === undefined
+        ? {}
+        : { replayAfterOp: ended.replayAfterOp }),
+    })
   }
 
   // Task 733: answers a webview message or tells it about a host write it did not predict. The
   // document text is posted as it is, and later `update`s of the same text and epoch stay skipped.
-  postRebind(afterSequence: number, editSequence?: number): void {
+  // Task 733 / 036: `exact` names the replay pair admitted for this answer and the pair evicted.
+  postRebind(
+    afterSequence: number,
+    editSequence?: number,
+    exact?: { exactRequestId: string; exactEvicted?: string },
+  ): void {
     const content = this.deps.getDocument().getText()
     this.syncState.markSynced(content)
     this.syncState.markPostedEpoch(this.syncState.getEpoch())
     this.endedEpochSequence = undefined
+    this.endedEpochReplayOp = undefined
     this.deps.postMessage({
       command: 'rebind',
       epoch: this.syncState.getEpoch(),
       afterSequence,
       content,
       ...(editSequence === undefined ? {} : { editSequence }),
+      ...exact,
     })
   }
 
@@ -148,6 +191,7 @@ export class DocSyncController {
     this.syncState.markPostedEpoch(epoch)
     const afterSequence = this.endedEpochSequence
     this.endedEpochSequence = undefined
+    this.endedEpochReplayOp = undefined
     return afterSequence === undefined ? { epoch } : { epoch, afterSequence }
   }
 

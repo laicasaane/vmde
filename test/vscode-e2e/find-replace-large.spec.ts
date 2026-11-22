@@ -64,6 +64,68 @@ async function measure(
   return { ...result, mode, phase }
 }
 
+// Task 733 / 036: the host's own SHA-256 of its text, its document version and `isDirty`; no document
+// text crosses back.
+interface HostState {
+  sha256: string
+  version: number
+  isDirty: boolean
+}
+type HostEval = (fn: unknown, args: [string]) => Promise<unknown>
+const sha256 = (text: string) =>
+  createHash('sha256').update(text, 'utf8').digest('hex')
+const hostState = async (host: HostEval, file: string): Promise<HostState> =>
+  (await host(
+    async (vscode: typeof import('vscode'), [uri]: [string]) => {
+      const document = vscode.workspace.textDocuments.find(
+        (d) => d.uri.fsPath === uri,
+      )
+      if (!document) return { sha256: '', version: -1, isDirty: false }
+      const digest = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(document.getText()),
+      )
+      return {
+        sha256: Array.from(new Uint8Array(digest), (n) =>
+          n.toString(16).padStart(2, '0'),
+        ).join(''),
+        version: document.version,
+        isDirty: document.isDirty,
+      }
+    },
+    [file],
+  )) as HostState
+
+// Task 733 / 036 (settle oracle): passes only when the host hash equals `target` and the document version
+// stays unchanged for one continuous second; either mismatch resets the second. Polled every 100 ms, at
+// most 20 s. A single matching poll is not a pass (it passed while the host walk later rolled back).
+async function expectHostSettled(
+  host: HostEval,
+  file: string,
+  wait: (ms: number) => Promise<void>,
+  target: string,
+  what: string,
+): Promise<void> {
+  const want = sha256(target)
+  const deadline = Date.now() + 20_000
+  let since: number | undefined
+  let version: number | undefined
+  while (Date.now() < deadline) {
+    const now = await hostState(host, file)
+    if (now.sha256 !== want) {
+      since = undefined
+      version = undefined
+    } else if (since !== undefined && now.version === version) {
+      if (Date.now() - since >= 1_000) return
+    } else {
+      since = Date.now()
+      version = now.version
+    }
+    await wait(100)
+  }
+  throw new Error(`${what}: the host did not settle for one second`)
+}
+
 test.describe('Task 196 OS-level Find & Replace work counters', () => {
   test.skip(
     process.env.VMDE_XTEST !== '1',
@@ -232,11 +294,13 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
       await xtest.key('Escape')
       await expect(widget).toBeHidden()
       await xtest.key('ctrl+z')
-      await expect
-        .poll(async () => (await host()) === initial, {
-          message: `${mode}: one Undo restores the exact baseline`,
-        })
-        .toBe(true)
+      await expectHostSettled(
+        evaluateInVSCode as unknown as HostEval,
+        file,
+        (ms) => workbox.waitForTimeout(ms),
+        initial,
+        `${mode}: one Undo restores the exact baseline`,
+      )
       await widget.locator('[data-find]').evaluate((input) => {
         ;(input as HTMLInputElement).value = ''
       })
@@ -308,5 +372,14 @@ test.describe('Task 196 OS-level Find & Replace work counters', () => {
       await vscode.commands.executeCommand('workbench.action.files.save')
     })
     expect(readFileSync(file, 'utf8') === initial).toBe(true)
+    // Task 733 / 036 (Q4): the document is clean at the saved baseline.
+    await expect
+      .poll(
+        async () =>
+          (await hostState(evaluateInVSCode as unknown as HostEval, file))
+            .isDirty,
+        { message: 'isDirty false at the saved baseline' },
+      )
+      .toBe(false)
   })
 })

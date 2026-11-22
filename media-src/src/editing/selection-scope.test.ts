@@ -177,6 +177,8 @@ describe('find/replace widget', () => {
     expect(editor.textContent).toBe('omega beta alpha')
     expect(postExact).toHaveBeenCalledWith('omega beta alpha', {
       rollback: { restore: expect.any(Function) },
+      // Task 733 / 036: Find asks for a replay pair against its plan source.
+      replayableBefore: expect.any(String),
     })
     expect(addToUndoStack).toHaveBeenCalledTimes(2)
     root.dispatchEvent(
@@ -208,6 +210,8 @@ describe('find/replace widget', () => {
     expect(editor.textContent).toBe('omega beta omega')
     expect(postExact).toHaveBeenCalledWith('omega beta omega', {
       rollback: { restore: expect.any(Function) },
+      // Task 733 / 036: Find asks for a replay pair against its plan source.
+      replayableBefore: expect.any(String),
     })
     expect(addToUndoStack).toHaveBeenCalledTimes(2)
     dispose()
@@ -380,6 +384,8 @@ describe('find/replace exact transaction (Task 196)', () => {
     view.click('replace-all')
     expect(view.postExact).toHaveBeenCalledWith('omega  beta\n|omega|x|\n', {
       rollback: { restore: expect.any(Function) },
+      // Task 733 / 036: Find asks for a replay pair against its plan source.
+      replayableBefore: expect.any(String),
     })
     expect(view.addToUndoStack).toHaveBeenCalledTimes(2)
 
@@ -423,7 +429,11 @@ describe('find/replace exact transaction (Task 196)', () => {
     expect(view.acquire).not.toHaveBeenCalled()
     expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
       'omega beta alpha\n',
-      { rollback: { restore: expect.any(Function) } },
+      {
+        rollback: { restore: expect.any(Function) },
+        // Task 733 / 036: Find asks for a replay pair against its plan source.
+        replayableBefore: expect.any(String),
+      },
     )
     view.dispose()
   })
@@ -440,7 +450,11 @@ describe('find/replace exact transaction (Task 196)', () => {
     await vi.waitFor(() =>
       expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
         'omega beta alpha\n',
-        { rollback: { restore: expect.any(Function) } },
+        {
+          rollback: { restore: expect.any(Function) },
+          // Task 733 / 036: Find asks for a replay pair against its plan source.
+          replayableBefore: expect.any(String),
+        },
       ),
     )
     expect(view.acquire).toHaveBeenCalledOnce()
@@ -460,7 +474,11 @@ describe('find/replace exact transaction (Task 196)', () => {
     expect(view.acquire).not.toHaveBeenCalled()
     expect(view.postExact).toHaveBeenCalledExactlyOnceWith(
       'omega beta omega\n',
-      { rollback: { restore: expect.any(Function) } },
+      {
+        rollback: { restore: expect.any(Function) },
+        // Task 733 / 036: Find asks for a replay pair against its plan source.
+        replayableBefore: expect.any(String),
+      },
     )
     view.dispose()
   })

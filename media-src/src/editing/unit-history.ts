@@ -29,6 +29,7 @@ import {
 } from './history-store'
 import {
   hasRewrapDocumentHistoryTransition,
+  hasTaggedRewrapDocumentHistory,
   moveRewrapDocumentHistory,
 } from './rewrap-command'
 import { placeRestoredCaret } from './undo-restore-caret'
@@ -42,10 +43,31 @@ import { placeRestoredCaret } from './undo-restore-caret'
 
 export interface UnitHistoryDeps {
   port(): HistoryModelPort | undefined
+  /** Task 733 / 036: `exactId` names a replayable Find pair; the host replays it (`history-exact`). */
   publishHistory(
     kind: 'undo' | 'redo',
     steps: number,
+    exactId?: string,
   ): 'delta' | 'nothing' | 'fallback'
+  /**
+   * Task 733 / 036: the evicted-pair recovery, the Task 685 exact post (`postExact` with `history`,
+   * `before` and `rollback: false`).
+   */
+  postExactHistory?(exact: string, before: string, kind: 'undo' | 'redo'): void
+  /**
+   * Task 733 / 036 (F8): the model session still handles an exact replay (awaiting its answer, slicing, or
+   * abandoned until the resync update lands). Absent: busy until the engine is reinstalled.
+   */
+  exactBusy?(): boolean
+  /**
+   * Task 733 / 036 (step C, fix design 2.6): the replay's logical text is live, so input and history
+   * moves continue during the replay instead of being refused. Absent: false.
+   */
+  replayLive?(): boolean
+  /** Task 733 / 036 (step C, 2.6): before an input's default action: render its endpoints, capture its intent. */
+  beforeReplayInput?(event: Event): void
+  /** Task 733 / 036 (step C, 2.7): render the group the caret intent lies in. */
+  renderReplayCaretGroup?(): void
   lastPostedSequence(): number
   epoch(): number | undefined
   /**
@@ -67,6 +89,12 @@ interface UnitHistoryHook {
   /** Whether the engine would hold this editor's history; a read without side effects (unlike `claims`). */
   holds(vditor: unknown): boolean
   /**
+   * Task 733 / 036 D-18: the engine owns this editor's history now, for an IR-owned Undo/Redo key. A read
+   * without side effects: the editor's state exists, its last `claims` answer was true for the current
+   * mode, and `holds` still is (a port that lost eligibility after the last claim is not owned).
+   */
+  ownsHistoryNow(vditor: unknown): boolean
+  /**
    * The engine holds the history, the model is live and trusted, and the base exists (Vditor's initial
    * record ran). The end-to-end specs wait for it where they waited for Vditor's initial snapshot.
    */
@@ -78,6 +106,15 @@ interface UnitHistoryHook {
    * site (`placeRestoredCaret`); the unit engine's counterpart of the old engine's marker fallback count.
    */
   changeSites(vditor: unknown): number
+  /** Task 733 / 036 (T0): the Undo and Redo moves that restored an entry; a read for the end-to-end specs. */
+  moves(vditor: unknown): number
+  /**
+   * Task 733 / 036: the move `kind` would make is a tagged exact replay: the engine claims, nothing is
+   * pending, and the entry it pops carries a replayable or evicted Find record (one token compare).
+   */
+  peekExact(vditor: unknown, kind: 'undo' | 'redo'): boolean
+  /** Task 733 / 036 (F8): an exact replay of this editor is not handled yet; editing input is refused. */
+  historyBusy(vditor: unknown): boolean
 }
 
 declare global {
@@ -85,6 +122,16 @@ declare global {
     __vmdeUnitHistory?: UnitHistoryHook
   }
 }
+
+/** Task 733 / 036: a key that edits text (navigation, modifiers and shortcuts pass through). */
+const isEditingKey = (event: KeyboardEvent): boolean =>
+  !event.ctrlKey &&
+  !event.metaKey &&
+  (event.key.length === 1 ||
+    event.key === 'Enter' ||
+    event.key === 'Backspace' ||
+    event.key === 'Delete' ||
+    event.key === 'Tab')
 
 /** Vditor's own `stackSize`. */
 const MAX_ENTRIES = 50
@@ -135,6 +182,13 @@ interface State {
   claimedMode?: EngineMode
   /** Task 733 / 034: see `UnitHistoryHook.changeSites`. */
   changeSites: number
+  /** Task 733 / 036: see `UnitHistoryHook.moves`. */
+  moves: number
+  /**
+   * H2 fix design rev2 (D7.1): both stacks were emptied by a host text that ended an exact replay of
+   * this editor; a history key then is a counted refusal until the next entry.
+   */
+  replayReset?: boolean
 }
 
 /** Task 733 / 015: the modes the engine can hold: IR and WYSIWYG units (013) and Source (D-7). */
@@ -374,6 +428,8 @@ export function installUnitHistory(
 ): () => void {
   const states = new WeakMap<object, State>()
   let refused = 0
+  // H2 fix design rev2 (D7.1): history keys refused after a resync reset (a count only, no text).
+  let resetRefused = 0
 
   const stateOf = (vditor: Vditor): State => {
     let state = states.get(vditor)
@@ -388,6 +444,7 @@ export function installUnitHistory(
         moved: false,
         claimed: undefined,
         changeSites: 0,
+        moves: 0,
       }
       states.set(vditor, state)
     }
@@ -529,6 +586,7 @@ export function installUnitHistory(
       token: token<HistoryEntryToken>(),
     }
     state.undo.push(entry)
+    state.replayReset = false
     if (state.undo.length > MAX_ENTRIES) state.undo.shift()
     state.revision += 1
     report(vditor, state, entry.token, wasEmpty)
@@ -572,6 +630,27 @@ export function installUnitHistory(
     resetIcon(vditor)
   }
 
+  // Task 733 / 036: the editor whose replayable move is being handled.
+  let exactBusyVditor: Vditor | undefined
+  // Task 733 / 036 (step C, 2.7): the caret of the replayed step, put back before the first input.
+  let replayCaret: CaretIntent | undefined
+  const historyBusy = (vditor: Vditor): boolean => {
+    if (exactBusyVditor !== vditor) return false
+    if (deps.exactBusy?.() ?? true) return true
+    exactBusyVditor = undefined
+    return false
+  }
+  /** The entry `kind` pops carries a replayable (not evicted) Find record. */
+  const hasTaggedReplayable = (
+    vditor: Vditor,
+    kind: 'undo' | 'redo',
+  ): boolean =>
+    hasTaggedRewrapDocumentHistory(vditor as never, kind, 'replayable')
+  const peekExact = (vditor: Vditor, kind: 'undo' | 'redo'): boolean =>
+    claims(vditor) &&
+    deps.port()?.pending() === false &&
+    hasTaggedRewrapDocumentHistory(vditor as never, kind)
+
   const refuse = (vditor: Vditor, state: State): void => {
     refused += 1
     state.undo.length = 0
@@ -580,6 +659,21 @@ export function installUnitHistory(
     state.revision += 1
     resetIcon(vditor)
     logToHost(`[unit-history] restore refused (${refused} so far)`)
+  }
+
+  /**
+   * H2 fix design rev2 (D7.1, O1 (b)): a history key that finds both stacks emptied by the resync that
+   * ended a replay is refused visibly: counted, logged as a count, the toolbar icons disabled. No key is
+   * held or replayed. true when it refused.
+   */
+  const refuseAfterReset = (vditor: Vditor): boolean => {
+    const state = states.get(vditor)
+    if (!state?.replayReset || state.undo.length > 0 || state.redo.length > 0)
+      return false
+    resetRefused += 1
+    resetIcon(vditor)
+    logToHost(`[unit-history] history-reset-refused (${resetRefused} so far)`)
+    return true
   }
 
   /**
@@ -619,15 +713,29 @@ export function installUnitHistory(
     kind: 'undo' | 'redo',
     restored?: RestoredCaret,
   ): void => {
+    state.moves += 1
     const caret = placeMoveCaret(vditor, state, entry, kind, restored)
     // An exact action's record (`recordRewrapDocumentHistory`) moves with the history, as the
     // replay after Vditor's own Undo moved it; left behind, it would decline every source proof.
-    if (hasRewrapDocumentHistoryTransition(vditor as never))
-      moveRewrapDocumentHistory(vditor as never)
+    const moved = hasRewrapDocumentHistoryTransition(vditor as never)
+      ? moveRewrapDocumentHistory(vditor as never)
+      : undefined
     // A history delta always carries steps >= 1 (the host refuses 0): an entry that only whole-text
     // posts covered, or one from another epoch, asks the host to walk one step.
     const steps = entry.epoch === deps.epoch() ? Math.max(1, entry.steps) : 1
-    deps.publishHistory(kind, steps)
+    // Task 733 / 036 (F6): a replayable Find record is replayed by the host from its pair; an evicted one
+    // takes the Task 685 exact recovery with its strings; anything else, today's history delta.
+    if (moved?.state === 'replayable' && moved.requestId !== undefined) {
+      exactBusyVditor = vditor
+      deps.publishHistory(kind, steps, moved.requestId)
+    } else if (
+      moved?.state === 'evicted' &&
+      moved.exact !== undefined &&
+      moved.before !== undefined &&
+      deps.postExactHistory
+    )
+      deps.postExactHistory(moved.exact, moved.before, kind)
+    else deps.publishHistory(kind, steps)
     state.open = {
       epoch: deps.epoch(),
       sequence: deps.lastPostedSequence(),
@@ -659,15 +767,43 @@ export function installUnitHistory(
   }
 
   // One Undo or Redo; the stacks are re-read after the record that can push a pending change.
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the busy gate, the sliced exact path and today's restore are one move
   const move = (raw: unknown, kind: 'undo' | 'redo'): void => {
     const vditor = raw as Vditor
     const port = deps.port()
     if (!port || !canMove(vditor)) return
+    // Task 733 / 036 (F8): a second Undo or Redo while an exact replay is handled makes no engine call,
+    // unless the replay's logical text is live (step C, 2.6): the move then supersedes or is reserved.
+    if (historyBusy(vditor) && !(deps.replayLive?.() ?? false)) {
+      refuseAfterReset(vditor)
+      return
+    }
     record(vditor)
     const state = stateOf(vditor)
+    // Read before the pop: the token compare names the entry this move pops.
+    const sliced =
+      port.restoreSliced !== undefined && hasTaggedReplayable(vditor, kind)
     const entry = (kind === 'undo' ? state.undo : state.redo).pop()
-    if (!entry) return
+    if (!entry) {
+      refuseAfterReset(vditor)
+      return
+    }
     const side = kind === 'undo' ? 'before' : 'after'
+    if (sliced && port.restoreSliced) {
+      // Task 733 / 036 (F8): the exact replay is posted once, before the first slice, so the host replays
+      // in parallel; the session joins its answer with the final slice. A failed slice abandons it there.
+      ;(kind === 'undo' ? state.redo : state.undo).push(entry)
+      finishMove(vditor, state, entry, kind, undefined)
+      // Step C (2.7): the step's caret is put back again before an input that comes before its group renders.
+      const missing = kind === 'undo' ? entry.beforeMissing : entry.afterMissing
+      replayCaret = missing
+        ? undefined
+        : kind === 'undo'
+          ? entry.caretBefore
+          : entry.caretAfter
+      void port.restoreSliced(entry.capture, side)
+      return
+    }
     const restored = caretRequest(entry, kind)
     if (!port.restore(entry.capture, side, restored)) {
       refuse(vditor, state)
@@ -751,7 +887,20 @@ export function installUnitHistory(
   const hook: UnitHistoryHook = {
     claims,
     holds: (vditor) => holds(vditor as Vditor),
+    ownsHistoryNow: (raw) => {
+      const vditor = raw as Vditor
+      const state = states.get(vditor)
+      return (
+        state !== undefined &&
+        state.claimed === true &&
+        state.claimedMode === modeOf(vditor) &&
+        holds(vditor)
+      )
+    },
     changeSites: (raw) => states.get(raw as object)?.changeSites ?? 0,
+    moves: (raw) => states.get(raw as object)?.moves ?? 0,
+    peekExact: (raw, kind) => peekExact(raw as Vditor, kind),
+    historyBusy: (raw) => historyBusy(raw as Vditor),
     depth: (raw) => {
       const state = states.get(raw as object)
       if (!state) return { undo: 0, redo: 0 }
@@ -801,7 +950,10 @@ export function installUnitHistory(
     },
     clear(raw) {
       const vditor = raw as Vditor
-      drop(stateOf(vditor))
+      const state = stateOf(vditor)
+      drop(state)
+      // D7.1: a reset while an exact replay of this editor is handled is the resync that ended it.
+      if (exactBusyVditor === vditor) state.replayReset = true
       // Anything captured so far belongs to the history that was just cleared.
       deps.port()?.capture()
       resetIcon(vditor)
@@ -903,9 +1055,90 @@ export function installUnitHistory(
     isSourceNeutral: () => !(deps.port()?.pending() ?? true),
   }
 
+  // Task 733 / 036 (F8): while an exact replay is handled, editing input on its root is refused (Q7 (a)).
+  // Step C (fix design 2.6, 2.7) retires the refusal while the replay's logical text is live: the caret
+  // intent is put back and the endpoint groups render before the event's default action, which then
+  // continues. One field read per event outside that window; nothing is allocated.
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the live replay path and today's refusal share the root and key gates
+  const guardInput = (event: Event): void => {
+    // H2 fix design rev2 (D3.1): Cut and Copy reach the session's clipboard transaction first, before the
+    // caret intent is put back or a busy gate returns, and also after the replay ended (its token is
+    // taken once). The session keeps everything else for the native handlers.
+    if (
+      event.type === 'beforecut' ||
+      event.type === 'beforecopy' ||
+      event.type === 'cut' ||
+      event.type === 'copy'
+    ) {
+      deps.beforeReplayInput?.(event)
+      if (event.defaultPrevented || deps.replayLive?.()) return
+    }
+    const vditor = exactBusyVditor
+    if (!vditor) return
+    const target = event.target
+    const root = stateOfMode(vditor)?.element
+    if (!(target instanceof Node) || !root?.contains(target)) return
+    // A pointer selection by the user discards the caret intent (2.7).
+    if (event.type === 'pointerdown') {
+      replayCaret = undefined
+      return
+    }
+    if (deps.replayLive?.()) {
+      // H2 fix design rev2 (D3.3): an expanded deletion is proven from the selection as it is, before
+      // the caret intent could collapse it.
+      if (expandedDeletion(event)) {
+        deps.beforeReplayInput?.(event)
+        return
+      }
+      const caret = replayCaret
+      if (caret) {
+        replayCaret = undefined
+        deps.renderReplayCaretGroup?.()
+        if (requestCaret(caret as Parameters<typeof requestCaret>[0]))
+          invalidateCaret()
+      }
+      if (event.type !== 'keydown' || isEditingKey(event as KeyboardEvent))
+        deps.beforeReplayInput?.(event)
+      return
+    }
+    if (
+      event.type === 'copy' ||
+      event.type === 'beforecopy' ||
+      event.type === 'compositionstart'
+    )
+      return
+    if (event.type === 'keydown' && !isEditingKey(event as KeyboardEvent))
+      return
+    if (!historyBusy(vditor)) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+  }
+  /** Backspace or Delete, or a delete input, over an expanded selection. */
+  const expandedDeletion = (event: Event): boolean =>
+    ((event.type === 'keydown' &&
+      ((event as KeyboardEvent).key === 'Backspace' ||
+        (event as KeyboardEvent).key === 'Delete')) ||
+      (event.type === 'beforeinput' &&
+        (event as InputEvent).inputType.startsWith('delete'))) &&
+    win.getSelection()?.isCollapsed === false
+  const guarded = [
+    'keydown',
+    'beforeinput',
+    'paste',
+    'beforecut',
+    'beforecopy',
+    'cut',
+    'copy',
+    'drop',
+    'compositionstart',
+    'pointerdown',
+  ] as const
+  for (const type of guarded) win.addEventListener(type, guardInput, true)
+
   win.__vmdeUnitHistory = hook
   provideUnitHistoryDelegate(delegate)
   return () => {
+    for (const type of guarded) win.removeEventListener(type, guardInput, true)
     if (win.__vmdeUnitHistory === hook) delete win.__vmdeUnitHistory
     provideUnitHistoryDelegate(undefined)
   }

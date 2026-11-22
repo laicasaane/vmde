@@ -28,6 +28,7 @@ import {
   irFixture,
   wysiwygFixture,
 } from '../testing/budget-harness'
+import { createReplayBudget } from '../bridge/replay-budget'
 import { createBackgroundScheduler } from '../util/background-budget'
 import { tableHeavyMarkdown } from '../../../test/vscode-e2e/table-heavy-markdown'
 
@@ -1571,7 +1572,11 @@ describe('section fold on unit feed changes (Task 733, B-11)', {
     provideUnitFeed(window, undefined)
   })
 
-  function setup(factor: Factor, initialState?: SectionFoldState) {
+  function setup(
+    factor: Factor,
+    initialState?: SectionFoldState,
+    replayAccount?: UnitFeed['replayAccount'],
+  ) {
     const ir = irFixture(tableHeavyMarkdown(factor), () => undefined).root
     const frames: FrameRequestCallback[] = []
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
@@ -1592,6 +1597,7 @@ describe('section fold on unit feed changes (Task 733, B-11)', {
       },
       confirmNow: () => true,
       confirmedLines: () => undefined,
+      replayAccount,
     }
     provideUnitFeed(window, feed)
     const emit = (change: Change) => {
@@ -1603,7 +1609,7 @@ describe('section fold on unit feed changes (Task 733, B-11)', {
       }
       for (const listener of Array.from(listeners)) listener(full)
     }
-    createSectionFoldController({} as never, {
+    const controller = createSectionFoldController({} as never, {
       surface: () => ir,
       initialState,
     })
@@ -1616,8 +1622,56 @@ describe('section fold on unit feed changes (Task 733, B-11)', {
           for (const frame of frames.splice(0)) frame(0)
       }).counts
     const list = ir.querySelector<HTMLElement>(':scope > ul')!
-    return { ir, emit, runFrames, list }
+    return { ir, emit, runFrames, list, controller }
   }
+
+  // Task 733 / 036 (fix design 4.2): a flush that a feed change schedules while a replay account is open
+  // is marked when it is scheduled and charged when it runs; a cancelled flush releases its mark.
+  describe('replay account (036)', () => {
+    const headingChange = (ir: HTMLElement): Change => {
+      const heading = Array.from(ir.children).find(
+        (block) => block.textContent === '## Items',
+      ) as HTMLElement
+      return {
+        whole: false,
+        changed: [unit(heading, 'heading')],
+        structural: [heading],
+        scopes: [heading],
+      }
+    }
+
+    it('charges the scheduled refold to the open account', async () => {
+      let t = 0
+      const account = createReplayBudget({ now: () => t })
+      const token = account.open()
+      const { ir, emit, runFrames } = setup(1, undefined, () => account)
+      emit(headingChange(ir))
+      emit(headingChange(ir))
+      expect(account.stats().marks).toBe(1)
+      await settle()
+      t = 1
+      runFrames()
+      const stats = account.stats()
+      expect(stats.marks).toBe(0)
+      expect(stats.classes.deferred?.atomics).toBe(1)
+      account.finish(token)
+      expect(account.isOpen()).toBe(false)
+    })
+
+    it('marks nothing while the account is closed, and a disposal releases a pending mark', () => {
+      const account = createReplayBudget({ now: () => 0 })
+      const closed = setup(1, undefined, () => account)
+      closed.emit(headingChange(closed.ir))
+      expect(account.stats().marks).toBe(0)
+      closed.controller.dispose()
+      account.open()
+      const { ir, emit, controller } = setup(1, undefined, () => account)
+      emit(headingChange(ir))
+      expect(account.stats().marks).toBe(1)
+      controller.dispose()
+      expect(account.stats().marks).toBe(0)
+    })
+  })
 
   describe.each([1, 4, 16] as Factor[])('at factor %i', (factor) => {
     it('a paragraph change makes no root query', async () => {
@@ -1715,6 +1769,152 @@ describe('section fold on unit feed changes (Task 733, B-11)', {
     expect(counts.nodesWalked + counts.queriedNodes).toBeLessThanOrEqual(
       ir.childElementCount + nodesIn(respun),
     )
+  })
+
+  // Task 733 / 036 (fix design 4.3): a same-level heading change moves no section boundary, so only the
+  // replaced heading's section is refolded; a level change keeps the pass over the top-level blocks.
+  describe('a replaced heading refolds its own section (036)', () => {
+    const headingNamed = (ir: HTMLElement, text: string) =>
+      Array.from(ir.children).find(
+        (block) => block.textContent === text,
+      ) as HTMLElement
+    /** The respin of `heading` with its label text changed, as a Lute render gives it (no fold state). */
+    const respin = (heading: HTMLElement, html?: string): HTMLElement => {
+      const template = document.createElement('template')
+      template.innerHTML = html ?? heading.outerHTML
+      const respun = template.content.firstElementChild as HTMLElement
+      respun.removeAttribute('data-vmde-folded')
+      respun.removeAttribute('data-vmde-foldable')
+      respun.removeAttribute('data-vmde-fold-hidden')
+      delete respun.dataset.vmdeFoldCount
+      heading.replaceWith(respun)
+      return respun
+    }
+    const renamed = (heading: HTMLElement, label: string): HTMLElement => {
+      const respun = respin(heading)
+      const walker = document.createTreeWalker(respun, NodeFilter.SHOW_TEXT)
+      let last: Node | null = null
+      for (let node = walker.nextNode(); node; node = walker.nextNode())
+        last = node
+      if (last) last.textContent = label
+      return respun
+    }
+    /** The blocks whose heading-owned fold attributes are rewritten while `run` runs. */
+    const rewritten = (run: () => void): Set<Element> => {
+      const touched = new Set<Element>()
+      const original = Element.prototype.removeAttribute
+      const spy = vi
+        .spyOn(Element.prototype, 'removeAttribute')
+        .mockImplementation(function (this: Element, name: string) {
+          if (name === 'data-vmde-folded') touched.add(this)
+          return original.call(this, name)
+        })
+      try {
+        run()
+      } finally {
+        spy.mockRestore()
+      }
+      return touched
+    }
+    const sectionOf = (heading: HTMLElement, until: HTMLElement) => {
+      const blocks: Element[] = []
+      for (
+        let el: Element | null = heading;
+        el && el !== until;
+        el = el.nextElementSibling
+      )
+        blocks.push(el)
+      return blocks
+    }
+    const emitHeading = (
+      emit: (change: Change) => void,
+      heading: HTMLElement,
+    ) =>
+      emit({
+        whole: false,
+        changed: [unit(heading, 'heading')],
+        structural: [heading],
+        scopes: [heading],
+      })
+
+    it('a same-level rename rewrites its section only and keeps the other folds', async () => {
+      const { ir, emit, runFrames } = setup(4, {
+        headings: [{ id: 'Code', text: 'Code', level: 2 }],
+        lists: [],
+      })
+      const code = headingNamed(ir, '## Code')
+      const items = renamed(headingNamed(ir, '## Items'), 'Entries')
+      emitHeading(emit, items)
+      await settle()
+      const touched = rewritten(() => runFrames())
+      expect([...touched]).toEqual(sectionOf(items, code))
+      expect(items.hasAttribute('data-vmde-foldable')).toBe(true)
+      expect(items.hasAttribute('data-vmde-folded')).toBe(false)
+      expect(code.hasAttribute('data-vmde-folded')).toBe(true)
+      expect(
+        code.nextElementSibling?.hasAttribute('data-vmde-fold-hidden'),
+      ).toBe(true)
+    })
+
+    it('a folded heading respun at the same level re-matches its stored fold', async () => {
+      const { ir, emit, runFrames } = setup(4, {
+        headings: [{ id: 'Code', text: 'Code', level: 2 }],
+        lists: [],
+      })
+      const tables = headingNamed(ir, '## Tables')
+      const code = respin(headingNamed(ir, '## Code'))
+      emitHeading(emit, code)
+      await settle()
+      const touched = rewritten(() => runFrames())
+      expect([...touched]).toEqual(sectionOf(code, tables))
+      expect(code.hasAttribute('data-vmde-folded')).toBe(true)
+      expect(code.dataset.vmdeFoldCount).toBe('2')
+      expect(
+        code.nextElementSibling?.hasAttribute('data-vmde-fold-hidden'),
+      ).toBe(true)
+      expect(tables.hasAttribute('data-vmde-fold-hidden')).toBe(false)
+    })
+
+    it('a renamed heading inside a folded section stays hidden', async () => {
+      const { ir, emit, runFrames } = setup(1, {
+        headings: [{ id: 'Overview', text: 'Overview', level: 1 }],
+        lists: [],
+      })
+      const items = renamed(headingNamed(ir, '## Items'), 'Entries')
+      emitHeading(emit, items)
+      await settle()
+      runFrames()
+      expect(items.hasAttribute('data-vmde-fold-hidden')).toBe(true)
+      expect(
+        items.nextElementSibling?.hasAttribute('data-vmde-fold-hidden'),
+      ).toBe(true)
+      expect(items.hasAttribute('data-vmde-foldable')).toBe(true)
+    })
+
+    it('a level change keeps the pass over every top-level block', async () => {
+      const { ir, emit, runFrames } = setup(1, {
+        headings: [{ id: 'Code', text: 'Code', level: 2 }],
+        lists: [],
+      })
+      const before = headingNamed(ir, '## Items')
+      const html = before.outerHTML
+        .replace(/<h2/g, '<h3')
+        .replace(/<\/h2>/g, '</h3>')
+        .replace('## ', '### ')
+      const items = respin(before, html)
+      expect(items.tagName).toBe('H3')
+      emitHeading(emit, items)
+      await settle()
+      const touched = rewritten(() => runFrames())
+      expect(touched.size).toBe(
+        Array.from(ir.children).filter((block) =>
+          block.hasAttribute('data-block'),
+        ).length,
+      )
+      expect(headingNamed(ir, '## Code').hasAttribute('data-vmde-folded')).toBe(
+        true,
+      )
+    })
   })
 
   // Run 1 (R-2): `__vmdeMutationImpactStats` is an observable end-to-end contract; the feed path

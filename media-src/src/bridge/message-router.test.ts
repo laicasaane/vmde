@@ -212,6 +212,7 @@ import {
   configureMessageRouter,
   handleUpdate,
   installMessageRouter,
+  runHistoryMove,
   markInlineInited,
   replayDeferredCheckboxHistory,
 } from './message-router'
@@ -414,8 +415,12 @@ describe('flush-for-save routing (Task 580 CP2-12)', () => {
 
   it('runs the guarded EditSync.flush, then replies with the request id', () => {
     const { post } = boot()
-    const flush = vi.fn(() => post({ command: 'edit', content: 'typed\n' }))
-    sessionState.editSync = { flush } as any
+    // 036 core C6 (S2): the router hands the reply to `flushForSave`, which calls it once.
+    const flush = vi.fn((reply: () => void) => {
+      post({ command: 'edit', content: 'typed\n' })
+      reply()
+    })
+    sessionState.editSync = { flushForSave: flush } as any
     dispatch({ command: 'flush-for-save', requestId: 'save-flush-3' })
     expect(flush).toHaveBeenCalledTimes(1)
     expect(post.mock.calls.map(([m]) => m)).toEqual([
@@ -1647,6 +1652,266 @@ describe('handleUpdate — model owns the text (Task 733 / 010)', () => {
 // Task 643: a Preview-first open builds no edit view, so the edit DOM is empty and `getValue()` is
 // not the document. An outside change replaces the text kept in `sessionState.deferredEditView`
 // and the visible Preview is re-rendered from it; nothing is written into the edit view.
+// Task 733 / 036 (E, fix design 3.5): an update with a newer epoch during a replay goes to the replay
+// recovery before the unit path and the whole-document getValue(); a newer host-state is the lost update.
+describe('handleUpdate — during an exact replay (036 E)', () => {
+  const MODEL = 'one\n\ntwo\n'
+  function replaying(outcome: 'none' | 'recovering' | 'fallback') {
+    const setValue = vi.fn()
+    const getValue = vi.fn(() => MODEL)
+    ;(window as any).vditor = { getValue, setValue, clearStack: vi.fn() }
+    sessionState.editSync = {
+      reseed: vi.fn(),
+      reportDocMode: vi.fn(),
+      flushHistoryInput: vi.fn(() => false),
+    } as any
+    const onHostText = vi.fn()
+    const applyText = vi.fn(() => ({ kind: 'applied' }))
+    const recoverReplay = vi.fn(() => outcome)
+    const modelText = vi.fn(() => MODEL)
+    sessionState.modelSession = {
+      // A replay is active: the model does not own the text, so today's path would read getValue().
+      ownsText: () => false,
+      isLive: () => true,
+      deltaPort: () => ({ modelText, epoch: () => 1 }),
+      applyText,
+      onHostText,
+      recoverReplay,
+    } as any
+    sessionState.hostRevision = 4
+    return {
+      setValue,
+      getValue,
+      onHostText,
+      applyText,
+      recoverReplay,
+      modelText,
+    }
+  }
+  afterEach(() => {
+    sessionState.modelSession = null
+    sessionState.editSync = null
+    sessionState.deltaSync = null
+  })
+
+  it('a newer-epoch update goes to the recovery: no getValue(), no setValue, no unit apply, no rebuild', () => {
+    const t = replaying('recovering')
+    handleUpdate({
+      command: 'update',
+      content: 'ONE\n\ntwo\n',
+      epoch: 2,
+      afterSequence: 1,
+      replayAfterOp: 1,
+      revision: 5,
+    } as any)
+    expect(t.recoverReplay).toHaveBeenCalledOnce()
+    expect(t.recoverReplay.mock.calls[0]).toEqual([
+      'ONE\n\ntwo\n',
+      2,
+      1,
+      expect.any(Function),
+    ])
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.modelText).not.toHaveBeenCalled()
+    expect(t.setValue).not.toHaveBeenCalled()
+    expect(t.applyText).not.toHaveBeenCalled()
+    expect(t.onHostText).not.toHaveBeenCalled()
+    expect(sessionState.hostRevision).toBe(5)
+    expect(sessionState.editSync?.reseed).toHaveBeenCalledOnce()
+  })
+
+  it('a recovery that cannot render by units renders the host text whole, with no getValue() compare', () => {
+    const t = replaying('fallback')
+    handleUpdate({
+      command: 'update',
+      content: MODEL,
+      epoch: 2,
+      revision: 5,
+    } as any)
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.setValue).toHaveBeenCalledOnce()
+    expect(t.onHostText).toHaveBeenCalledWith(MODEL, 2)
+  })
+
+  it('the whole renderer handed to the recovery is the setValue path', () => {
+    const t = replaying('recovering')
+    handleUpdate({
+      command: 'update',
+      content: 'x\n',
+      epoch: 2,
+      revision: 5,
+    } as any)
+    const whole = (t.recoverReplay.mock.calls[0] as unknown[])[3] as (
+      text: string,
+    ) => void
+    // 036 core C5 (R3.1): the whole render takes the recovery's updated target, not the captured message.
+    whole('x late\n')
+    expect(t.setValue).toHaveBeenCalledOnce()
+    expect(t.onHostText).toHaveBeenCalledWith('x late\n', 2)
+  })
+
+  // 036 core C5 (R4.1, stop test `whole-render-table-code-pipe`): the whole render gets the host's content
+  // contract (`escapeTableCodePipes`) and the exact bytes as `raw`; raw text as content would drop the
+  // last cell of a row with a pipe inside a code span.
+  it('whole-render-table-code-pipe: content is escaped like the host, raw stays the exact bytes', async () => {
+    const { escapeTableCodePipes } = await import(
+      '../../../src/shared/table-code-pipes'
+    )
+    const t = replaying('recovering')
+    handleUpdate({
+      command: 'update',
+      content: 'x\n',
+      epoch: 2,
+      revision: 5,
+    } as any)
+    const whole = (t.recoverReplay.mock.calls[0] as unknown[])[3] as (
+      text: string,
+    ) => void
+    const target = '| a | b |\n| - | - |\n| a | `x|y` |\n'
+    expect(escapeTableCodePipes(target)).not.toBe(target)
+    whole(target)
+    expect(t.setValue).toHaveBeenCalledWith(
+      escapeTableCodePipes(target),
+      expect.anything(),
+    )
+    expect(t.onHostText).toHaveBeenCalledWith(target, 2)
+  })
+
+  it('no replay active: today path, unchanged', () => {
+    const t = replaying('none')
+    handleUpdate({
+      command: 'update',
+      content: MODEL.replace('one', 'ONE'),
+      epoch: 2,
+      revision: 5,
+    } as any)
+    expect(t.recoverReplay).toHaveBeenCalledOnce()
+    expect(t.getValue).toHaveBeenCalled()
+    expect(t.setValue).toHaveBeenCalledOnce()
+  })
+
+  // H2 fix design rev2 (D6.1, S3 review): the abandoned replay's pending typing is posted while the
+  // delta publisher still allocates the old epoch; only then does it follow the update's epoch.
+  it('an update flushes the abandoned typing before the delta publisher follows its epoch', () => {
+    const t = replaying('recovering')
+    const order: string[] = []
+    ;(sessionState.modelSession as any).flushAbandonedInput = (epoch: number) =>
+      order.push(`flush:${epoch}`)
+    sessionState.deltaSync = {
+      onUpdate: (message: { epoch?: number }) =>
+        order.push(`delta-update:${message.epoch}`),
+      afterUpdate: vi.fn(),
+    } as any
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: {
+          command: 'update',
+          type: 'update',
+          content: 'host\n',
+          epoch: 2,
+          revision: 6,
+          replayAfterOp: 1,
+        },
+      }),
+    )
+    // Earlier tests leave their router listeners on the window, so the handler may run more than once.
+    expect(order.slice(0, 2)).toEqual(['flush:2', 'delta-update:2'])
+    expect(t.recoverReplay).toHaveBeenCalled()
+  })
+
+  // 036 core C5 (R34.3, R35.3): an update during a composition in a replay is queued before any publisher
+  // sees it; the release delivers it to the full handler once, and it is never queued again.
+  it('ime-update-deferred: deferUpdateForComposition runs first; the released update runs the full handler', () => {
+    const t = replaying('recovering')
+    const order: string[] = []
+    let deliver: ((msg: object) => void) | undefined
+    let lastDeferred: object | undefined
+    const released = new WeakSet<object>()
+    ;(sessionState.modelSession as any).deferUpdateForComposition = (
+      msg: object,
+      next: (msg: object) => void,
+    ) => {
+      if (released.has(msg)) return false
+      order.push('deferred')
+      lastDeferred = msg
+      deliver = (m) => {
+        released.add(m)
+        next(m)
+      }
+      return true
+    }
+    ;(sessionState.modelSession as any).flushAbandonedInput = (epoch: number) =>
+      order.push(`flush:${epoch}`)
+    sessionState.deltaSync = {
+      onUpdate: (message: { epoch?: number }) =>
+        order.push(`delta-update:${message.epoch}`),
+      afterUpdate: vi.fn(),
+    } as any
+    const message = {
+      command: 'update',
+      type: 'update',
+      content: 'host\n',
+      epoch: 2,
+      revision: 6,
+      replayAfterOp: 1,
+    }
+    installMessageRouter(window)
+    window.dispatchEvent(new MessageEvent('message', { data: message }))
+    // Earlier tests leave their router listeners on the window: each one defers, none publishes.
+    expect(order.length).toBeGreaterThan(0)
+    expect(order.every((entry) => entry === 'deferred')).toBe(true)
+    expect(t.recoverReplay).not.toHaveBeenCalled()
+    order.length = 0
+    deliver?.(lastDeferred as object)
+    expect(order).toEqual(['flush:2', 'delta-update:2'])
+    expect(t.recoverReplay).toHaveBeenCalledOnce()
+  })
+
+  it('a newer-epoch host-state is handled as the lost update and goes to the recovery; an older one is ignored', () => {
+    const t = replaying('recovering')
+    let tracked = 1
+    sessionState.deltaSync = {
+      isNewerEpoch: (epoch: number) => epoch > tracked,
+      onUpdate: (message: { epoch?: number }) => {
+        tracked = message.epoch ?? tracked
+      },
+      afterUpdate: vi.fn(),
+    } as any
+    installMessageRouter(window)
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: {
+          command: 'host-state',
+          requestId: 'replay-1-2',
+          epoch: 1,
+          revision: 6,
+          content: 'stale\n',
+        },
+      }),
+    )
+    expect(t.recoverReplay).not.toHaveBeenCalled()
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: {
+          command: 'host-state',
+          requestId: 'replay-1-2',
+          epoch: 2,
+          revision: 6,
+          content: 'host\n',
+          afterSequence: 3,
+          replayAfterOp: 1,
+        },
+      }),
+    )
+    // Earlier tests leave their router listeners on the window, so the handler may run more than once.
+    expect(t.recoverReplay).toHaveBeenCalled()
+    expect(t.recoverReplay.mock.calls[0].slice(0, 3)).toEqual(['host\n', 2, 1])
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.setValue).not.toHaveBeenCalled()
+  })
+})
+
 describe('handleUpdate — Preview-only (deferred edit view, task 643)', () => {
   function pending(text = 'OLD') {
     sessionState.deferredEditView = { text, mode: 'ir', history: [] }
@@ -2812,6 +3077,35 @@ describe('handleTriggerToolbarHotkey (trigger-toolbar-hotkey)', () => {
       ;(document as any).execCommand = original
     },
   )
+
+  // Task 733 / 036 D-18: the IR-owned keydown calls the extracted `runHistoryMove`; it must make the
+  // same single move as the command route (parity with the route tests above).
+  it.each(['undo', 'redo'] as const)(
+    'runHistoryMove(%s) runs the undo engine exactly once, as the route does',
+    (name) => {
+      const { click } = mockToolbarButton()
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      runHistoryMove(name)
+      const inner = (window as any).vditor.vditor
+      expect(inner.undo[name]).toHaveBeenCalledExactlyOnceWith(inner)
+      expect(h.applyTextFieldHistory).not.toHaveBeenCalled()
+      expect(click).not.toHaveBeenCalled()
+    },
+  )
+
+  it('runHistoryMove runs a focused field history instead of the document', () => {
+    mockToolbarButton()
+    const field = document.createElement('input')
+    document.body.append(field)
+    field.focus()
+    runHistoryMove('undo')
+    expect(h.applyTextFieldHistory).toHaveBeenCalledExactlyOnceWith(
+      field,
+      'undo',
+    )
+    expect((window as any).vditor.vditor.undo.undo).not.toHaveBeenCalled()
+    field.remove()
+  })
 
   // Task 597 S4: an undo checkpoint's caret request stays live for up to 5 s. A Command Palette
   // Undo reaches this handler with no webview key or pointer to drop it, so the request re-asserted

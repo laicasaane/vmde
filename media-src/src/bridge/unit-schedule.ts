@@ -4,6 +4,7 @@ import {
   backgroundSchedulerOf,
   type SliceBudget,
 } from '../util/background-budget'
+import type { ReplayBudget } from './replay-budget'
 import type { TextModel, Unit, UnitKind } from './text-model'
 import { isViewOnlyChild } from './unit-dom'
 
@@ -48,10 +49,24 @@ export interface UnitScheduleDeps {
   requestAnimationFrame?(callback: () => void): number
   /** Unused since 012-20, as `requestAnimationFrame`. */
   cancelAnimationFrame?(handle: number): void
-  /** Unused since 012-20: slices read the scheduler's budget. */
+  /**
+   * Slices read the scheduler's budget (012-20). Task 733 / 036 (step D): while a replay account is open,
+   * this clock also cuts a proof-lane slice at what remains of the replay budget.
+   */
   now?(): number
   setTimeout(callback: () => void, ms: number): number
   clearTimeout(handle: number): void
+  /**
+   * Task 733 / 036 (fix design 2.6): the unit lies in a pending group of an exact history replay. The
+   * pre-touch skips it: the replay renders and checks it. Absent: no unit is pending.
+   */
+  replayPending?(unit: U): boolean
+  /**
+   * Task 733 / 036 (fix design 4.2-4.3): the replay account of the session. While it is open, the proof
+   * lane (queue rebuild, proofs, audit) runs only when the replay's frame left room for it, and its
+   * slices are charged to the replay. Absent: no replay account.
+   */
+  replayAccount?: Pick<ReplayBudget, 'isOpen' | 'remainingMs' | 'charged'>
 }
 
 type ScheduleFallbackReason = 'unproven-selection' | 'oversize-unit'
@@ -510,6 +525,57 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
   // The mode left IR or the model went off: every job ends; restart() or start() resumes them.
   const runnable = (): boolean => started && !blocked && deps.isActive()
 
+  /**
+   * Task 733 / 036 (fix design 4.3): one slice of the proof lane. While a replay account is open the
+   * lane yields (true: work is left, retried next frame) unless what remains of the replay budget admits
+   * a deferred run, and the slice it runs is charged to the replay. One field read with no account open;
+   * the steps are bound once and read the slice's budget from `laneBudget`, so a slice allocates nothing.
+   */
+  let laneBudget: SliceBudget = NEVER_SPENT
+  // The slice inside an open account: the scheduler's budget, cut at what remained of the replay budget.
+  let shareOuter: SliceBudget = NEVER_SPENT
+  let shareEnd = 0
+  const shareBudget: SliceBudget = {
+    spent: () =>
+      shareOuter.spent() || (deps.now !== undefined && deps.now() >= shareEnd),
+  }
+  const inReplayShare = (step: () => boolean, budget: SliceBudget): boolean => {
+    const account = deps.replayAccount
+    if (!account?.isOpen()) {
+      laneBudget = budget
+      try {
+        return step()
+      } finally {
+        laneBudget = NEVER_SPENT
+      }
+    }
+    const remaining = account.remainingMs()
+    if (remaining <= 0) return true
+    shareOuter = budget
+    shareEnd = (deps.now?.() ?? 0) + remaining
+    laneBudget = shareBudget
+    try {
+      return account.charged(step)
+    } finally {
+      laneBudget = NEVER_SPENT
+      shareOuter = NEVER_SPENT
+    }
+  }
+  const rebuildStep = (): boolean => {
+    if (!rebuildWalk.step(laneBudget)) return true
+    finishRebuild()
+    return false
+  }
+  const proofStep = (): boolean => {
+    sliceBudget = laneBudget
+    try {
+      return runProofs(laneBudget)
+    } finally {
+      sliceBudget = NEVER_SPENT
+    }
+  }
+  const auditStep = (): boolean => !runAudit(laneBudget)
+
   /** Job `proof-queue`: waits out the paint frames, then rebuilds the proof queue in slices. */
   const queueJob: BackgroundJob = {
     name: 'proof-queue',
@@ -521,9 +587,7 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
         return true
       }
       if (!rebuildPending) return false
-      if (!rebuildWalk.step(budget)) return true
-      finishRebuild()
-      return false
+      return inReplayShare(rebuildStep, budget)
     },
   }
 
@@ -534,12 +598,7 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
     step(budget) {
       if (!runnable()) return false
       if (paintFrames > 0 || rebuildPending) return true
-      sliceBudget = budget
-      try {
-        return runProofs(budget)
-      } finally {
-        sliceBudget = NEVER_SPENT
-      }
+      return inReplayShare(proofStep, budget)
     },
   }
 
@@ -550,7 +609,7 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
     step(budget) {
       if (!runnable() || !auditPending) return false
       if (!proofsDone()) return true
-      return !runAudit(budget)
+      return inReplayShare(auditStep, budget)
     },
   }
 
@@ -685,8 +744,9 @@ export function createUnitSchedule(deps: UnitScheduleDeps): UnitSchedule {
       deps.drain()
       noteInput()
       const todo: U[] = []
+      const pending = deps.replayPending
       for (const unit of touchedUnits(range))
-        if (unit.proof === 'none') todo.push(unit)
+        if (unit.proof === 'none' && !pending?.(unit)) todo.push(unit)
       const refusal = preTouchRefusal(todo, deps.htmlLength)
       if (refusal) return fallback(refusal)
       // A table is checked as always spent: the pre-touch proves the touched cells and rows only,

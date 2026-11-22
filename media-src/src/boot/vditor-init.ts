@@ -28,6 +28,7 @@ import {
 import { patchLuteSerialize, setKnownPagesRef } from '../links/wiki-serialize'
 import { Disposables } from '../util/disposables'
 import { innerVditor } from '../util/inner-vditor'
+import { applyUndoRedoKeys } from '../editing/undo-redo-keys'
 import { provideSourceUnitFeed, unitModeOf } from '../util/unit-changes'
 import { createEditSync } from '../bridge/edit-sync'
 import { createModelSession, type ModelSession } from '../bridge/model-session'
@@ -37,6 +38,8 @@ import { isCompositionActive } from '../util/caret-gesture'
 import {
   hasRewrapDocumentHistoryTransition,
   takeRewrapDocumentHistoryReplay,
+  confirmExactHistory,
+  evictExactHistory,
 } from '../editing/rewrap-command'
 import { runFinishInit } from './finish-init'
 import { installSourcePaneState } from '../chrome/source-pane-state'
@@ -303,6 +306,8 @@ export function initVditor(
   // Link-open policy (task 62): Ctrl/Cmd+click vs plain-click follow. Applied live
   // here (and on config-changed) so the IR/WYSIWYG patches + fixLinkClick agree.
   applyLinkOpenSetting(msg.options?.linkOpenWithModifier)
+  // Task 733 / 036 D-18: the IR-owned Undo/Redo chords (validated, swapped whole).
+  applyUndoRedoKeys(msg.options?.undoRedoKeys)
   // Task 392 — paste-a-URL-as-a-link, on by default and switchable off.
   applyPasteUrlSetting(msg.options?.pasteUrlAsLink)
   // Task 218 — a change to vmde.paste.csvFormat must take effect without a reopen, exactly like
@@ -340,6 +345,11 @@ export function initVditor(
       const rect = el.getBoundingClientRect()
       return rect.bottom >= 0 && rect.top <= window.innerHeight
     },
+    // Task 733 / 036: the host's replay-pair answers mark Find's records. B0: the replay control posts
+    // (`replay-abandon`, `replay-query`, `host-state-query`) replace the abandon sender.
+    confirmExactHistory,
+    evictExactHistory,
+    postReplay: (message) => window.vscode?.postMessage(message),
   })
   sessionState.modelSession = modelSession
   observeHostWriteRequests()
@@ -366,6 +376,8 @@ export function initVditor(
   // Task 733 (007-B): the delta publisher is created by edit-sync (its whole-text fallback is edit-sync's
   // own post) and shared with the router, which hands it the host messages that concern deltas.
   sessionState.deltaSync = sessionState.editSync?.deltaSync ?? null
+  // Task 733 / 036 (step C, fix design 2.6): the replay publishes typing and reserved moves through it.
+  modelSession.bindReplaySync(sessionState.deltaSync ?? undefined)
   // Task 733 / 015 (D-8): the Source feed of this session, in its own slot (the IR feed is provided in
   // finish-init); a new init replaces it.
   if (sessionState.editSync)

@@ -132,12 +132,18 @@ export class HistoryCouplingController {
    * reached or the walk was rolled back to `before`; the caller falls back to the forward exact
    * write, and a decline posts no update because the webview already shows the replay's result.
    * `'diverged'`: the rollback could not restore `before`, so the host sits on an intermediate
-   * text and the forward write would be refused; the caller must resync the webview from the host. */
+   * text and the forward write would be refused; the caller must resync the webview from the host.
+   * Task 733 / 036 (B0): `guard` is checked before every native command of the walk and of the
+   * rollback; when it fails (an outside change moved the epoch between steps) nothing more runs and
+   * the result is `'interrupted'`. */
   async replayExact(
     kind: 'undo' | 'redo',
     before: string,
     exact: string,
-  ): Promise<'replayed' | 'unchanged' | 'declined' | 'diverged'> {
+    guard?: () => boolean,
+  ): Promise<
+    'replayed' | 'unchanged' | 'declined' | 'diverged' | 'interrupted'
+  > {
     const target = normalizeContent(exact)
     const reached = () =>
       normalizeContent(this.deps.currentContent()) === target
@@ -148,17 +154,14 @@ export class HistoryCouplingController {
       return 'declined'
     const visited = new Set([this.deps.currentContent()])
     const previousTexts: string[] = []
+    const open = guard ?? (() => true)
     while (previousTexts.length < MAX_NATIVE_STEPS) {
-      const previous = this.deps.currentContent()
-      try {
-        await this.executeWithoutEcho(kind)
-      } catch (error) {
-        this.deps.debug('history coupling: native replay command failed', {
-          kind,
-          error: String(error),
-        })
-        break
+      if (!open()) {
+        this.pending = undefined
+        return 'interrupted'
       }
+      const previous = this.deps.currentContent()
+      if (!(await this.exactStep(kind))) break
       const now = this.deps.currentContent()
       if (now === previous) break
       previousTexts.push(previous)
@@ -172,15 +175,40 @@ export class HistoryCouplingController {
       if (visited.has(now)) break
       visited.add(now)
     }
-    const rollback = await this.rollBack(kind, previousTexts)
-    this.deps.debug('history coupling: exact replay not reached', {
-      kind,
-      steps: previousTexts.length,
-      rollback,
-    })
+    return this.rollBackExact(kind, previousTexts, open)
+  }
+
+  // One native command of the exact replay; false when it failed.
+  private async exactStep(kind: 'undo' | 'redo'): Promise<boolean> {
+    try {
+      await this.executeWithoutEcho(kind)
+      return true
+    } catch (error) {
+      // Task 733 / 036: by category only; an error message may carry document text.
+      this.deps.debug('history coupling: native replay command failed', {
+        kind,
+        error: error instanceof Error ? error.name : typeof error,
+      })
+      return false
+    }
+  }
+
+  // The exact replay did not reach its bytes: roll the walk back (guarded per step, Task 733 / 036 B0).
+  private async rollBackExact(
+    kind: 'undo' | 'redo',
+    previousTexts: string[],
+    guard: () => boolean,
+  ): Promise<'declined' | 'diverged' | 'interrupted'> {
+    const rollback = await this.rollBack(kind, previousTexts, guard)
+    if (rollback !== 'interrupted')
+      this.deps.debug('history coupling: exact replay not reached', {
+        kind,
+        steps: previousTexts.length,
+        rollback,
+      })
     if (rollback === 'restored') return 'declined'
     this.pending = undefined
-    return 'diverged'
+    return rollback === 'interrupted' ? 'interrupted' : 'diverged'
   }
 
   /** Task 733 (task 004): walk native history in the direction of `kind` until the normalized host
@@ -324,9 +352,11 @@ export class HistoryCouplingController {
   private async rollBack(
     kind: 'undo' | 'redo',
     previousTexts: string[],
-  ): Promise<'restored' | 'command-failed' | 'diverged'> {
+    guard?: () => boolean,
+  ): Promise<'restored' | 'command-failed' | 'diverged' | 'interrupted'> {
     const inverse = kind === 'undo' ? 'redo' : 'undo'
     for (let index = previousTexts.length - 1; index >= 0; index--) {
+      if (guard && !guard()) return 'interrupted'
       try {
         await this.executeWithoutEcho(inverse)
       } catch {

@@ -43,6 +43,23 @@ const dependsOnDefinitions = (slice: string): boolean =>
   FOOTNOTE_DEFINITION.test(slice) ||
   TABLE_OF_CONTENTS.test(slice)
 
+// Task 733 / 036 (fix design 2.8, Q-G): while a replay renders a window that only references
+// definitions, the reference rule is lifted; the caller renders each new unit again through the window
+// context (`definitionContextOf`, `stripDefinitionContext`). Windows holding a definition, a footnote
+// definition or a TOC keep the fallback.
+let referencesAllowed = false
+
+/** Runs `fn` with the reference rule lifted (see `referencesAllowed`). */
+export function withDefinitionReferences<T>(fn: () => T): T {
+  const outer = referencesAllowed
+  referencesAllowed = true
+  try {
+    return fn()
+  } finally {
+    referencesAllowed = outer
+  }
+}
+
 /** The slice may reference a label and the document holds a definition or footnote unit. */
 function referencesDefinitions(
   slice: string,
@@ -264,10 +281,15 @@ function planApply<E>(
     // Task 733 / 017 (OQ-3): a window whose old or new text holds a definition, a footnote definition or
     // a TOC, or whose new text references labels of a document with definitions, keeps the fallback (its
     // blocks would render without the definitions they depend on).
+    // Task 733 / 036 (Q-G): with references allowed, a look-ahead unit is kept as it is when the window
+    // closes on it (`meets`), so only the text before it is checked; a window that grows takes it in.
+    const keptFrom = referencesAllowed && lookAhead ? lookAhead.start : oldEnd
     if (
-      dependsOnDefinitions(newSlice) ||
-      dependsOnDefinitions(text.slice(ws, oldEnd)) ||
-      referencesDefinitions(newSlice, units)
+      dependsOnDefinitions(
+        referencesAllowed ? newSlice.slice(0, keptFrom + delta - ws) : newSlice,
+      ) ||
+      dependsOnDefinitions(text.slice(ws, keptFrom)) ||
+      (!referencesAllowed && referencesDefinitions(newSlice, units))
     )
       return DEPENDENT
     const scanned = internals.scan(newSlice)
@@ -478,10 +500,13 @@ function commitBlocks<E>(
     for (const member of unit.members)
       internals.hostKinds.set(member, unit.kind as MovableBlock['kind'])
   }
-  const suffix = units.slice(info.end)
+  // Task 733 / 036 (fix design 4.2): the window is spliced into the unit array in place, so a commit
+  // copies no prefix or suffix array. Every suffix unit still moves by the length delta: units hold
+  // absolute offsets (text-model.ts), so a lazy offset base would change the unit shape.
   const delta = newText.length - oldText.length
-  for (const unit of suffix) moveUnit(unit, delta, lineDelta)
-  internals.units = [...units.slice(0, info.i0), ...window, ...suffix]
+  for (let at = info.end; at < units.length; at++)
+    moveUnit(units[at], delta, lineDelta)
+  units.splice(info.i0, info.end - info.i0, ...window)
 }
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: each planned row is unindexed, rebuilt, indexed and shifted in one pass
@@ -523,8 +548,12 @@ function commitRows<E>(
     total += rowDelta
   }
   table.html = undefined
-  const index = internals.units.indexOf(table)
-  for (const unit of internals.units.slice(index + 1)) moveUnit(unit, total, 0)
+  // Task 733 / 036 (fix design 4.2): the table's index by binary search on its start, not `indexOf`.
+  const { units } = internals
+  const index = atOrBefore(units, table.start)
+  if (units[index] !== table) throw new RangeError('row apply lost its table')
+  for (let at = index + 1; at < units.length; at++)
+    moveUnit(units[at], total, 0)
   if (newText.length - internals.text.length !== total)
     throw new RangeError('row apply length mismatch')
 }

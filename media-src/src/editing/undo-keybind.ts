@@ -68,6 +68,21 @@ export interface HistoryCouplingOptions {
   reserveSequence?: () => number | undefined
   /** Task 733 / 022: a transition is held; a second history command is refused (its `before` is unknown). */
   transitionHeld?: () => boolean
+  /**
+   * Task 733 / 036: the entry `kind` would pop carries a replayable or evicted Find record and nothing is
+   * pending (the unit history's `peekExact`). Such a move is decided before the 022 hold: it installs no
+   * hold, and it is refused while one is active.
+   */
+  exactMove?: (inner: unknown, kind: 'undo' | 'redo') => boolean
+  /** 036 core C4 (R35.1): a replay's logical text is live (`ModelSession.replayLive`). */
+  replayLive?: () => boolean
+  /**
+   * 036 core C4 (R35.1): publishes the user mutations made before the move as replay operations
+   * (`dom.drain()`, then the replay publisher), so the wire order is typing, reservation, history delta.
+   */
+  drainReplayInput?: () => void
+  /** 036 core C4 (K12): a history move requested inside that drain was refused (counted `replayMoveReentry`). */
+  refuseReplayReentry?: () => void
 }
 
 /** A registered history base: the first entry array of a mode's stack and what is known of it. */
@@ -102,7 +117,7 @@ const coupled = new WeakSet<object>()
 export function installVditorHistoryCoupling(
   win: any,
   post: HistoryPost = (message) => win.vscode?.postMessage(message),
-  prepare: (inner: unknown) => boolean = () => true,
+  prepare: (inner: unknown, kind?: 'undo' | 'redo') => boolean = () => true,
   options: HistoryCouplingOptions = {},
 ): void {
   const outer = win?.vditor
@@ -253,16 +268,44 @@ export function installVditorHistoryCoupling(
     return sequence
   }
   store.onEntryRecorded(onRecorded)
+  // 036 core C4 (R35.1): set while the transition wrapper drains the replay input.
+  let inReplayMoveDrain = false
+  /** 036 core C4 (R35.1): false when the move must not run (a reentrant move, or the drain ended the replay). */
+  const drainedForMove = (): boolean => {
+    if (!options.replayLive?.()) return true
+    if (inReplayMoveDrain) {
+      options.refuseReplayReentry?.()
+      return false
+    }
+    inReplayMoveDrain = true
+    try {
+      options.drainReplayInput?.()
+    } finally {
+      inReplayMoveDrain = false
+    }
+    return options.replayLive()
+  }
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the replay drain, Task 601, the exact move, the 022 hold and the claim are one ordered transition
   store.aroundTransition((kind, run) => {
     // Every caller of the engine's Undo and Redo passes this same editor object.
     const inner = outer.vditor
     // A fake table-cell rectangle names cells of the pre-transition DOM; drop it on every
     // undo/redo path (command, toolbar button) rather than on the Z/Y keys.
     clearTableCellSelections()
+    // 036 core C4 (R35.1): during a replay the earlier user mutations go out first as replay ops. A move
+    // requested inside that drain is refused (no queue, K12). A drain that ended the replay makes no
+    // move; the key stays consumed (Q-243) and the resync brings the host bytes.
+    if (!drainedForMove()) return
     // Task 601: the pending edit gets its own entry and reaches the host before `before` is read,
     // so the engine undoes only that edit and the host sees the same transition.
     // A refused transition (IME composition) makes no engine call and posts nothing.
-    if (!prepare(inner)) return
+    if (!prepare(inner, kind)) return
+    // Task 733 / 036: a tagged move takes precedence over the 022 hold. A hold installed here would have its
+    // kept text cleared by the exact replay's publication base and would never be released.
+    if (options.exactMove?.(inner, kind)) {
+      if (!options.transitionHeld?.()) run()
+      return
+    }
     // Task 733 / 022 (Q-191): asked before the unit engine's claim. While a whole post awaits its
     // rebind answer the unit engine may claim the history; the engine that claims it restores the DOM
     // at once, and the session publishes the transition with exact host bytes at the answer.

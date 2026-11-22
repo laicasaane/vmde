@@ -18,6 +18,11 @@ export interface TableCellSelection {
 }
 
 interface TableCellSelectionOptions {
+  /**
+   * Task 733 / 036 (step C, fix design 2.6): before a rectangle Copy, the pending replay groups of its
+   * table render, so the TSV and the Markdown read the replay's target text.
+   */
+  beforeRectangleCopy?: (table: HTMLTableElement) => void
   markdownForRectangle?: (
     table: HTMLTableElement,
     anchorRow: number,
@@ -421,6 +426,8 @@ export function installTableCellSelection(
       clear()
   })
   const onCopy = (event: ClipboardEvent) => {
+    if (state && event.clipboardData)
+      options.beforeRectangleCopy?.(state.anchor.table)
     const cells = state ? selectedCells(state) : null
     if (!cells || !event.clipboardData) return
     const size = dimensions(state!)

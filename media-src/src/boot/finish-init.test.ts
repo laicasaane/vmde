@@ -539,6 +539,8 @@ it('wires the pending-checkpoint preparation into the history wrapper and undo b
     flushRespin: flushPendingEditorRespin,
     // Task 733 / 009: the boundary publishes through the model while it is live.
     publishNow: expect.any(Function),
+    // Task 733 / 036: a tagged exact move takes no outstanding-input flush.
+    exactMove: expect.any(Function),
   })
   observers.disposeAll()
 })
@@ -999,5 +1001,181 @@ describe('publishBoundaryNow', () => {
     rewrapTransitionPending.mockReturnValue(true)
     expect(publishNow()).toBe(false)
     expect(flush).not.toHaveBeenCalled()
+  })
+})
+
+// Task 733 / 036 (step C, fix design 2.6): a programmatic insert during a replay is handled at the
+// editor API entry as a keyboard paste: its endpoints render and its intent is captured before it writes.
+describe('036 C programmatic paste during a replay', () => {
+  it('runs the replay input step before insertValue writes, and only while a replay is live', async () => {
+    const { installReplayInsertHook } = await import('./finish-init')
+    const order: string[] = []
+    const original = vi.fn((value: string) => {
+      order.push(`insert:${value}`)
+    })
+    const previousVditor = window.vditor
+    const previousSession = sessionState.modelSession
+    ;(window as unknown as { vditor: unknown }).vditor = {
+      insertValue: original,
+    }
+    const live = { value: true }
+    sessionState.modelSession = {
+      replayLive: () => live.value,
+      beforeReplayInput: (event: Event) => order.push(`input:${event.type}`),
+    } as never
+    try {
+      const uninstall = installReplayInsertHook()
+      window.vditor?.insertValue('[]()')
+      live.value = false
+      window.vditor?.insertValue('x')
+      expect(order).toEqual(['input:paste', 'insert:[]()', 'insert:x'])
+      uninstall()
+      expect(window.vditor?.insertValue).toBe(original)
+    } finally {
+      ;(window as unknown as { vditor: unknown }).vditor = previousVditor
+      sessionState.modelSession = previousSession
+    }
+  })
+  // H2 fix design rev2 (review point 4): after a mismatch the abandoned replay refuses every edit before the DOM.
+  it('the insert hook refuses a programmatic insert while the session refuses edits', async () => {
+    const { installReplayInsertHook } = await import('./finish-init')
+    const original = vi.fn()
+    const previousVditor = window.vditor
+    const previousSession = sessionState.modelSession
+    ;(window as unknown as { vditor: unknown }).vditor = {
+      insertValue: original,
+    }
+    const refused = { value: true }
+    const beforeReplayInput = vi.fn()
+    sessionState.modelSession = {
+      editsRefused: () => refused.value,
+      replayLive: () => false,
+      beforeReplayInput,
+    } as never
+    try {
+      const uninstall = installReplayInsertHook()
+      window.vditor?.insertValue('x')
+      expect(original).not.toHaveBeenCalled()
+      expect(beforeReplayInput).not.toHaveBeenCalled()
+      refused.value = false
+      window.vditor?.insertValue('y')
+      expect(original).toHaveBeenCalledOnce()
+      uninstall()
+    } finally {
+      ;(window as unknown as { vditor: unknown }).vditor = previousVditor
+      sessionState.modelSession = previousSession
+    }
+  })
+})
+
+// 036 core C2 (R4.3, stop test `mode-switch-visible-insertion`, hook case): the patched `setEditMode`
+// calls the hook first; a user switch to another mode flushes the user edits, a programmatic one does not.
+describe('036 core C2 flush before setEditMode', () => {
+  it('flushes on a user switch to another mode only', async () => {
+    const { installBeforeEditMode } = await import('./finish-init')
+    const previousSession = sessionState.modelSession
+    const flushUserEdits = vi.fn()
+    sessionState.modelSession = { flushUserEdits } as never
+    try {
+      const uninstall = installBeforeEditMode()
+      const vditor = { currentMode: 'ir' }
+      window.__vmdeBeforeEditMode?.(vditor, 'sv', true)
+      expect(flushUserEdits).toHaveBeenCalledTimes(1)
+      // A programmatic switch with given Markdown is host-driven; the same mode is no switch.
+      window.__vmdeBeforeEditMode?.(vditor, 'sv', false)
+      window.__vmdeBeforeEditMode?.(vditor, 'ir', true)
+      expect(flushUserEdits).toHaveBeenCalledTimes(1)
+      uninstall()
+      expect(window.__vmdeBeforeEditMode).toBeUndefined()
+    } finally {
+      sessionState.modelSession = previousSession
+    }
+  })
+})
+
+// 036 core C4 (M1, R2.1): `programmatic-insert-unproven-unit` and `recheck-before-write` at the insert hook:
+// prepared, then admitted right before the original write; a refusal writes nothing and is counted.
+describe('036 core C4 insert admission', () => {
+  it('refuses an insertValue the session does not admit, before the write', async () => {
+    const { installReplayInsertHook } = await import('./finish-init')
+    const original = vi.fn()
+    const previousVditor = window.vditor
+    const previousSession = sessionState.modelSession
+    const text = document.createTextNode('text')
+    const selection = vi
+      .spyOn(document, 'getSelection')
+      .mockReturnValue({ anchorNode: text, focusNode: text } as never)
+    ;(window as unknown as { vditor: unknown }).vditor = {
+      insertValue: original,
+    }
+    const admitted = { value: false }
+    const order: string[] = []
+    const refuseReplayInput = vi.fn()
+    sessionState.modelSession = {
+      editsRefused: () => false,
+      replayLive: () => true,
+      beforeReplayInput: () => order.push('prepare'),
+      replayAcceptsInput: () => {
+        order.push('admit')
+        return admitted.value
+      },
+      refuseReplayInput,
+    } as never
+    try {
+      const uninstall = installReplayInsertHook()
+      window.vditor?.insertValue('x')
+      expect(original).not.toHaveBeenCalled()
+      expect(refuseReplayInput).toHaveBeenCalledTimes(1)
+      expect(order).toEqual(['prepare', 'admit'])
+      admitted.value = true
+      window.vditor?.insertValue('y')
+      expect(original).toHaveBeenCalledTimes(1)
+      uninstall()
+    } finally {
+      ;(window as unknown as { vditor: unknown }).vditor = previousVditor
+      sessionState.modelSession = previousSession
+      selection.mockRestore()
+    }
+  })
+})
+
+// 036 core C4 (M1, Q-269): the replay admission the editor commands call.
+describe('036 core C4 replay admission for editor commands', () => {
+  it('prepares, admits and counts a refusal; true outside a replay', async () => {
+    const { installReplayAdmission } = await import('./finish-init')
+    const previousSession = sessionState.modelSession
+    const text = document.createTextNode('text')
+    const selection = vi
+      .spyOn(document, 'getSelection')
+      .mockReturnValue({ anchorNode: text, focusNode: text } as never)
+    const live = { value: true }
+    const admitted = { value: false }
+    const order: string[] = []
+    const refuseReplayInput = vi.fn()
+    sessionState.modelSession = {
+      replayLive: () => live.value,
+      editsRefused: () => false,
+      beforeReplayInput: () => order.push('prepare'),
+      replayAcceptsInput: () => {
+        order.push('admit')
+        return admitted.value
+      },
+      refuseReplayInput,
+    } as never
+    try {
+      const uninstall = installReplayAdmission()
+      expect(window.__vmdeReplayAdmit?.(true)).toBe(false)
+      expect(refuseReplayInput).toHaveBeenCalledTimes(1)
+      expect(order).toEqual(['prepare', 'admit'])
+      admitted.value = true
+      expect(window.__vmdeReplayAdmit?.(false)).toBe(true)
+      live.value = false
+      expect(window.__vmdeReplayAdmit?.(true)).toBe(true)
+      uninstall()
+      expect(window.__vmdeReplayAdmit).toBeUndefined()
+    } finally {
+      sessionState.modelSession = previousSession
+      selection.mockRestore()
+    }
   })
 })

@@ -508,7 +508,11 @@ it('settles a null-exact selection from advisory units without a background acqu
   expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
 })
 
-it('runs the exact fallback once per settled selection for an unknown state', () => {
+// Task 733 / 036 (F7b, Q8 (a)): edited contract. Before 036 an `unknown` state ran the exact fallback
+// (`captureTarget`) once per settled selection; its markers split the selection's text nodes and its
+// `snapshotMarkdown` read could publish whole text (row 7). The passive state now inserts no marker,
+// reads no exact source and shows the enabled, unpressed `wrap`; the action captures once.
+it('shows wrap for an unknown state with no passive capture, and the action captures once', () => {
   const view = mount({ resolverRejects: true })
   view.index.read()
   view.reset()
@@ -517,22 +521,16 @@ it('runs the exact fallback once per settled selection for an unknown state', ()
   document.dispatchEvent(new KeyboardEvent('keydown', { code: 'ShiftLeft' }))
   view.select(alpha, 0, alpha, 4)
   vi.advanceTimersByTime(40)
-  expect(view.work().calloutCapture).toBe(0)
   document.dispatchEvent(new KeyboardEvent('keyup', { code: 'ShiftLeft' }))
   vi.advanceTimersByTime(40)
-  expect(view.work().calloutCapture).toBe(1)
-  expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
-
-  // Further updates within the same settled selection reuse that result.
   document.dispatchEvent(new Event('input'))
   vi.advanceTimersByTime(40)
-  expect(view.work().calloutCapture).toBe(1)
 
-  // The exact capture's markers split text nodes (old-path behavior); re-read the paragraph.
-  view.root.normalize()
-  const again = view.paragraph('Alpha')
-  view.keyStep(again, 0, again, 6)
-  expect(view.work().calloutCapture).toBe(2)
+  expect(view.work()).toEqual(NO_WORK)
+  expect(view.state()).toEqual({ disabled: false, pressed: 'false' })
+
+  view.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  expect(view.work().insertNode).toBe(2)
 })
 
 it('captures exact source once on button pointerdown and toggles from that capture', async () => {
@@ -641,20 +639,22 @@ it('keeps the toggled result as the target when the exact capture fails and for 
   expect(view.state()).toEqual({ disabled: true, pressed: 'false' })
 })
 
+// Task 733 / 036 (Q8 (a)): edited contract. The settled read used to be observed through the passive
+// exact capture, which no longer runs; the settled `readWhenReady` call is observed instead.
 it('settles after a synthetic keydown without a keyup and after a Meta chord missing its keyup', () => {
   const view = mount({ resolverRejects: true })
   view.index.read()
   view.reset()
+  const settledReads = vi.spyOn(view.index, 'readWhenReady')
   const alpha = view.paragraph('Alpha')
 
   // The IR table panel dispatches synthetic keydowns with no code and no keyup.
   document.dispatchEvent(new KeyboardEvent('keydown', { key: '=' }))
   view.select(alpha, 0, alpha, 3)
   vi.advanceTimersByTime(60)
-  expect(view.work().calloutCapture).toBe(1)
+  expect(settledReads).toHaveBeenCalledTimes(1)
 
   // macOS drops the letter's keyup while Cmd is held; releasing Cmd must still settle.
-  view.root.normalize()
   const again = view.paragraph('Alpha')
   document.dispatchEvent(
     new KeyboardEvent('keydown', { code: 'MetaLeft', metaKey: true }),
@@ -664,10 +664,11 @@ it('settles after a synthetic keydown without a keyup and after a Meta chord mis
   )
   view.select(again, 0, again, 5)
   vi.advanceTimersByTime(60)
-  expect(view.work().calloutCapture).toBe(1)
+  expect(settledReads).toHaveBeenCalledTimes(1)
   document.dispatchEvent(new KeyboardEvent('keyup', { code: 'MetaLeft' }))
   vi.advanceTimersByTime(60)
-  expect(view.work().calloutCapture).toBe(2)
+  expect(settledReads).toHaveBeenCalledTimes(2)
+  expect(view.work().calloutCapture).toBe(0)
 })
 
 it('does not apply a retained result after the exact bytes changed invisibly', async () => {
@@ -804,7 +805,9 @@ it.each(['ir', 'sv'] as const)(
     vi.spyOn(document, 'activeElement', 'get').mockReturnValue(view.root)
     view.root.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
     vi.advanceTimersByTime(60)
-    expect(view.work().calloutCapture).toBe(1)
+    // Task 733 / 036 (Q8 (a), edited): IR settles from the index with no passive capture; SV keeps its
+    // explicit capture.
+    expect(view.work().calloutCapture).toBe(mode === 'ir' ? 0 : 1)
     expect(readWhenReady).toHaveBeenCalledTimes(mode === 'ir' ? 1 : 0)
   },
 )

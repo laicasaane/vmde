@@ -734,6 +734,49 @@ describe('createUnitDom render deletions in lists (010-R pass 2, N1)', () => {
   })
 })
 
+describe('createUnitDom prepareRender (036 H2 D3.3)', () => {
+  it('a refusal writes nothing: a list placement, a detached anchor and a row shape', () => {
+    const { root, dom } = open(
+      'para\n\n1. a\n2. b\n\n| x | y |\n| --- | --- |\n| 1 | 2 |\n',
+    )
+    const before = root.innerHTML
+    const first = root.querySelectorAll('li')[0] as HTMLElement
+    expect(dom.prepareRender?.([], [first])).toBeUndefined()
+    const detached = document.createElement('p')
+    expect(
+      dom.prepareRender?.([{ kind: 'paragraph', source: 'q' }], [detached]),
+    ).toBeUndefined()
+    const row = root.querySelector('tbody > tr') as HTMLElement
+    expect(
+      dom.prepareRender?.(
+        [{ kind: 'table', source: '| 1 |\n| --- |\n| 9 |' }],
+        [row],
+      ),
+    ).toBeUndefined()
+    expect(root.innerHTML).toBe(before)
+  })
+
+  it('a prepared replacement writes nothing until its commit, which writes what render writes', () => {
+    const { root, dom } = open('para\n\n1. a\n2. b\n3. c\n')
+    const before = root.innerHTML
+    const second = root.querySelectorAll('li')[1] as HTMLElement
+    const prepared = dom.prepareRender?.([], [second])
+    expect(prepared).toBeDefined()
+    expect(root.innerHTML).toBe(before)
+    expect(prepared?.commit()).toEqual([])
+    expect(root.querySelectorAll('li')).toHaveLength(2)
+    const paragraph = root.querySelector('p') as HTMLElement
+    const again = dom.prepareRender?.(
+      [{ kind: 'paragraph', source: 'new' }],
+      [paragraph],
+    )
+    expect(root.querySelector('p')).toBe(paragraph)
+    const rendered = again?.commit()
+    expect(rendered?.map((host) => host.kind)).toEqual(['paragraph'])
+    expect(root.querySelector('p')?.textContent).toBe('new')
+  })
+})
+
 // ---- Task 733 / 012-11: listUnits reads no table row ----
 //
 // `listUnits` runs on every root-stage sync; reading every row of every table made it cost the size
@@ -1009,5 +1052,118 @@ describe('013 WYSIWYG unit DOM', () => {
       // One reused set: a batch that inserts nothing allocates none.
       expect(new Set(sets).size).toBe(1)
     }, 60_000)
+  })
+})
+
+// Task 733 / 036 (step B, fix design 2.7): the per-write drain of one replay write. Genuine records queued
+// before the write reach the model and the registered drains first; the write's own records reach the
+// drains' `own` handler and never the model; a later user edit of the same node is a new genuine record.
+describe('createUnitDom writeOwn (036 B)', () => {
+  it('keeps a user record on the same node and its parent, and drops the write own records for the model', () => {
+    const { root, dom, dirty } = open('alpha\n\nbeta\n')
+    const page = {
+      genuine: [] as MutationRecord[][],
+      own: [] as MutationRecord[][],
+    }
+    const observer = new MutationObserver(() => undefined)
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    })
+    const off = dom.addWriteDrain?.({
+      observer,
+      genuine: (records) => void page.genuine.push(records),
+      own: (records) => void page.own.push(records),
+    })
+    const p = root.querySelectorAll('p')[1] as HTMLElement
+    // A user edit queued before the write.
+    ;(p.firstChild as Text).data = 'beta!'
+    dom.writeOwn?.(() => {
+      p.setAttribute('data-x', '1')
+      p.append(document.createTextNode('?'))
+    })
+    expect(dirty).toHaveBeenCalledTimes(1)
+    expect(page.genuine[0]).toHaveLength(1)
+    expect(page.genuine[0][0].type).toBe('characterData')
+    expect(page.own[0].length).toBeGreaterThan(0)
+    expect(page.own[0].every((record) => record.type === 'childList')).toBe(
+      true,
+    )
+    // A later user edit of the same node and of its parent is genuine again.
+    ;(p.firstChild as Text).data = 'beta!!'
+    root.append(document.createElement('p'))
+    dom.drain()
+    expect(dirty.mock.calls.length).toBeGreaterThan(1)
+    off?.()
+    observer.disconnect()
+  })
+})
+
+// H2 fix design rev2 (D8.1): a replay write of a heading skips the outline render (it spins the whole IR
+// DOM); one deferred render runs it once. A heading render outside `writeOwn` is unchanged.
+describe('createUnitDom outline deferral (036 H2 D8.1)', () => {
+  const withOutline = (markdown: string) => {
+    const render = vi.fn()
+    const vditor = { outline: { render } }
+    const session = open(markdown, { vditor: () => vditor })
+    return { ...session, render }
+  }
+
+  it('a replay write of a heading owes the outline render; the flush runs it once', () => {
+    const { root, dom, render } = withOutline('# one\n\n# two\n\npara\n')
+    const [first, second] = Array.from(root.querySelectorAll('h1'))
+    dom.writeOwn?.(() =>
+      dom.render(
+        [{ kind: 'heading', source: '# ONE' }],
+        [first as HTMLElement],
+      ),
+    )
+    dom.writeOwn?.(() =>
+      dom.render(
+        [{ kind: 'heading', source: '# TWO' }],
+        [second as HTMLElement],
+      ),
+    )
+    expect(render).not.toHaveBeenCalled()
+    expect(dom.outlinePending?.()).toBe(true)
+    dom.flushOutline?.()
+    dom.flushOutline?.()
+    expect(render).toHaveBeenCalledTimes(1)
+    expect(dom.outlinePending?.()).toBe(false)
+  })
+
+  it('a heading render outside a replay write renders the outline at once, and a paragraph owes nothing', () => {
+    const { root, dom, render } = withOutline('# one\n\npara\n')
+    dom.render(
+      [{ kind: 'heading', source: '# ONE' }],
+      [root.querySelector('h1') as HTMLElement],
+    )
+    expect(render).toHaveBeenCalledTimes(1)
+    dom.writeOwn?.(() =>
+      dom.render(
+        [{ kind: 'paragraph', source: 'PARA' }],
+        [root.querySelector('p') as HTMLElement],
+      ),
+    )
+    expect(dom.outlinePending?.()).toBe(false)
+  })
+})
+
+// 036 core C4 (R34.1): the delivery hook runs only when the browser delivers the observer's records.
+describe('createUnitDom onDelivered (036 core C4)', () => {
+  it('runs after a browser delivery, never from drain or writeOwn', async () => {
+    const onDelivered = vi.fn()
+    const { root, dom } = open(MIXED, { onBatch: vi.fn(), onDelivered })
+    text(root, 'td').data = '9'
+    dom.drain()
+    dom.writeOwn?.(() => {
+      text(root, 'td').data = '8'
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(onDelivered).not.toHaveBeenCalled()
+    text(root, 'td').data = '7'
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(onDelivered).toHaveBeenCalledTimes(1)
   })
 })

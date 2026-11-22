@@ -2,7 +2,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { provideUnitFeed, type UnitsChange } from '../util/unit-changes'
 import type { ModelSession } from './model-session'
-import { createUnitFeed, installUnitFeedStats } from './unit-feed'
+import { createReplayBudget } from './replay-budget'
+import {
+  createSourceUnitFeed,
+  createUnitFeed,
+  installUnitFeedStats,
+} from './unit-feed'
 
 // Task 733 / 005-B: the feed over a stub session; `confirmNow` reads the session after the flush (R-1).
 function stubSession(confirmed: () => readonly unknown[] | undefined) {
@@ -99,6 +104,18 @@ describe('createUnitFeed', () => {
     off()
     stub.emit(change)
     expect(listener).toHaveBeenCalledTimes(1)
+  })
+  // Task 733 / 036 (step D, 4.2): the IR feed hands out the session's replay account; the Source feed does
+  // not, while the IR model is live.
+  it('hands out the session replay account to its consumers', () => {
+    const stub = stubSession(() => [])
+    const account = createReplayBudget({ now: () => 0 })
+    ;(stub.raw as Record<string, unknown>).replayAccount = () => account
+    const deps = { isComposing: () => false, root: () => root }
+    const feed = createUnitFeed(stub.session, { flush: vi.fn() }, deps)
+    expect(feed.replayAccount?.()).toBe(account)
+    const source = createSourceUnitFeed(stub.session, { flush: vi.fn() }, deps)
+    expect(source.replayAccount?.()).toBeUndefined()
   })
 })
 

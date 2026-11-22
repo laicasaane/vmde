@@ -147,10 +147,33 @@ export function registerPanelRouteCommand(
   route: PanelRoute,
 ): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand(command, () =>
-      resolveActivePanel(deps)?.panel.webview.postMessage(route),
-    ),
+    vscode.commands.registerCommand(command, (args?: unknown) => {
+      if (refusesReservedHistoryTag(command, args, deps)) return
+      return resolveActivePanel(deps)?.panel.webview.postMessage(route)
+    }),
   )
+}
+
+/** Task 733 / 036 D-18: the Undo/Redo commands whose reserved argument tag is refused. */
+const HISTORY_COMMANDS = new Set(['vmde.format.undo', 'vmde.format.redo'])
+
+/**
+ * Task 733 / 036 D-18 (Q-238 as amended): the default Undo/Redo keybindings pass no arguments, and an
+ * owned IR press never reaches VS Code. An argument object carrying the reserved `vmdeKey` property (any
+ * value, falsy included) can only come from a hand-written binding or call copying the withdrawn tagged
+ * rows: it is refused, not posted, and counted in the log (no document text). Other arguments are ignored
+ * as before.
+ */
+function refusesReservedHistoryTag(
+  command: string,
+  args: unknown,
+  deps: { debug: (...args: unknown[]) => void },
+): boolean {
+  if (!HISTORY_COMMANDS.has(command)) return false
+  if (typeof args !== 'object' || args === null || !('vmdeKey' in args))
+    return false
+  deps.debug('undoRedoTagRefused', command)
+  return true
 }
 
 export function registerCommands(

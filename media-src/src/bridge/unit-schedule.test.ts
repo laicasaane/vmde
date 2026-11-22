@@ -22,6 +22,7 @@ import { scanMovableBlocks } from '../../../src/shared/block-move'
 import { patchLuteGapRepair } from '../../../src/shared/lute-gap-repair'
 import { patchLuteTableCodePipes } from '../../../src/shared/table-code-pipes'
 import { createRealLute } from '../testing/real-lute'
+import { createReplayBudget } from './replay-budget'
 import { createBackgroundScheduler } from '../util/background-budget'
 import { installModelSync } from './model-structure'
 import { createTextModel } from './text-model'
@@ -268,6 +269,44 @@ function runUntilIdle(r: Rig, limit = 2000): number {
 }
 
 describe('idle proof slices', () => {
+  // Task 733 / 036 (fix design 4.2-4.3): the proof lane yields to an open replay account and runs only
+  // in what remains of its budget, charged to the replay.
+  it('charges proof slices to an open replay account and yields when its frame left no room', () => {
+    const r = rig(40)
+    const account = createReplayBudget({ now: () => r.clock.t })
+    r.deps.replayAccount = account
+    const token = account.open()
+    r.schedule.start()
+    r.runFrames(5)
+    const charged = r.proofs.length
+    expect(charged).toBeGreaterThan(0)
+    expect(account.stats().classes.deferred?.atomics).toBeGreaterThan(0)
+    // A replay frame that used its whole budget: the lane proves nothing until the account closes.
+    account.beginFrame()
+    account.atomic('leaf', 0, () => {
+      r.clock.t += 16
+    })
+    account.endFrame()
+    r.runFrames(3)
+    expect(r.proofs).toHaveLength(charged)
+    // A frame that left 2 ms: the next slice stops there (1 ms per proof, one past the cut at most).
+    account.beginFrame()
+    account.atomic('leaf', 0, () => {
+      r.clock.t += 13
+    })
+    account.endFrame()
+    expect(account.remainingMs()).toBe(2)
+    r.runFrame()
+    expect(r.proofs.length - charged).toBeGreaterThan(0)
+    expect(r.proofs.length - charged).toBeLessThanOrEqual(3)
+    const shared = r.proofs.length
+    r.runFrames(2)
+    expect(r.proofs).toHaveLength(shared)
+    account.finish(token)
+    r.runFrame()
+    expect(r.proofs.length).toBeGreaterThan(shared)
+  })
+
   it('proves nothing during the first 4 paint frames', () => {
     const r = rig(10)
     r.schedule.start()
@@ -449,6 +488,27 @@ describe('pre-touch proof', () => {
     exact.setEndAfter(r.units[31].el as Node)
     expect(r.schedule.proveForSelection(exact)).toBe('proven')
     expect(r.proofs).toHaveLength(32)
+  })
+
+  // Task 733 / 036 (fix design 2.6): units of pending replay groups are skipped by the pre-touch; a
+  // refusal on a rendered unit keeps today's meaning.
+  it('skips the units of pending replay groups', () => {
+    const r = rig(40)
+    const pendingUnits = new Set([r.units[3], r.units[7]])
+    r.deps.replayPending = (unit) => pendingUnits.has(unit)
+    const range = document.createRange()
+    range.setStartBefore(r.units[0].el as Node)
+    range.setEndAfter(r.units[33].el as Node)
+    expect(r.schedule.proveForSelection(range)).toBe('proven')
+    expect(r.proofs).toHaveLength(32)
+    expect(r.units[3].proof).toBe('none')
+    expect(r.units[7].proof).toBe('none')
+    const over = document.createRange()
+    over.setStartBefore(r.units[0].el as Node)
+    over.setEndAfter(r.units[34].el as Node)
+    for (const unit of r.units) unit.proof = 'none'
+    expect(r.schedule.proveForSelection(over)).toBe('fallback')
+    expect(r.schedule.lastFallbackReason()).toBe('unproven-selection')
   })
 
   it('falls back for an oversize unit before its idle proof', () => {

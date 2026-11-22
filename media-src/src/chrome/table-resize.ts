@@ -10,6 +10,10 @@ import {
   backgroundSchedulerOf,
   type SliceBudget,
 } from '../util/background-budget'
+
+type ReplayAccount = NonNullable<
+  ReturnType<NonNullable<UnitFeed['replayAccount']>>
+>
 import { requestWrapHintReplan } from '../util/wrap-hint-mark'
 import { findScroller } from './toolbar-scroll-guard'
 
@@ -534,13 +538,41 @@ export function installTableColumnResize(): () => void {
     return { mode, root, scroller: findScroller(root) }
   }
 
-  function onSurfaceResize(): void {
-    scrollerDirty = true
+  // Task 733 / 036 (fix design 4.3): the observer also watches every header row. A row resize (a replay
+  // or typing in a cell) cannot make another ancestor overflow, so it keeps the scroller; only the root
+  // or the kept scroller invalidates it. One loop over the entries, no allocation.
+  function onSurfaceResize(entries: readonly ResizeObserverEntry[]): void {
+    for (const entry of entries)
+      if (entry.target === activeRoot || entry.target === scroller) {
+        scrollerDirty = true
+        break
+      }
+    // A resize while a replay runs follows its writes: the frame it schedules is charged to it.
+    const feed = liveFeed()
+    if (feed) markReplay(feed)
     scheduleGeometry()
   }
 
+  // Task 733 / 036 (fix design 4.2): the replay account that a feed change or a resize marked for the
+  // scheduled frame. The frame runs charged to it (`charged(fn, true)` releases the mark); a cancelled
+  // frame releases the mark. One field read when no replay account is open.
+  let markedAccount: ReplayAccount | undefined
+  function markReplay(feed: UnitFeed): void {
+    if (markedAccount) return
+    const account = feed.replayAccount?.()
+    if (!account?.isOpen()) return
+    account.expect()
+    markedAccount = account
+  }
+  function runChargedFrame(): void {
+    const account = markedAccount
+    markedAccount = undefined
+    if (account) account.charged(runFrame, true)
+    else runFrame()
+  }
+
   function scheduleFrame(): void {
-    if (!frame) frame = requestAnimationFrame(runFrame)
+    if (!frame) frame = requestAnimationFrame(runChargedFrame)
   }
 
   function scheduleMembership(): void {
@@ -1091,6 +1123,7 @@ export function installTableColumnResize(): () => void {
     if (feed.root !== activeRoot) return
     if (change.whole) {
       headerCache = new WeakMap()
+      markReplay(feed)
       scheduleMembership()
       return
     }
@@ -1099,6 +1132,7 @@ export function installTableColumnResize(): () => void {
     if (structuralTables.size > before) {
       geometryDirty = true
       geometryAll = true
+      markReplay(feed)
       scheduleFrame()
       return
     }
@@ -1107,7 +1141,10 @@ export function installTableColumnResize(): () => void {
         geometryTables.add(unit.top)
         geometryDirty = true
       }
-    if (geometryDirty) scheduleFrame()
+    if (geometryDirty) {
+      markReplay(feed)
+      scheduleFrame()
+    }
   }
 
   function onVisibilityChange(): void {
@@ -1139,6 +1176,8 @@ export function installTableColumnResize(): () => void {
     scheduler.cancel(membershipJob)
     passTables = undefined
     if (frame) cancelAnimationFrame(frame)
+    markedAccount?.release()
+    markedAccount = undefined
     intersectionObserver?.disconnect()
     resizeObserver?.disconnect()
     mutationObserver.disconnect()

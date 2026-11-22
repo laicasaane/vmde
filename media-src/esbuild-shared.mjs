@@ -2864,6 +2864,34 @@ export function patchEditModeModelText(code) {
   )
 }
 
+// 036 core C2 (R4.3): Vditor's `setEditMode` (`toolbar/EditMode.ts:23`) changes the surface before VMDE
+// learns of the switch (the toolbar notice is deferred), so a visible IR edit made in the same task was
+// never posted. The patch calls `window.__vmdeBeforeEditMode` (boot/finish-init.ts) as the first statement,
+// before `getMarkdown`, `hidePanel` and the surface change; the third argument is true for a user switch
+// (toolbar click, chord, command) and false for a programmatic switch with given Markdown. Chained after
+// `patchEditModeModelText` in the same registry entry.
+const BEFORE_EDIT_MODE_ANCHOR =
+  'export const setEditMode = (vditor: IVditor, type: string, event: Event | string) => {'
+export function patchBeforeEditMode(code) {
+  if (code.includes('__vmdeBeforeEditMode')) {
+    throw new Error(
+      'patchBeforeEditMode: vditor toolbar/EditMode.ts is already patched (applied twice?)',
+    )
+  }
+  assertOneAnchor(
+    code,
+    BEFORE_EDIT_MODE_ANCHOR,
+    'patchBeforeEditMode',
+    'toolbar/EditMode.ts',
+  )
+  return code.replace(
+    BEFORE_EDIT_MODE_ANCHOR,
+    `${BEFORE_EDIT_MODE_ANCHOR}\n` +
+      '    // 036 core C2 (VMDE patch R4.3): the user edits are posted before the surface changes.\n' +
+      '    (window as any).__vmdeBeforeEditMode?.(vditor, type, typeof event !== "string");',
+  )
+}
+
 // Task 733 / 015-I2, V-S3 (task 015 section 6.2 D-5): Source `setValue` (`src/index.ts:317`) wraps the
 // whole spin in one `data-block` div, so the first key after a host update spins the whole document.
 // It now builds with `processSpinVditorSVDOM`, the split the mode switch uses (`EditMode.ts:120`), so
@@ -4630,8 +4658,9 @@ export const VDITOR_TS_PATCHES = [
   {
     // Task 580 CP3-2: the edit-mode rows show names only.
     file: /vditor[/\\]src[/\\]ts[/\\]toolbar[/\\]EditMode\.ts$/,
-    // Task 733 / 015: then V-S2 (the model text of a Source switch).
-    transform: (code) => patchEditModeModelText(patchEditModeKeyHints(code)),
+    // Task 733 / 015: then V-S2 (the model text of a Source switch); 036 core C2: then the flush hook.
+    transform: (code) =>
+      patchBeforeEditMode(patchEditModeModelText(patchEditModeKeyHints(code))),
   },
   {
     // Task 580 CP3-2: the WYSIWYG popover labels and placeholders show names only.

@@ -1,10 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   type DeltaFallbackReason,
   type DeltaSessionPort,
   type DeltaSyncDeps,
   createDeltaSync,
   type PrepareResult,
+  type PublicationTraceEntry,
+  publicationTraceContext,
+  setPublicationTraceCause,
+  setPublicationTraceContext,
+  tracePublication,
 } from './delta-sync'
 
 // Task 733 (007-A): the delta publisher against a fake model-session port. The fake scripts the
@@ -64,7 +69,14 @@ function setup(
     now: () => state.now,
     ...extra,
   }
-  return { state, posted, wholes, counted, sync: createDeltaSync(deps) }
+  return {
+    state,
+    posted,
+    wholes,
+    counted,
+    session,
+    sync: createDeltaSync(deps),
+  }
 }
 
 const before = 'line0\nline1\nline2\nline3 abcdef\n'
@@ -1194,5 +1206,468 @@ describe('unanswered deltas across an epoch (DR3)', () => {
     t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
     t.sync.afterUpdate(true)
     expect(t.sync.takeRefusedBase()).toBeUndefined()
+  })
+})
+
+describe('036 publication trace (end-to-end only)', () => {
+  const slot = globalThis as unknown as {
+    __vmdeE2EReadiness?: unknown
+    __vmdePublicationTrace?: PublicationTraceEntry[]
+  }
+  afterEach(() => {
+    delete slot.__vmdeE2EReadiness
+    delete slot.__vmdePublicationTrace
+    setPublicationTraceCause(undefined)
+    setPublicationTraceContext(undefined)
+  })
+
+  it('creates no trace without the end-to-end flag', () => {
+    const t = setup()
+    t.state.results.push(
+      { kind: 'changes', before, changes: [typed(0, 'SECRET')] },
+      { kind: 'fallback', reason: 'sync-error' },
+    )
+    t.sync.publish('idle')
+    t.sync.publish('flush')
+    t.sync.publishHistory('undo', 1)
+    tracePublication('whole', 3, 'model-off')
+    expect('__vmdePublicationTrace' in slot).toBe(false)
+  })
+
+  it('records kind, cause, reason and sequence of each publication, never text', () => {
+    slot.__vmdeE2EReadiness = {}
+    const t = setup()
+    t.state.results.push(
+      { kind: 'changes', before, changes: [typed(0, 'SECRET-A')] },
+      { kind: 'fallback', reason: 'unproven-selection' },
+      { kind: 'changes', before, changes: [typed(1, 'SECRET-B')] },
+    )
+    t.sync.publish('idle')
+    t.sync.publish('overdue')
+    t.sync.publishHistory('undo', 2)
+    const trace = slot.__vmdePublicationTrace ?? []
+    expect(
+      trace.map(({ kind, cause, reason, sequence }) => ({
+        kind,
+        cause,
+        reason,
+        sequence,
+      })),
+    ).toEqual([
+      { kind: 'delta', cause: 'idle', reason: undefined, sequence: 1 },
+      {
+        kind: 'fallback',
+        cause: 'overdue',
+        reason: 'unproven-selection',
+        sequence: 1,
+      },
+      {
+        kind: 'history-delta',
+        cause: 'history',
+        reason: undefined,
+        sequence: 2,
+      },
+    ])
+    expect(trace.every((entry) => typeof entry.t === 'number')).toBe(true)
+    expect(JSON.stringify(trace)).not.toContain('SECRET')
+  })
+
+  it('tags publications prepare while the override is set, and the whole post reads the fallback cause', () => {
+    slot.__vmdeE2EReadiness = {}
+    const t = setup('x', {
+      publishWhole: (reason) => tracePublication('whole', 7, reason),
+    })
+    t.state.awaiting = true
+    setPublicationTraceCause('prepare')
+    t.sync.publish('flush')
+    setPublicationTraceCause(undefined)
+    t.sync.publishHistory('redo', 1)
+    expect(
+      (slot.__vmdePublicationTrace ?? []).map(({ kind, cause, reason }) => [
+        kind,
+        cause,
+        reason,
+      ]),
+    ).toEqual([
+      ['fallback', 'prepare', 'awaiting-rebind'],
+      ['whole', 'prepare', 'awaiting-rebind'],
+      ['fallback', 'history', 'awaiting-rebind'],
+      ['whole', 'history', 'awaiting-rebind'],
+    ])
+  })
+
+  it('records the touched proof and structure state at the fallback decision when a reader is set', () => {
+    slot.__vmdeE2EReadiness = {}
+    const context = { touched: 'unproven' as const, structureDirty: 2 }
+    const reader = vi.fn(() => context)
+    setPublicationTraceContext(reader)
+    expect(publicationTraceContext()).toBe(reader)
+    const t = setup()
+    t.state.results.push({ kind: 'fallback', reason: 'unproven-selection' })
+    t.sync.publish('flush')
+    const [entry] = slot.__vmdePublicationTrace ?? []
+    expect(entry).toMatchObject({
+      kind: 'fallback',
+      reason: 'unproven-selection',
+      touched: 'unproven',
+      structureDirty: 2,
+    })
+    setPublicationTraceContext(undefined)
+    tracePublication('exact', 1)
+    const last = slot.__vmdePublicationTrace?.at(-1)
+    expect(last && ('touched' in last || 'structureDirty' in last)).toBe(false)
+  })
+
+  it('never reads the model state without the end-to-end flag', () => {
+    const reader = vi.fn(() => ({
+      touched: 'proven' as const,
+      structureDirty: 0,
+    }))
+    setPublicationTraceContext(reader)
+    const t = setup()
+    t.state.results.push({ kind: 'fallback', reason: 'sync-error' })
+    t.sync.publish('flush')
+    expect(reader).not.toHaveBeenCalled()
+    expect('__vmdePublicationTrace' in slot).toBe(false)
+  })
+
+  it('keeps the latest 32 entries', () => {
+    slot.__vmdeE2EReadiness = {}
+    for (let index = 1; index <= 40; index++) tracePublication('exact', index)
+    const trace = slot.__vmdePublicationTrace ?? []
+    expect(trace).toHaveLength(32)
+    expect(trace[0].sequence).toBe(9)
+    expect(trace.at(-1)?.sequence).toBe(40)
+  })
+})
+
+// Task 733 / 036 (F6 publication): `publishHistory(kind, steps, exactId)` for a replayable Find entry. The
+// exact branch runs right after `followEpoch`, before the `awaiting`, latch and `forceWhole` fallbacks, so
+// an earlier ordinary post cannot turn it into whole text. It reserves a sequence from the whole-edit
+// counter (`deps.reserveSequence`), posts one `history-exact`, calls `session.awaitExactHistory(sequence)`
+// and never runs `prepareDelta`. The rollback records and unanswered deltas are kept (answers acknowledge
+// them as today). None of this exists before step 6.
+describe('036', () => {
+  type ExactPublisher = {
+    publishHistory(
+      kind: 'undo' | 'redo',
+      steps: number,
+      exactId?: string,
+    ): unknown
+  }
+  const exactSetup = () => {
+    const reserveSequence = vi.fn(() => 41)
+    const t = setup(undefined, { reserveSequence } as Partial<DeltaSyncDeps>)
+    const awaitExactHistory = vi.fn()
+    Object.assign(t.session, { awaitExactHistory })
+    return {
+      ...t,
+      reserveSequence,
+      awaitExactHistory,
+      exact: t.sync as unknown as ExactPublisher,
+    }
+  }
+  const latch = (t: ReturnType<typeof setup>) => {
+    for (let i = 0; i < 6; i++) {
+      t.sync.onUpdate({ epoch: 100 + i, afterSequence: 0 })
+      t.state.epoch = 100 + i
+      t.state.results.push({
+        kind: 'changes',
+        before,
+        changes: [typed(0, 'a')],
+      })
+      t.sync.publish('idle')
+    }
+  }
+
+  it.each(['live', 'awaiting', 'latched', 'forceWhole'] as const)(
+    'posts one history-exact with a reserved sequence and no prepareDelta (%s)',
+    (condition) => {
+      const t = exactSetup()
+      if (condition === 'awaiting') t.state.awaiting = true
+      if (condition === 'latched') latch(t)
+      if (condition === 'forceWhole') {
+        t.state.results.push({
+          kind: 'changes',
+          before,
+          changes: [typed(0, 'a')],
+        })
+        t.sync.publish('idle')
+        t.sync.onRebind({ epoch: 2, afterSequence: 0, content: 'other' })
+        t.state.epoch = 2
+      }
+      t.posted.length = 0
+      t.wholes.length = 0
+      t.state.prepared.length = 0
+
+      t.exact.publishHistory('undo', 1, 'find-request-1')
+
+      // B0: the move also carries the tracked epoch and its replay operation number.
+      expect(t.posted).toEqual([
+        {
+          command: 'history-exact',
+          kind: 'undo',
+          requestId: 'find-request-1',
+          sequence: 41,
+          epoch: t.state.epoch,
+          replayOp: 1,
+        },
+      ])
+      expect(t.reserveSequence).toHaveBeenCalledOnce()
+      expect(t.awaitExactHistory).toHaveBeenCalledWith(41, {
+        epoch: t.state.epoch,
+        replayOp: 1,
+        requestId: 'find-request-1',
+      })
+      expect(t.state.prepared).toEqual([])
+      expect(t.wholes).toEqual([])
+    },
+  )
+
+  it('keeps the rollback records: a refusal of an earlier applied delta still rolls it back', () => {
+    const t = exactSetup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, [typed(0, 'A', 5)], { restore })
+
+    t.exact.publishHistory('redo', 1, 'find-request-2')
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    t.sync.afterUpdate(true)
+
+    expect(t.posted.at(-1)).toMatchObject({
+      command: 'history-exact',
+      kind: 'redo',
+    })
+    expect(restore).toHaveBeenCalledOnce()
+  })
+})
+
+// Task 733 / 036 (B0, fix design 3.1-3.7 and the second-opinion points 1, 2 and 5): every operation a
+// replay depends on carries the epoch-scoped `replayOp`; `replay-ack` names the contiguous applied prefix
+// and its `acceptedSequence` feeds the delta acknowledgement bookkeeping; `replay-status: applied` counts
+// as the missing acknowledgement; `unknown` re-posts the ledger from the queried operation; a reserved
+// Undo takes its delta sequence at the key, so later typing follows it in execution order.
+describe('036 B0 replay contract', () => {
+  type Change = Extract<
+    Parameters<DeltaSyncDeps['postMessage']>[0],
+    { command: 'edit-delta' }
+  >['changes']
+  type B0 = {
+    publishHistory(
+      kind: 'undo' | 'redo',
+      steps: number,
+      exactId?: string,
+    ): unknown
+    onReplayAck(message: {
+      epoch: number
+      replayOp: number
+      acceptedSequence: number
+    }): void
+    onReplayStatus(message: {
+      epoch: number
+      replayOp: number
+      state: string
+      applied: number
+      acceptedSequence: number
+    }): void
+    replayLedger(): number[]
+    postReplayDelta(
+      changes: Change,
+    ): { sequence: number; replayOp: number } | undefined
+    reserveReplayHistory(
+      kind: 'undo' | 'redo',
+    ): { epoch: number; replayOp: number; sequence: number } | undefined
+    postReservedHistory(
+      reservation: { epoch: number; replayOp: number; sequence: number },
+      kind: 'undo' | 'redo',
+      steps: number,
+      changes: Change,
+    ): void
+    setLogicalPublisher(
+      publisher:
+        | { publish(cause: string): 'delta' | 'nothing' | 'fallback' }
+        | undefined,
+    ): void
+    replayActive(): boolean
+    isNewerEpoch(epoch: number): boolean
+  }
+  const change = (text: string): Change => [
+    {
+      start: { line: 0, character: 0 },
+      end: { line: 0, character: 0 },
+      oldText: '',
+      text,
+    },
+  ]
+  const b0Setup = () => {
+    const t = setup(undefined, {
+      reserveSequence: () => 41,
+    } as Partial<DeltaSyncDeps>)
+    const awaitExactHistory = vi.fn()
+    Object.assign(t.session, { awaitExactHistory })
+    return { ...t, awaitExactHistory, b0: t.sync as unknown as B0 }
+  }
+
+  it('history-exact carries the epoch and replayOp 1, and the session learns both', () => {
+    const t = b0Setup()
+    t.b0.publishHistory('undo', 1, 'find-1')
+    expect(t.posted).toEqual([
+      {
+        command: 'history-exact',
+        kind: 'undo',
+        requestId: 'find-1',
+        sequence: 41,
+        epoch: 1,
+        replayOp: 1,
+      },
+    ])
+    expect(t.awaitExactHistory).toHaveBeenCalledWith(41, {
+      epoch: 1,
+      replayOp: 1,
+      requestId: 'find-1',
+    })
+    expect(t.b0.replayLedger()).toEqual([1])
+  })
+
+  it('a final typing delta with no later traffic is acknowledged, and acceptedSequence clears its rollback', () => {
+    const t = b0Setup()
+    const restore = vi.fn()
+    t.sync.publishApplied(before, [typed(0, 'A', 5)], { restore })
+    t.b0.publishHistory('undo', 1, 'find-1')
+    const typedOp = t.b0.postReplayDelta(change('!'))
+    expect(typedOp).toEqual({ sequence: 2, replayOp: 2 })
+    expect(t.posted.at(-1)).toMatchObject({
+      command: 'edit-delta',
+      epoch: 1,
+      sequence: 2,
+      replayOp: 2,
+    })
+    t.b0.onReplayAck({ epoch: 1, replayOp: 2, acceptedSequence: 2 })
+    expect(t.b0.replayLedger()).toEqual([])
+    // The host accepted sequence 1 too: a later epoch change does not roll the applied action back.
+    t.sync.onUpdate({ epoch: 2, afterSequence: 2 })
+    t.sync.afterUpdate(true)
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  it('a superseded reply (ack of op 1 after op 2 was posted) leaves op 2 in the ledger', () => {
+    const t = b0Setup()
+    t.b0.publishHistory('undo', 1, 'find-1')
+    t.b0.postReplayDelta(change('!'))
+    t.b0.onReplayAck({ epoch: 1, replayOp: 1, acceptedSequence: 0 })
+    expect(t.b0.replayLedger()).toEqual([2])
+  })
+
+  it('an ack or status of another epoch changes nothing', () => {
+    const t = b0Setup()
+    t.b0.publishHistory('undo', 1, 'find-1')
+    t.b0.onReplayAck({ epoch: 7, replayOp: 1, acceptedSequence: 0 })
+    t.b0.onReplayStatus({
+      epoch: 7,
+      replayOp: 1,
+      state: 'applied',
+      applied: 1,
+      acceptedSequence: 0,
+    })
+    expect(t.b0.replayLedger()).toEqual([1])
+  })
+
+  it('replay-status applied counts as the missing acknowledgement', () => {
+    const t = b0Setup()
+    t.b0.publishHistory('undo', 1, 'find-1')
+    t.b0.postReplayDelta(change('!'))
+    t.b0.onReplayStatus({
+      epoch: 1,
+      replayOp: 1,
+      state: 'applied',
+      applied: 2,
+      acceptedSequence: 1,
+    })
+    expect(t.b0.replayLedger()).toEqual([])
+  })
+
+  it('replay-status unknown re-posts every ledger operation from the queried one, unchanged', () => {
+    const t = b0Setup()
+    t.b0.publishHistory('undo', 1, 'find-1')
+    t.b0.postReplayDelta(change('!'))
+    const first = t.posted[0]
+    const second = t.posted[1]
+    t.posted.length = 0
+    t.b0.onReplayStatus({
+      epoch: 1,
+      replayOp: 1,
+      state: 'unknown',
+      applied: 0,
+      acceptedSequence: 0,
+    })
+    expect(t.posted).toEqual([first, second])
+    expect(t.b0.replayLedger()).toEqual([1, 2])
+  })
+
+  it('a reserved Undo takes its sequence at the key: reserve, typing, then the payload keep execution order', () => {
+    const t = b0Setup()
+    const reservation = t.b0.reserveReplayHistory('undo')
+    expect(reservation).toEqual({ epoch: 1, replayOp: 1, sequence: 1 })
+    expect(t.posted.at(-1)).toEqual({
+      command: 'replay-reserve',
+      epoch: 1,
+      replayOp: 1,
+      kind: 'undo',
+    })
+    expect(t.b0.postReplayDelta(change('!'))).toEqual({
+      sequence: 2,
+      replayOp: 2,
+    })
+    t.b0.postReservedHistory(
+      reservation as { epoch: number; replayOp: number; sequence: number },
+      'undo',
+      1,
+      [],
+    )
+    expect(t.posted.at(-1)).toEqual({
+      command: 'history-delta',
+      kind: 'undo',
+      epoch: 1,
+      sequence: 1,
+      steps: 1,
+      changes: [],
+      replayOp: 1,
+    })
+    expect(t.b0.replayLedger()).toEqual([1, 2])
+  })
+
+  it('while a logical publisher is set, publish delegates and the baseline handlers do nothing', () => {
+    const t = b0Setup()
+    const publish = vi.fn(() => 'nothing' as const)
+    t.b0.setLogicalPublisher({ publish })
+    expect(t.b0.replayActive()).toBe(true)
+    t.state.results.push({ kind: 'changes', before, changes: [typed(0, 'a')] })
+    expect(t.sync.publish('idle')).toBe('nothing')
+    expect(publish).toHaveBeenCalledWith('idle', undefined)
+    expect(t.state.prepared).toEqual([])
+    t.sync.onBaseline({ epoch: 1, afterSequence: 0 })
+    t.sync.onRestoreBaseline({ epoch: 1, afterSequence: 0, content: 'other\n' })
+    expect(t.state.keepCalls).toEqual([])
+    expect(t.state.rebinds).toEqual([])
+    t.b0.setLogicalPublisher(undefined)
+    expect(t.b0.replayActive()).toBe(false)
+  })
+
+  it('an update of a new epoch clears the ledger and restarts replayOp at 1', () => {
+    const t = b0Setup()
+    t.b0.publishHistory('undo', 1, 'find-1')
+    t.sync.onUpdate({ epoch: 2, afterSequence: 0 })
+    t.state.epoch = 2
+    expect(t.b0.replayLedger()).toEqual([])
+    expect(t.b0.postReplayDelta(change('!'))).toEqual({
+      sequence: 1,
+      replayOp: 1,
+    })
+  })
+
+  it('isNewerEpoch compares with the tracked epoch', () => {
+    const t = b0Setup()
+    t.sync.lastPostedSequence()
+    expect(t.b0.isNewerEpoch(1)).toBe(false)
+    expect(t.b0.isNewerEpoch(2)).toBe(true)
   })
 })

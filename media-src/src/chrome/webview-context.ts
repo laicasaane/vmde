@@ -253,5 +253,38 @@ export function installWebviewContext(root: HTMLElement | null): () => void {
     attributeOldValue: true,
     attributeFilter: ['class', 'data-type', 'data-wiki-link'],
   })
-  return () => observer.disconnect()
+  const stamp = (records: MutationRecord[]) => {
+    if (records.length > 0) stampMutationBatch(root, records)
+  }
+  const drain: ContextDrain = { root, observer, genuine: stamp, own: stamp }
+  contextDrains.add(drain)
+  return () => {
+    contextDrains.delete(drain)
+    observer.disconnect()
+  }
+}
+
+/**
+ * Task 733 / 036 (fix design 2.7): the page-context observer as a write drain of the unit DOM
+ * (`UnitDomControl.addWriteDrain`, structurally the same shape). A replay write takes this observer's
+ * records synchronously: the genuine ones queued before the write and the write's own are both stamped
+ * inside the write, so the stamp is timed in the replay atomic and the new nodes carry their context
+ * before the next paint.
+ */
+interface ContextDrain {
+  readonly root: HTMLElement
+  readonly observer: MutationObserver
+  genuine(records: MutationRecord[]): void
+  own(records: MutationRecord[]): void
+}
+
+const contextDrains = new Set<ContextDrain>()
+
+/** Task 733 / 036: the installed page-context drain whose root holds `editor`; undefined when none. */
+export function webviewContextDrainFor(
+  editor: HTMLElement,
+): Omit<ContextDrain, 'root'> | undefined {
+  for (const drain of contextDrains)
+    if (drain.root.contains(editor)) return drain
+  return undefined
 }

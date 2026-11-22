@@ -34,6 +34,19 @@ vi.mock('../../src/lute/lute-host', async (importOriginal) => {
     configureLuteCodeCache: seed.configureCache,
   }
 })
+// Task 733 / 036 (E2): the untitled "Recovered edits" writer is observed; its formatting stays real.
+// 036 core C7 (R33.4): `append` observes the insertion, `present` the presentation.
+const recovered = vi.hoisted(() => ({
+  append: vi.fn(async (_text: string) => undefined),
+  present: vi.fn(async () => undefined),
+}))
+vi.mock('../../src/session/recovered-edits', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('../../src/session/recovered-edits')
+  >()),
+  insertRecoveredEdits: recovered.append,
+  presentRecoveredEdits: recovered.present,
+}))
 
 // The whole point of the refactor: EditorSession is now an independently
 // constructible unit. Give it a context, a document, a webview panel, and an HTML
@@ -4321,6 +4334,82 @@ describe('EditorSession delta protocol (Task 733)', () => {
       expect(traced.join('\n')).not.toContain('SECRET')
     })
 
+    it('036 Q6: logs an edit without its content, before or request id', async () => {
+      const traced: string[] = []
+      initLogger({ trace: (line: string) => traced.push(line) } as never)
+      const { session, panel } = await ready('SECRET-0\n', '/ws/secret-edit.md')
+      await panel._receiveMessage({
+        command: 'edit',
+        content: 'SECRET-1\n',
+        exact: true,
+        before: 'SECRET-0\n',
+        requestId: 'SECRET-ID',
+        sequence: 3,
+        rebind: true,
+        history: 'undo',
+      })
+      await settle(session)
+      initLogger(undefined as never)
+      const review = traced.filter((line) =>
+        line.includes('msg from webview review'),
+      )
+      expect(review.join('\n')).toContain('"contentLength":9')
+      expect(review.join('\n')).toContain('"requestId":true')
+      expect(review.join('\n')).toContain('"history":"undo"')
+      expect(review.join('\n')).toContain('"sequence":3')
+      expect(traced.join('\n')).not.toContain('SECRET-')
+    })
+
+    it('036 Q6: logs a history-exact message by kind, sequence and request presence only', async () => {
+      const traced: string[] = []
+      initLogger({ trace: (line: string) => traced.push(line) } as never)
+      const { panel } = await ready()
+      await panel._receiveMessage({
+        command: 'history-exact',
+        kind: 'redo',
+        requestId: 'SECRET-ID',
+        sequence: 4,
+      } as never)
+      initLogger(undefined as never)
+      const review = traced.filter((line) =>
+        line.includes('msg from webview review'),
+      )
+      expect(review.join('\n')).toContain('"kind":"redo"')
+      expect(review.join('\n')).toContain('"sequence":4')
+      expect(traced.join('\n')).not.toContain('SECRET')
+    })
+
+    it('036 Q6: tolerates malformed edit and history-exact messages in the log', async () => {
+      const traced: string[] = []
+      initLogger({ trace: (line: string) => traced.push(line) } as never)
+      const { panel } = await ready()
+      await panel._receiveMessage({
+        command: 'edit',
+        content: ['SECRET-ARRAY'],
+        history: 'SECRET-KIND',
+        sequence: 'SECRET-SEQ',
+        before: { text: 'SECRET-OBJ' },
+      } as never)
+      await panel._receiveMessage({
+        command: 'history-exact',
+        kind: 'SECRET-KIND',
+        requestId: 7,
+        sequence: 1.5,
+      } as never)
+      await panel._receiveMessage(null as never)
+      await panel._receiveMessage('SECRET-STRING' as never)
+      initLogger(undefined as never)
+      const review = traced.filter((line) =>
+        line.includes('msg from webview review'),
+      )
+      // The two non-object messages log their type only.
+      expect(review.join('\n')).toContain('{"type":"string"}')
+      expect(review.join('\n')).toContain('{"type":"null"}')
+      expect(review.join('\n')).toContain('"contentLength":null')
+      expect(review.join('\n')).toContain('"kind":null')
+      expect(traced.join('\n')).not.toContain('SECRET')
+    })
+
     it('a webview save that writes starts a new epoch and posts an update', async () => {
       const { session, panel, document } = await ready()
       await panel._receiveMessage({ command: 'save', content: 'one\nTWO\n' })
@@ -4559,5 +4648,1352 @@ describe('EditorSession delta protocol (Task 733)', () => {
       await settle(session)
       expect(mock.calls.showWarning).toHaveLength(0)
     })
+  })
+})
+
+// Task 733 / 036 (F6 host, F8 Save, review of revision 4 points 4 to 6). The host admits a replay pair
+// `{before, after, version}` only for an `edit` with `exact`, `rebind` and `replayable`, after an actual
+// guarded-apply success (`WritebackController.syncExact` reports `applied`, bytes re-read equal); it
+// answers that edit's `rebind` with `exactRequestId` and names a pair its FIFO of 8 dropped in
+// `exactEvicted`. `history-exact` replays an admitted pair natively and answers once with `rebind`; any
+// failure ends in exactly one `update` (`resync`), never `exact-edit-refused`. Save waits for a queued
+// replay inside VS Code's shared will-save budget, also during an intermediate native step. No log line
+// carries document text. None of this exists before step 5.
+describe('036 history-exact', () => {
+  const ORIGINAL = 'alpha one\nbeta two\n'
+  const REPLACED = 'ALPHA one\nBETA two\n'
+  const SENTINEL = 'SENTINEL-036-TEXT'
+  const posted = (command: string) =>
+    mock.calls.postMessage.filter((m: any) => m?.command === command) as any[]
+  const chain = (session: unknown) => (session as any).editMessageChain
+  const ticks = async (count = 20) => {
+    for (let i = 0; i < count; i++) await Promise.resolve()
+  }
+
+  async function ready(text = ORIGINAL, fsPath = '/ws/036-exact.md') {
+    const made = makeSession(fsPath, text)
+    made.session.start()
+    await made.panel._receiveMessage({ command: 'ready' })
+    mock.calls.postMessage.length = 0
+    return made
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.mocked(vscode.workspace.applyEdit).mockReset()
+    mock.reset()
+  })
+
+  /** Find's exact post: replayable, with `rebind`; `fields` overrides any part of it. */
+  const findEdit = (
+    requestId: string,
+    sequence: number,
+    fields: Record<string, unknown> = {},
+  ) => ({
+    command: 'edit',
+    content: REPLACED,
+    before: ORIGINAL,
+    exact: true,
+    rebind: true,
+    replayable: true,
+    requestId,
+    sequence,
+    ...fields,
+  })
+  // B0: every history move is replay operation 1 of epoch 0 here.
+  const historyExact = (
+    sequence: number,
+    requestId: string,
+    kind: unknown = 'undo',
+  ) => ({
+    command: 'history-exact',
+    kind,
+    requestId,
+    sequence,
+    epoch: 0,
+    replayOp: 1,
+  })
+  const rebindFor = (sequence: number) =>
+    posted('rebind').filter((m) => m.editSequence === sequence)
+  // B0: a history move is answered by `replay-ack`, not `rebind`.
+  const acks = () => posted('replay-ack')
+
+  /** Native undo restores `to` (optionally after `gate`). */
+  const nativeUndo = (
+    document: { __setText(text: string): void },
+    to: string,
+    gate?: Promise<void>,
+    intermediate?: string,
+  ) =>
+    mock.setExecuteCommandResponse(async (command) => {
+      if (command !== 'undo') return
+      if (intermediate !== undefined) document.__setText(intermediate)
+      if (gate !== undefined) await gate
+      document.__setText(to)
+    })
+
+  it('admits a replayable Find post: its rebind names the pair, and one Undo answers with one rebind', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage(findEdit('find-1', 1) as never)
+    await chain(session)
+    expect(document.getText()).toBe(REPLACED)
+    expect(rebindFor(1)).toEqual([
+      expect.objectContaining({ exactRequestId: 'find-1' }),
+    ])
+    mock.calls.postMessage.length = 0
+    nativeUndo(document, ORIGINAL)
+
+    await panel._receiveMessage(historyExact(2, 'find-1') as never)
+    await chain(session)
+
+    expect(document.getText()).toBe(ORIGINAL)
+    expect(acks()).toHaveLength(1)
+    expect(rebindFor(2)).toHaveLength(0)
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it.each([
+    ['unchanged text', { content: ORIGINAL }],
+    ['missing exact', { exact: undefined }],
+    ['missing rebind', { rebind: undefined }],
+    ['missing replayable', { replayable: undefined }],
+  ] as const)('admits no pair for %s', async (_label, fields) => {
+    const { session, panel } = await ready()
+    await panel._receiveMessage(findEdit('find-x', 1, fields) as never)
+    await chain(session)
+    for (const message of posted('rebind'))
+      expect(message.exactRequestId).toBeUndefined()
+    mock.calls.postMessage.length = 0
+
+    await panel._receiveMessage(historyExact(2, 'find-x') as never)
+    await chain(session)
+
+    expect(posted('update')).toHaveLength(1)
+    expect(acks()).toHaveLength(0)
+  })
+
+  it('admits no pair when applyEdit resolves false, and syncExact reports failed', async () => {
+    const { session, panel, document } = await ready()
+    const writeback = (session as any).writeback
+    expect(typeof writeback.syncExact).toBe('function')
+    mock.queueApplyEditResult(false)
+    await expect(
+      writeback.syncExact(REPLACED, ORIGINAL, undefined),
+    ).resolves.toBe('failed')
+    expect(document.getText()).toBe(ORIGINAL)
+
+    mock.queueApplyEditResult(false)
+    await panel._receiveMessage(findEdit('find-f', 1) as never)
+    await chain(session)
+    for (const message of posted('rebind'))
+      expect(message.exactRequestId).toBeUndefined()
+  })
+
+  it('admits no pair when a concurrent write of the target bytes echoes while the apply fails', async () => {
+    const { session, panel, document } = await ready()
+    vi.spyOn(vscode.workspace, 'applyEdit').mockImplementationOnce(async () => {
+      // Another writer puts the same bytes in place; this apply itself does not succeed.
+      document.__setText(REPLACED)
+      mock.fireDidChangeTextDocument(document as never)
+      return false
+    })
+    await panel._receiveMessage(findEdit('find-echo', 1) as never)
+    await chain(session)
+    for (const message of posted('rebind'))
+      expect(message.exactRequestId).toBeUndefined()
+  })
+
+  it('admits no pair when the version did not advance, or the external generation changed during the apply', async () => {
+    const { session, panel, document } = await ready()
+    vi.spyOn(vscode.workspace, 'applyEdit').mockImplementationOnce(
+      async () => true,
+    )
+    await panel._receiveMessage(findEdit('find-v', 1) as never)
+    await chain(session)
+    for (const message of posted('rebind'))
+      expect(message.exactRequestId).toBeUndefined()
+
+    vi.spyOn(vscode.workspace, 'applyEdit').mockImplementationOnce(
+      async (edit: any) => {
+        for (const replacement of edit.replacements)
+          document.__setText(replacement.content)
+        document.__setText('outside text\n')
+        mock.fireDidChangeTextDocument(document as never)
+        return true
+      },
+    )
+    mock.calls.postMessage.length = 0
+    await panel._receiveMessage(
+      findEdit('find-g', 2, { before: document.getText() }) as never,
+    )
+    await chain(session)
+    for (const message of posted('rebind'))
+      expect(message.exactRequestId).toBeUndefined()
+  })
+
+  it('the ninth admitted pair evicts the first: its rebind carries exactEvicted', async () => {
+    const { session, panel, document } = await ready()
+    let text = ORIGINAL
+    for (let index = 0; index < 9; index++) {
+      const next = `${text}line ${index}\n`
+      await panel._receiveMessage(
+        findEdit(`find-${index}`, index + 1, {
+          before: text,
+          content: next,
+        }) as never,
+      )
+      await chain(session)
+      text = next
+    }
+    expect(document.getText()).toBe(text)
+    expect(rebindFor(9)).toEqual([
+      expect.objectContaining({
+        exactRequestId: 'find-8',
+        exactEvicted: 'find-0',
+      }),
+    ])
+  })
+
+  it.each([
+    ['an empty request ID', '', 'undo'],
+    ['a request ID over 64 characters', 'x'.repeat(65), 'undo'],
+    ['a non-string request ID', 7, 'undo'],
+    ['an unknown direction', 'find-1', 'sideways'],
+  ] as const)(
+    'a valid sequence with %s gets one update',
+    async (_label, requestId, kind) => {
+      const { session, panel } = await ready()
+      await panel._receiveMessage(
+        historyExact(3, requestId as string, kind) as never,
+      )
+      await chain(session)
+      expect(posted('update')).toHaveLength(1)
+      expect(acks()).toHaveLength(0)
+    },
+  )
+
+  it.each([0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])(
+    'a bad sequence %j is dropped: no update, no rebind',
+    async (sequence) => {
+      const { session, panel } = await ready()
+      await panel._receiveMessage(
+        historyExact(sequence as number, 'find-1') as never,
+      )
+      await chain(session)
+      expect(posted('update')).toHaveLength(0)
+      expect(posted('rebind')).toHaveLength(0)
+    },
+  )
+
+  it('a refused forward write after a declined replay gives one update and no exact-edit-refused', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage(findEdit('find-r', 1) as never)
+    await chain(session)
+    mock.calls.postMessage.length = 0
+    // Native undo moves nothing; the guarded forward write is refused.
+    mock.setExecuteCommandResponse(async () => undefined)
+    mock.queueApplyEditResult(false)
+
+    await panel._receiveMessage(historyExact(2, 'find-r') as never)
+    await chain(session)
+
+    expect(posted('update')).toHaveLength(1)
+    expect(posted('exact-edit-refused')).toHaveLength(0)
+    expect(acks()).toHaveLength(0)
+    expect(document.getText()).toBe(REPLACED)
+  })
+
+  it('a reply after an outside change sends no rebind', async () => {
+    const { session, panel, document } = await ready()
+    await panel._receiveMessage(findEdit('find-o', 1) as never)
+    await chain(session)
+    mock.calls.postMessage.length = 0
+    mock.setExecuteCommandResponse(async (command) => {
+      if (command !== 'undo') return
+      document.__setText(ORIGINAL)
+      document.__setText('outside\n')
+      mock.fireDidChangeTextDocument(document as never)
+    })
+
+    await panel._receiveMessage(historyExact(2, 'find-o') as never)
+    await chain(session)
+
+    expect(acks()).toHaveLength(0)
+  })
+
+  it.each(['a replay longer than 1 s', 'an intermediate native step'] as const)(
+    'Save waits for the queued replay during %s',
+    async (variant) => {
+      const { session, panel, document } = await ready()
+      await panel._receiveMessage(findEdit('find-s', 1) as never)
+      await chain(session)
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      nativeUndo(
+        document,
+        ORIGINAL,
+        gate,
+        variant === 'an intermediate native step'
+          ? 'alpha one\nBETA two\n'
+          : undefined,
+      )
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        void panel._receiveMessage(historyExact(2, 'find-s') as never)
+        await ticks()
+        const captured = mock.fireWillSaveTextDocument(document as never)
+        const request = posted('flush-for-save').at(-1)
+        if (request)
+          void panel._receiveMessage({
+            command: 'flush-for-save-done',
+            requestId: request.requestId,
+          } as never)
+        let done = false
+        void Promise.resolve(captured.waits[0]).then(() => {
+          done = true
+        })
+        await ticks()
+        vi.advanceTimersByTime(1100)
+        await ticks()
+        expect(done).toBe(false)
+        release()
+        await chain(session)
+        await captured.waits[0]
+        expect(document.getText()).toBe(ORIGINAL)
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  // B0: `replay-abandon` replaces `history-exact-abandon`.
+  it('replay-abandon of the current epoch gives one update', async () => {
+    const { session, panel } = await ready()
+    await panel._receiveMessage({
+      command: 'replay-abandon',
+      epoch: 0,
+      replayOp: 1,
+    } as never)
+    await chain(session)
+    expect(posted('update')).toHaveLength(1)
+  })
+
+  it('log redaction: sentinel text never appears in any log line', async () => {
+    const traced: string[] = []
+    initLogger({ trace: (line: string) => traced.push(line) } as never)
+    try {
+      const { session, panel, document } = await ready(`${SENTINEL} 0\n`)
+      const messages: unknown[] = [
+        findEdit('find-log', 1, {
+          before: `${SENTINEL} 0\n`,
+          content: `${SENTINEL} 1\n`,
+        }),
+        historyExact(2, 'find-log'),
+        {
+          command: 'history-transition',
+          kind: 'undo',
+          before: `${SENTINEL} 1\n`,
+          after: `${SENTINEL} 0\n`,
+          sequence: 3,
+        },
+        {
+          command: 'edit-delta',
+          epoch: 0,
+          sequence: 4,
+          changes: [
+            {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+              oldText: SENTINEL,
+              text: SENTINEL,
+            },
+          ],
+        },
+        {
+          command: 'history-delta',
+          kind: 'redo',
+          epoch: 0,
+          sequence: 5,
+          steps: 1,
+          changes: [
+            {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+              oldText: SENTINEL,
+              text: SENTINEL,
+            },
+          ],
+        },
+        { command: 'history-exact-abandon', sequence: SENTINEL },
+        {
+          command: 'history-exact',
+          kind: SENTINEL,
+          requestId: SENTINEL,
+          sequence: 6,
+        },
+        { command: SENTINEL, content: SENTINEL },
+        { command: 'edit', content: [SENTINEL], before: { text: SENTINEL } },
+      ]
+      // A thrown replay: its message carries the sentinel; only `error.name` may be logged.
+      vi.spyOn(
+        HistoryCouplingController.prototype as any,
+        'replayExact',
+      ).mockImplementation(() => {
+        throw new Error(SENTINEL)
+      })
+      for (const message of messages) {
+        await panel._receiveMessage(message as never)
+        await chain(session)
+      }
+      expect(document.getText()).toContain(SENTINEL)
+    } finally {
+      initLogger(undefined as never)
+    }
+    expect(traced.length).toBeGreaterThan(0)
+    expect(traced.join('\n')).not.toContain(SENTINEL)
+  })
+})
+
+// Task 733 / 036 (B0, fix design revision 5, sections 3.1-3.9, and the second-opinion points 1-5). Every
+// operation a replay depends on carries an epoch-scoped `replayOp`. At the start of its chain turn the host
+// checks the epoch (a stale one writes nothing and makes no native move), a duplicate (re-acknowledged, not
+// run) and a gap (refused before any mutation); the epoch is re-read after every await and before every
+// native step. A history move is acknowledged by `replay-ack` only after the raw bytes equal the pair's raw
+// target. `replay-status` answers for the named epoch; `host-state` reports without starting an epoch. A
+// reserved Undo keeps its place on the chain; Save waits on every replay turn. Received operations are
+// journaled at receipt; unapplied ones of an ended epoch are recovery entries, written once on
+// `recovery-done` or after disposal settles the chain. None of this exists before B0.
+describe('036 B0 replay operations', () => {
+  const ORIGINAL = 'alpha one\nbeta two\n'
+  const REPLACED = 'ALPHA one\nBETA two\n'
+  const SENTINEL = 'SENTINEL-036-B0'
+  const posted = (command: string) =>
+    mock.calls.postMessage.filter((m: any) => m?.command === command) as any[]
+  const chain = (session: unknown) => (session as any).editMessageChain
+  const epochOf = (session: unknown): number =>
+    (session as any).deltaWriter.epoch
+  const journal = (session: unknown): string[] => [
+    ...(session as any).recoveryJournal.keys(),
+  ]
+  const ticks = async (count = 30) => {
+    for (let i = 0; i < count; i++) await Promise.resolve()
+  }
+  const undoCalls = () =>
+    mock.calls.executeCommand.filter((c: any) => c.command === 'undo').length
+
+  async function ready(text = ORIGINAL, crlf = false) {
+    mock.setRangedApplyEdit(true)
+    const made = makeSession('/ws/036-b0.md', text)
+    if (crlf) (made.document as any).eol = vscode.EndOfLine.CRLF
+    made.session.start()
+    await made.panel._receiveMessage({ command: 'ready' })
+    mock.calls.postMessage.length = 0
+    return made
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    vi.mocked(vscode.workspace.applyEdit).mockReset()
+    mock.reset()
+  })
+
+  /** Find's exact post that admits the pair `find-1` (before -> after). */
+  async function admit(
+    made: Awaited<ReturnType<typeof ready>>,
+    before = ORIGINAL,
+    content = REPLACED,
+  ) {
+    await made.panel._receiveMessage({
+      command: 'edit',
+      content,
+      before,
+      exact: true,
+      rebind: true,
+      replayable: true,
+      requestId: 'find-1',
+      sequence: 1,
+    } as never)
+    await chain(made.session)
+    mock.calls.postMessage.length = 0
+    mock.calls.executeCommand.length = 0
+  }
+  const historyExact = (
+    replayOp: number,
+    fields: Record<string, unknown> = {},
+  ) => ({
+    command: 'history-exact',
+    kind: 'undo',
+    requestId: 'find-1',
+    sequence: 10 + replayOp,
+    epoch: 0,
+    replayOp,
+    ...fields,
+  })
+  const insertAt = (
+    epoch: number,
+    sequence: number,
+    replayOp: number | undefined,
+    line: number,
+    character: number,
+    text: string,
+    oldText = '',
+    endCharacter = character + oldText.length,
+    command = 'edit-delta',
+  ) => ({
+    command,
+    epoch,
+    sequence,
+    ...(replayOp === undefined ? {} : { replayOp }),
+    ...(command === 'history-delta' ? { kind: 'undo', steps: 1 } : {}),
+    changes: [
+      {
+        start: { line, character },
+        end: { line, character: endCharacter },
+        oldText,
+        text,
+      },
+    ],
+  })
+  /** Native Undo restores `to`; `intermediate` first when given; waits on `gate` when given. */
+  const nativeUndo = (
+    document: { __setText(text: string): void },
+    to: string,
+    options: { intermediate?: string; gate?: Promise<void> } = {},
+  ) =>
+    mock.setExecuteCommandResponse(async (command) => {
+      if (command !== 'undo') return
+      if (options.intermediate !== undefined)
+        document.__setText(options.intermediate)
+      if (options.gate !== undefined) await options.gate
+      document.__setText(to)
+    })
+  const query = async (
+    made: Awaited<ReturnType<typeof ready>>,
+    epoch: number,
+    replayOp: number,
+  ) => {
+    await made.panel._receiveMessage({
+      command: 'replay-query',
+      epoch,
+      replayOp,
+    } as never)
+    return posted('replay-status').at(-1)
+  }
+  const gateOf = () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    return { gate, release }
+  }
+
+  it('a history move is answered by replay-ack, not rebind; the final typing delta is acknowledged with no later traffic', async () => {
+    const made = await ready()
+    await admit(made)
+    nativeUndo(made.document, ORIGINAL)
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    expect(made.document.getText()).toBe(ORIGINAL)
+    expect(posted('replay-ack')).toEqual([
+      { command: 'replay-ack', epoch: 0, replayOp: 1, acceptedSequence: 0 },
+    ])
+    expect(posted('rebind')).toHaveLength(0)
+
+    await made.panel._receiveMessage(insertAt(0, 1, 2, 0, 0, '!') as never)
+    await chain(made.session)
+    expect(made.document.getText()).toBe(`!${ORIGINAL}`)
+    expect(posted('replay-ack').at(-1)).toEqual({
+      command: 'replay-ack',
+      epoch: 0,
+      replayOp: 2,
+      acceptedSequence: 1,
+    })
+  })
+
+  it('a stale-epoch operation writes nothing, makes no native move and is not acknowledged', async () => {
+    const made = await ready()
+    await admit(made)
+    nativeUndo(made.document, ORIGINAL)
+    await made.panel._receiveMessage(historyExact(1, { epoch: 5 }) as never)
+    await chain(made.session)
+    expect(undoCalls()).toBe(0)
+    expect(made.document.getText()).toBe(REPLACED)
+    expect(posted('replay-ack')).toHaveLength(0)
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('an applied duplicate is re-acknowledged and not run', async () => {
+    const made = await ready()
+    await admit(made)
+    nativeUndo(made.document, ORIGINAL)
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    made.document.__setText(ORIGINAL)
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    expect(undoCalls()).toBe(1)
+    expect(posted('replay-ack')).toHaveLength(2)
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('a gap is refused with the document unchanged', async () => {
+    const made = await ready()
+    await admit(made)
+    nativeUndo(made.document, ORIGINAL)
+    await made.panel._receiveMessage(historyExact(2) as never)
+    await chain(made.session)
+    expect(undoCalls()).toBe(0)
+    expect(made.document.getText()).toBe(REPLACED)
+    expect(posted('update')).toEqual([
+      expect.objectContaining({ epoch: 1, afterSequence: 0, replayAfterOp: 0 }),
+    ])
+    expect(posted('replay-ack')).toHaveLength(0)
+  })
+
+  it('an epoch moved during settleOwnWrites stops the turn: no native move, no acknowledgement', async () => {
+    const made = await ready()
+    await admit(made)
+    nativeUndo(made.document, ORIGINAL)
+    const writeback = (made.session as any).writeback
+    vi.spyOn(writeback, 'settleOwnWrites').mockImplementationOnce(async () => {
+      made.document.__setText('outside\n')
+      mock.fireDidChangeTextDocument(made.document as never)
+    })
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    expect(undoCalls()).toBe(0)
+    expect(posted('replay-ack')).toHaveLength(0)
+    expect(made.document.getText()).toBe('outside\n')
+  })
+
+  it('an outside change between native steps of replayExact stops the walk and its rollback', async () => {
+    const made = await ready()
+    await admit(made)
+    const coupling = HistoryCouplingController.prototype as any
+    let steps = 0
+    vi.spyOn(coupling, 'executeWithoutEcho').mockImplementation(async () => {
+      steps++
+      // The first native step lands on an intermediate text; then an outside change arrives.
+      made.document.__setText('alpha one\nBETA two\n')
+      if (steps === 1) {
+        made.document.__setText('outside\n')
+        mock.fireDidChangeTextDocument(made.document as never)
+      }
+      return undefined
+    })
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    expect(steps).toBe(1)
+    expect(posted('replay-ack')).toHaveLength(0)
+  })
+
+  it('a refusal across an epoch reset: op 2 refused, op 3 dropped and kept; the update carries afterSequence and replayAfterOp', async () => {
+    const made = await ready()
+    await admit(made)
+    nativeUndo(made.document, ORIGINAL)
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await made.panel._receiveMessage(
+      insertAt(0, 1, 2, 0, 0, 'X', 'nope') as never,
+    )
+    await made.panel._receiveMessage(insertAt(0, 2, 3, 0, 0, '?') as never)
+    await chain(made.session)
+    expect(made.document.getText()).toBe(ORIGINAL)
+    expect(posted('update')).toEqual([
+      expect.objectContaining({ epoch: 1, afterSequence: 0, replayAfterOp: 1 }),
+    ])
+    expect(journal(made.session)).toEqual(['0:2', '0:3'])
+    expect((await query(made, 0, 2)).state).toBe('refused')
+    expect(await query(made, 0, 3)).toMatchObject({
+      state: 'ended',
+      applied: 1,
+      acceptedSequence: 0,
+    })
+    expect((await query(made, 0, 1)).state).toBe('applied')
+  })
+
+  it('replay-status answers unknown, reserved, queued, running and applied for the current epoch', async () => {
+    const made = await ready()
+    await admit(made)
+    expect(await query(made, 0, 1)).toEqual({
+      command: 'replay-status',
+      epoch: 0,
+      replayOp: 1,
+      state: 'unknown',
+      applied: 0,
+      acceptedSequence: 0,
+    })
+    const { gate, release } = gateOf()
+    nativeUndo(made.document, ORIGINAL, { gate })
+    void made.panel._receiveMessage(historyExact(1) as never)
+    await ticks()
+    void made.panel._receiveMessage(insertAt(0, 1, 2, 0, 0, '!') as never)
+    await made.panel._receiveMessage({
+      command: 'replay-reserve',
+      epoch: 0,
+      replayOp: 3,
+      kind: 'undo',
+    } as never)
+    expect((await query(made, 0, 1)).state).toBe('running')
+    expect((await query(made, 0, 2)).state).toBe('queued')
+    expect((await query(made, 0, 3)).state).toBe('reserved')
+    release()
+    await made.panel._receiveMessage({
+      command: 'history-delta',
+      kind: 'undo',
+      epoch: 0,
+      sequence: 2,
+      steps: 1,
+      changes: [],
+      replayOp: 3,
+    } as never)
+    await chain(made.session)
+    expect(await query(made, 0, 3)).toMatchObject({
+      state: 'applied',
+      applied: 3,
+    })
+  })
+
+  it('a lost first history-exact and an evicted-only replay are re-posted after unknown and acknowledged', async () => {
+    const made = await ready()
+    await admit(made)
+    expect((await query(made, 0, 1)).state).toBe('unknown')
+    nativeUndo(made.document, ORIGINAL)
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    expect(posted('replay-ack').at(-1)).toMatchObject({ replayOp: 1 })
+
+    // The evicted pair: the exact edit with `history` and both replay numbers.
+    const other = await ready()
+    await admit(other)
+    expect((await query(other, 0, 1)).state).toBe('unknown')
+    nativeUndo(other.document, ORIGINAL)
+    await other.panel._receiveMessage({
+      command: 'edit',
+      content: ORIGINAL,
+      before: REPLACED,
+      exact: true,
+      history: 'undo',
+      requestId: 'find-1',
+      epoch: 0,
+      replayOp: 1,
+    } as never)
+    await chain(other.session)
+    expect(other.document.getText()).toBe(ORIGINAL)
+    expect(posted('replay-ack').at(-1)).toMatchObject({ replayOp: 1 })
+  })
+
+  it('a lost epoch-changing update is recovered by host-state, with no new epoch', async () => {
+    const made = await ready()
+    await admit(made)
+    await made.panel._receiveMessage(historyExact(2) as never)
+    await chain(made.session)
+    expect(epochOf(made.session)).toBe(1)
+    await made.panel._receiveMessage({
+      command: 'host-state-query',
+      requestId: 'q-1',
+    } as never)
+    expect(posted('host-state')).toEqual([
+      {
+        command: 'host-state',
+        requestId: 'q-1',
+        epoch: 1,
+        revision: expect.any(Number),
+        content: REPLACED,
+        afterSequence: 0,
+        replayAfterOp: 0,
+      },
+    ])
+    expect(epochOf(made.session)).toBe(1)
+  })
+
+  it('CRLF pair: Replace All on a CRLF document, then Undo: the raw proof passes', async () => {
+    const crlf = ORIGINAL.replace(/\n/g, '\r\n')
+    const made = await ready(crlf, true)
+    await admit(made)
+    expect((made.session as any).exactPairs[0].before).toBe(crlf)
+    nativeUndo(made.document, crlf)
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    expect(posted('replay-ack')).toHaveLength(1)
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('CRLF pair: a one-byte raw difference refuses', async () => {
+    const crlf = ORIGINAL.replace(/\n/g, '\r\n')
+    const made = await ready(crlf, true)
+    await admit(made)
+    // Equal with line endings normalized, one byte different raw.
+    nativeUndo(made.document, 'alpha one\nbeta two\r\n')
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    expect(posted('replay-ack')).toHaveLength(0)
+    expect(posted('update')).toHaveLength(1)
+  })
+
+  it('evicted CRLF replay: the exact edit holds LF text while the host holds raw CRLF; it is acknowledged', async () => {
+    const crlf = ORIGINAL.replace(/\n/g, '\r\n')
+    const made = await ready(crlf, true)
+    await admit(made)
+    nativeUndo(made.document, crlf)
+    await made.panel._receiveMessage({
+      command: 'edit',
+      content: ORIGINAL,
+      before: REPLACED,
+      exact: true,
+      history: 'undo',
+      requestId: 'find-1',
+      epoch: 0,
+      replayOp: 1,
+    } as never)
+    await chain(made.session)
+    expect(made.document.getText()).toBe(crlf)
+    expect(posted('replay-ack')).toEqual([
+      expect.objectContaining({ replayOp: 1 }),
+    ])
+  })
+
+  it('Save immediately after an untagged Undo: reserve, typing, then the payload apply in reserved order', async () => {
+    const made = await ready()
+    await made.panel._receiveMessage({
+      command: 'replay-reserve',
+      epoch: 0,
+      replayOp: 1,
+      kind: 'undo',
+    } as never)
+    // Typing against the text after the Undo takes the next delta sequence (2) and replayOp 2. Its turn
+    // waits behind the reservation, so the receipt is not awaited.
+    void made.panel._receiveMessage(insertAt(0, 2, 2, 1, 0, '!') as never)
+    const captured = mock.fireWillSaveTextDocument(made.document as never)
+    const request = posted('flush-for-save').at(-1)
+    let done = false
+    void Promise.resolve(captured.waits[0]).then(() => {
+      done = true
+    })
+    await ticks()
+    expect(done).toBe(false)
+    await made.panel._receiveMessage(
+      insertAt(0, 1, 1, 0, 0, 'gamma', 'alpha', 5, 'history-delta') as never,
+    )
+    if (request)
+      void made.panel._receiveMessage({
+        command: 'flush-for-save-done',
+        requestId: request.requestId,
+      } as never)
+    await chain(made.session)
+    await captured.waits[0]
+    expect(made.document.getText()).toBe('gamma one\n!beta two\n')
+    expect(posted('replay-ack').at(-1)).toMatchObject({
+      replayOp: 2,
+      acceptedSequence: 2,
+    })
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('the Save timer fires while a reservation waits: the Save waits on the chain; without replay turns it does not', async () => {
+    const made = await ready()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await made.panel._receiveMessage({
+        command: 'replay-reserve',
+        epoch: 0,
+        replayOp: 1,
+        kind: 'undo',
+      } as never)
+      // `flush-for-save-done` is lost: no reply is sent.
+      const captured = mock.fireWillSaveTextDocument(made.document as never)
+      let done = false
+      void Promise.resolve(captured.waits[0]).then(() => {
+        done = true
+      })
+      await ticks()
+      vi.advanceTimersByTime(1100)
+      await ticks()
+      expect(done).toBe(false)
+      await made.panel._receiveMessage(
+        insertAt(0, 1, 1, 0, 0, 'gamma', 'alpha', 5, 'history-delta') as never,
+      )
+      await chain(made.session)
+      await captured.waits[0]
+      expect(made.document.getText()).toBe('gamma one\nbeta two\n')
+
+      const again = mock.fireWillSaveTextDocument(made.document as never)
+      let doneAgain = false
+      void Promise.resolve(again.waits[0]).then(() => {
+        doneAgain = true
+      })
+      await ticks()
+      vi.advanceTimersByTime(1100)
+      await ticks()
+      expect(doneAgain).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // 036 core C7 (C6 host side): disposal while a Save waits on a reservation finishes the Save at once.
+  it('C7: disposal with a waiting reservation settles the waiting Save once', async () => {
+    const made = await ready()
+    await made.panel._receiveMessage({
+      command: 'replay-reserve',
+      epoch: 0,
+      replayOp: 1,
+      kind: 'undo',
+    } as never)
+    const captured = mock.fireWillSaveTextDocument(made.document as never)
+    let settled = 0
+    void Promise.resolve(captured.waits[0]).then(() => {
+      settled++
+    })
+    await ticks()
+    expect(settled).toBe(0)
+    made.panel._fireDispose()
+    await chain(made.session)
+    await ticks()
+    expect(settled).toBe(1)
+  })
+
+  it('a reservation gives up after 5 s as a refusal; its late payload is dropped and kept; a duplicate reserve is ignored', async () => {
+    const made = await ready()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const reserve = {
+        command: 'replay-reserve',
+        epoch: 0,
+        replayOp: 1,
+        kind: 'undo',
+      }
+      await made.panel._receiveMessage(reserve as never)
+      await made.panel._receiveMessage(reserve as never)
+      expect((made.session as any).replayTurns).toBe(1)
+      vi.advanceTimersByTime(5000)
+      await chain(made.session)
+      expect(posted('update')).toEqual([
+        expect.objectContaining({ epoch: 1, replayAfterOp: 0 }),
+      ])
+      await made.panel._receiveMessage(
+        insertAt(0, 1, 1, 0, 0, 'gamma', 'alpha', 5, 'history-delta') as never,
+      )
+      await chain(made.session)
+      expect(made.document.getText()).toBe(ORIGINAL)
+      expect(journal(made.session)).toEqual(['0:1'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an empty restore payload consumes its reserved sequence, so the typing after it applies', async () => {
+    const made = await ready()
+    await made.panel._receiveMessage({
+      command: 'replay-reserve',
+      epoch: 0,
+      replayOp: 1,
+      kind: 'undo',
+    } as never)
+    void made.panel._receiveMessage(insertAt(0, 2, 2, 0, 0, '!') as never)
+    await made.panel._receiveMessage({
+      command: 'history-delta',
+      kind: 'undo',
+      epoch: 0,
+      sequence: 1,
+      steps: 1,
+      changes: [],
+      replayOp: 1,
+    } as never)
+    await chain(made.session)
+    expect(made.document.getText()).toBe(`!${ORIGINAL}`)
+    expect(posted('replay-ack').map((m) => m.replayOp)).toEqual([1, 2])
+    expect(posted('update')).toHaveLength(0)
+  })
+
+  it('panel disposed with a reservation waiting: the turn gives up, the chain is released, entries are written once after it settles', async () => {
+    const made = await ready()
+    const opened = recovered.append
+    opened.mockClear()
+    await made.panel._receiveMessage({
+      command: 'replay-reserve',
+      epoch: 0,
+      replayOp: 1,
+      kind: 'undo',
+    } as never)
+    // Queued behind the reservation: its outcome is recorded before the entries are written.
+    void made.panel._receiveMessage(insertAt(0, 2, 2, 0, 0, SENTINEL) as never)
+    made.panel._fireDispose()
+    await chain(made.session)
+    await ticks()
+    expect((made.session as any).replayTurns).toBe(0)
+    expect(made.document.getText()).toBe(ORIGINAL)
+    expect(opened).toHaveBeenCalledOnce()
+    // E2: the entry is written with its position and its text.
+    expect(opened.mock.calls[0][0]).toContain('## Edit 0.2')
+    expect(opened.mock.calls[0][0]).toContain(SENTINEL)
+    await made.panel._receiveMessage({
+      command: 'recovery-done',
+      epoch: 0,
+    } as never)
+    await chain(made.session)
+    expect(opened).toHaveBeenCalledOnce()
+  })
+
+  it('recovery entries: resolved only by an acknowledged recoveryOf, a refused reapplication keeps one original, duplicates and covered operations make none, recovery-done writes once', async () => {
+    const made = await ready()
+    const opened = recovered.append
+    opened.mockClear()
+    await made.panel._receiveMessage(insertAt(0, 1, 1, 0, 0, '#') as never)
+    await made.panel._receiveMessage(
+      insertAt(0, 2, 2, 0, 0, 'X', 'nope') as never,
+    )
+    await made.panel._receiveMessage(insertAt(0, 3, 3, 0, 0, 'Q') as never)
+    await chain(made.session)
+    expect(journal(made.session)).toEqual(['0:2', '0:3'])
+    // A re-posted copy of op 3 and an old-epoch duplicate of the applied op 1 add nothing.
+    await made.panel._receiveMessage(insertAt(0, 3, 3, 0, 0, 'Q') as never)
+    await made.panel._receiveMessage(insertAt(0, 1, 1, 0, 0, '#') as never)
+    await chain(made.session)
+    expect(journal(made.session)).toEqual(['0:2', '0:3'])
+    // The reapplication of op 2 applies: its entry is resolved.
+    await made.panel._receiveMessage({
+      ...insertAt(1, 1, 1, 0, 0, 'X'),
+      recoveryOf: { epoch: 0, replayOp: 2 },
+    } as never)
+    // The reapplication of op 3 is refused: the original entry stays, and only it.
+    await made.panel._receiveMessage({
+      ...insertAt(1, 2, 2, 0, 0, 'Q', 'nope'),
+      recoveryOf: { epoch: 0, replayOp: 3 },
+    } as never)
+    await chain(made.session)
+    expect(journal(made.session)).toEqual(['0:3'])
+    await made.panel._receiveMessage({
+      command: 'recovery-done',
+      epoch: 0,
+    } as never)
+    await chain(made.session)
+    await made.panel._receiveMessage({
+      command: 'recovery-done',
+      epoch: 0,
+    } as never)
+    await chain(made.session)
+    expect(opened).toHaveBeenCalledOnce()
+    const written = opened.mock.calls[0][0] as unknown as string
+    expect(written).toContain('## Edit 0.3')
+    expect(written).not.toContain('## Edit 0.2')
+    expect(written).toContain('```text\nQ\n```')
+  })
+
+  // Task 733 / 036 (E2, Q-I (a)): the untitled "Recovered edits" document holds every unresolved entry and
+  // outlives the source: the source's disposal writes the entries not yet written and closes nothing.
+  it('E2: closing the source with Recovered edits open keeps it, and writes every later unresolved entry into it once', async () => {
+    const made = await ready()
+    const opened = recovered.append
+    opened.mockClear()
+    // Op 1 applies; ops 2 and 3 are refused (op 2's old text is wrong), so both are unresolved entries.
+    await made.panel._receiveMessage(insertAt(0, 1, 1, 0, 0, '#') as never)
+    await made.panel._receiveMessage(
+      insertAt(0, 2, 2, 0, 0, 'X', 'nope') as never,
+    )
+    await made.panel._receiveMessage(insertAt(0, 3, 3, 0, 0, 'Q') as never)
+    await chain(made.session)
+    // recovery-done writes both: "Recovered edits" is now open.
+    await made.panel._receiveMessage({
+      command: 'recovery-done',
+      epoch: 0,
+    } as never)
+    await chain(made.session)
+    expect(opened).toHaveBeenCalledOnce()
+    const first = opened.mock.calls[0][0] as unknown as string
+    expect(first).toContain('## Edit 0.2')
+    expect(first).toContain('## Edit 0.3')
+    // A later operation of the new epoch is refused: the source closes before its recovery is done.
+    const epoch = epochOf(made.session)
+    await made.panel._receiveMessage(
+      insertAt(epoch, 1, 1, 0, 0, SENTINEL, 'nope') as never,
+    )
+    await chain(made.session)
+    mock.calls.executeCommand.length = 0
+    made.panel._fireDispose()
+    await chain(made.session)
+    await ticks()
+    expect(opened).toHaveBeenCalledTimes(2)
+    const second = opened.mock.calls[1][0] as unknown as string
+    expect(second).toContain(`## Edit ${epoch}.1`)
+    expect(second).toContain(SENTINEL)
+    // Every entry is written once: nothing of the first write repeats.
+    expect(second).not.toContain('## Edit 0.2')
+    // The source's disposal closes no editor (the recovered document stays open and dirty).
+    expect(
+      mock.calls.executeCommand.filter((c: any) =>
+        String(c.command).includes('close'),
+      ),
+    ).toEqual([])
+  })
+
+  it('E2: closing before recovery-done writes every unresolved entry', async () => {
+    const made = await ready()
+    const opened = recovered.append
+    opened.mockClear()
+    await made.panel._receiveMessage(
+      insertAt(0, 1, 1, 0, 0, 'X', 'nope') as never,
+    )
+    await made.panel._receiveMessage(insertAt(0, 2, 2, 0, 0, 'Y') as never)
+    await made.panel._receiveMessage(insertAt(0, 3, 3, 0, 0, 'Z') as never)
+    await chain(made.session)
+    made.panel._fireDispose()
+    await chain(made.session)
+    await ticks()
+    expect(opened).toHaveBeenCalledOnce()
+    const written = opened.mock.calls[0][0] as unknown as string
+    for (const id of ['0.1', '0.2', '0.3'])
+      expect(written).toContain(`## Edit ${id}`)
+    // The document names the source by its file name only.
+    expect(written).toContain('# Recovered edits: 036-b0.md')
+    expect(written).not.toContain('/ws/')
+  })
+
+  // H2 fix design rev2 (D6.1): after an abandon the webview keeps posting its typing as operations of the
+  // old epoch. The host drops them by epoch after its resync and keeps each one as a recovery entry, so
+  // closing the panel before the recovery finishes writes them to "Recovered edits".
+  // ---- 036 core C7 (R33.4): Recovered edits inserted once, presented separately ----
+  const waitRetry = () => new Promise((resolve) => setTimeout(resolve, 600))
+  const refusedTwo = async (made: Awaited<ReturnType<typeof ready>>) => {
+    await made.panel._receiveMessage(
+      insertAt(0, 1, 1, 0, 0, 'X', 'nope') as never,
+    )
+    await made.panel._receiveMessage(insertAt(0, 2, 2, 0, 0, 'Y') as never)
+    await chain(made.session)
+  }
+  const recoveryDoneAt = async (made: Awaited<ReturnType<typeof ready>>) => {
+    await made.panel._receiveMessage({
+      command: 'recovery-done',
+      epoch: 0,
+    } as never)
+    await chain(made.session)
+  }
+
+  it('C7: a presentation failure is retried once, presentation only: one insertion', async () => {
+    const made = await ready()
+    recovered.append.mockClear()
+    recovered.present.mockClear()
+    recovered.present.mockRejectedValueOnce(new Error('show failed'))
+    await refusedTwo(made)
+    await recoveryDoneAt(made)
+    await waitRetry()
+    await chain(made.session)
+    expect(recovered.append).toHaveBeenCalledOnce()
+    expect(recovered.present).toHaveBeenCalledTimes(2)
+    // The entries are written: a later recovery-done writes nothing again.
+    await recoveryDoneAt(made)
+    expect(recovered.append).toHaveBeenCalledOnce()
+  })
+
+  it('C7: an insertion failure is retried once; success then marks the entries written', async () => {
+    const made = await ready()
+    recovered.append.mockClear()
+    recovered.append.mockRejectedValueOnce(new Error('edit refused'))
+    await refusedTwo(made)
+    await recoveryDoneAt(made)
+    await waitRetry()
+    await chain(made.session)
+    expect(recovered.append).toHaveBeenCalledTimes(2)
+    expect(recovered.append.mock.calls[1][0]).toContain('## Edit 0.2')
+    await recoveryDoneAt(made)
+    expect(recovered.append).toHaveBeenCalledTimes(2)
+  })
+
+  it('C7: two insertion failures during the final disposal: one count-only notification, recoveredEditsLost', async () => {
+    const made = await ready()
+    recovered.append.mockClear()
+    recovered.present.mockClear()
+    recovered.append.mockRejectedValueOnce(new Error('edit refused'))
+    recovered.append.mockRejectedValueOnce(new Error('edit refused'))
+    await refusedTwo(made)
+    mock.calls.showError.length = 0
+    made.panel._fireDispose()
+    await chain(made.session)
+    await waitRetry()
+    await ticks()
+    expect(recovered.append).toHaveBeenCalledTimes(2)
+    expect(recovered.present).not.toHaveBeenCalled()
+    expect(mock.calls.showError).toEqual([
+      'VMDE could not save 2 recovered edits',
+    ])
+    expect((made.session as any).recoveredEditsLost).toBe(2)
+  })
+
+  it('C7: a concurrent write does not insert an entry twice', async () => {
+    const made = await ready()
+    recovered.append.mockClear()
+    let finish: (() => void) | undefined
+    recovered.append.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finish = () => resolve(undefined)
+        }),
+    )
+    await refusedTwo(made)
+    const write = (made.session as any).writeRecoveredEdits.bind(made.session)
+    const first = write(() => true)
+    const second = write(() => true)
+    finish?.()
+    await Promise.all([first, second])
+    expect(recovered.append).toHaveBeenCalledOnce()
+  })
+
+  // ---- 036 core C7 (R34.4): the wire validator before use and journaling ----
+  for (const [name, changes] of [
+    ['[null]', [null]],
+    ['[{}]', [{}]],
+    [
+      'a negative line',
+      [
+        {
+          start: { line: -1, character: 0 },
+          end: { line: 0, character: 0 },
+          oldText: '',
+          text: 'x',
+        },
+      ],
+    ],
+    [
+      'end before start',
+      [
+        {
+          start: { line: 0, character: 2 },
+          end: { line: 0, character: 1 },
+          oldText: '',
+          text: 'x',
+        },
+      ],
+    ],
+  ] as const)
+    it(`C7: a replay delta with ${name} is rejected before journaling and answered as a refusal`, async () => {
+      const made = await ready()
+      const text = made.document.getText()
+      await made.panel._receiveMessage({
+        ...insertAt(0, 1, 1, 0, 0, 'X'),
+        changes,
+      } as never)
+      await chain(made.session)
+      await ticks()
+      expect(journal(made.session)).toEqual([])
+      expect((made.session as any).replayRejected).toBe(1)
+      expect(made.document.getText()).toBe(text)
+      // The refusal ends the epoch with one update.
+      expect(posted('update')).toHaveLength(1)
+    })
+
+  it('C7: valid production deltas and an empty reserved history pass the validator', async () => {
+    const made = await ready()
+    await made.panel._receiveMessage(insertAt(0, 1, 1, 0, 0, '#') as never)
+    await made.panel._receiveMessage({
+      ...insertAt(0, 2, 2, 0, 0, '', '', 0, 'history-delta'),
+      changes: [],
+    } as never)
+    await chain(made.session)
+    expect((made.session as any).replayRejected).toBe(0)
+  })
+
+  it('D6: old-epoch operations dropped after an abandon are written to Recovered edits on disposal', async () => {
+    const made = await ready()
+    const opened = recovered.append
+    opened.mockClear()
+    await admit(made)
+    nativeUndo(made.document, ORIGINAL)
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await chain(made.session)
+    expect(posted('replay-ack').at(-1)).toMatchObject({ replayOp: 1 })
+    await made.panel._receiveMessage({
+      command: 'replay-abandon',
+      epoch: 0,
+      replayOp: 1,
+    } as never)
+    await chain(made.session)
+    await ticks()
+    expect(posted('update')).toHaveLength(1)
+    expect(epochOf(made.session)).toBeGreaterThan(0)
+    const text = made.document.getText()
+    // Typed while abandoned: replay operations 2 and 3 of the ended epoch.
+    await made.panel._receiveMessage(
+      insertAt(0, 21, 2, 0, 0, SENTINEL) as never,
+    )
+    await made.panel._receiveMessage(insertAt(0, 22, 3, 0, 0, 'Q') as never)
+    await chain(made.session)
+    expect(made.document.getText()).toBe(text)
+    expect(journal(made.session)).toEqual(['0:2', '0:3'])
+    made.panel._fireDispose()
+    await chain(made.session)
+    await ticks()
+    expect(opened).toHaveBeenCalledOnce()
+    const written = opened.mock.calls[0][0] as unknown as string
+    expect(written).toContain('## Edit 0.2')
+    expect(written).toContain('## Edit 0.3')
+    expect(written).toContain(SENTINEL)
+  })
+
+  it('replay-abandon resets only the active history move of the current epoch', async () => {
+    const made = await ready()
+    await admit(made)
+    nativeUndo(made.document, ORIGINAL)
+    await made.panel._receiveMessage(historyExact(1) as never)
+    await made.panel._receiveMessage(historyExact(2, { kind: 'redo' }) as never)
+    await chain(made.session)
+    expect(posted('replay-ack').at(-1)).toMatchObject({ replayOp: 2 })
+    // A late abandon of op 1 cannot reset the newer move.
+    await made.panel._receiveMessage({
+      command: 'replay-abandon',
+      epoch: 0,
+      replayOp: 1,
+    } as never)
+    await made.panel._receiveMessage({
+      command: 'replay-abandon',
+      epoch: 7,
+      replayOp: 2,
+    } as never)
+    await ticks()
+    expect(posted('update')).toHaveLength(0)
+    await made.panel._receiveMessage({
+      command: 'replay-abandon',
+      epoch: 0,
+      replayOp: 2,
+    } as never)
+    await ticks()
+    expect(posted('update')).toHaveLength(1)
+  })
+
+  it('no logged object of a new or changed command holds a message string', async () => {
+    const traced: string[] = []
+    initLogger({ trace: (line: string) => traced.push(line) } as never)
+    try {
+      const made = await ready(`${SENTINEL}\n`)
+      const messages: unknown[] = [
+        { command: 'replay-reserve', epoch: 0, replayOp: 1, kind: SENTINEL },
+        { command: 'replay-query', epoch: 0, replayOp: 1, extra: SENTINEL },
+        { command: 'host-state-query', requestId: SENTINEL },
+        { command: 'replay-abandon', epoch: SENTINEL, replayOp: 1 },
+        { command: 'recovery-done', epoch: 0, extra: SENTINEL },
+        {
+          ...insertAt(0, 1, 1, 0, 0, SENTINEL, ''),
+          recoveryOf: { epoch: 0, replayOp: SENTINEL },
+        },
+        historyExact(2, { requestId: SENTINEL, kind: SENTINEL }),
+        {
+          command: 'edit',
+          content: SENTINEL,
+          before: SENTINEL,
+          exact: true,
+          history: 'undo',
+          epoch: 0,
+          replayOp: 3,
+        },
+      ]
+      for (const message of messages) {
+        await made.panel._receiveMessage(message as never)
+        await chain(made.session)
+      }
+    } finally {
+      initLogger(undefined as never)
+    }
+    expect(traced.length).toBeGreaterThan(0)
+    expect(traced.join('\n')).not.toContain(SENTINEL)
   })
 })

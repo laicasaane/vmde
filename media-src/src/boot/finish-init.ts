@@ -9,6 +9,7 @@ import { installTableColumnResize } from '../chrome/table-resize'
 import { handleToolbarClick } from '../chrome/toolbar-actions'
 import { fixPanelHover } from '../util/utils'
 import { fixTableIr } from '../editing/fix-table-ir'
+import { provideReplayTableSource } from '../editing/table-actions'
 import { installTableCellSelection } from '../editing/table-cell-selection'
 import { installTableWysiwygControls } from '../editing/table-wysiwyg-controls'
 import { installNativePopoverPlacement } from '../chrome/native-popover-position'
@@ -351,12 +352,124 @@ function installModeSwitchNotice(): () => void {
   return () => document.removeEventListener('click', onClick, true)
 }
 
+declare global {
+  interface Window {
+    /** 036 core C2 (R4.3): called first by the patched `setEditMode` (`patchBeforeEditMode`). */
+    __vmdeBeforeEditMode?(vditor: unknown, type: string, user: boolean): void
+    /**
+     * 036 core C4 (M1, Q-269): the admission of an editor command's write during a replay
+     * (`installReplayAdmission`); `prepare` renders the endpoint groups first. False: refused, counted.
+     */
+    __vmdeReplayAdmit?(prepare: boolean): boolean
+  }
+}
+
+/**
+ * 036 core C4 (M1, Q-269): the admission an editor command runs before its DOM write during a replay: the
+ * endpoint groups render (`prepare`), then `replayAcceptsInput` reads the selection; the command calls it
+ * again, without `prepare`, immediately before the write. True outside a replay; an abandoned replay
+ * without its logical text refuses. A refusal is counted `replayInputRefused`. Returns the uninstall.
+ */
+export function installReplayAdmission(): () => void {
+  const admit = (prepare: boolean): boolean => {
+    const session = sessionState.modelSession
+    if (!session) return true
+    if (!session.replayLive()) return !session.editsRefused()
+    const event = new Event('paste', { cancelable: true })
+    if (prepare) {
+      session.beforeReplayInput(event)
+      if (event.defaultPrevented) return false
+    }
+    const selection = document.getSelection()
+    const anchorNode = selection?.anchorNode
+    const focusNode = selection?.focusNode
+    if (
+      anchorNode &&
+      focusNode &&
+      session.replayAcceptsInput({
+        startContainer: anchorNode,
+        endContainer: focusNode,
+      })
+    )
+      return true
+    session.refuseReplayInput(event)
+    return false
+  }
+  window.__vmdeReplayAdmit = admit
+  return () => {
+    if (window.__vmdeReplayAdmit === admit) delete window.__vmdeReplayAdmit
+  }
+}
+
+/**
+ * 036 core C2 (R4.3): the hook the patched Vditor `setEditMode` calls first (`patchBeforeEditMode`,
+ * esbuild-shared.mjs), before it reads the Markdown and changes the surface. A user switch (toolbar,
+ * chord, command: `user` true) to another mode posts the outstanding user edits while IR, the host epoch
+ * and the publisher are live. A programmatic switch with given Markdown is host-driven and flushes
+ * nothing. Returns the uninstall.
+ */
+export function installBeforeEditMode(): () => void {
+  const hook = (vditor: unknown, type: string, user: boolean): void => {
+    if (!user || type === (vditor as { currentMode?: string })?.currentMode)
+      return
+    sessionState.modelSession?.flushUserEdits()
+  }
+  window.__vmdeBeforeEditMode = hook
+  return () => {
+    if (window.__vmdeBeforeEditMode === hook) delete window.__vmdeBeforeEditMode
+  }
+}
+
 /**
  * Task 004: installs the IR unit history engine (`window.__vmdeUnitHistory`, consumed by the patched
  * Vditor `Undo` class and by the history store). The model session and the delta publisher are read at
  * call time through `sessionState`; only the instance this init subscribed to counts, and only in IR.
  * The old engine keeps running when the port is absent (no live session or no delta publisher).
  */
+/**
+ * Task 733 / 036 (step C, fix design 2.6): a programmatic insert (`insertValue`: toolbar, drop upload,
+ * paste from the host) during a replay is handled at the editor API entry as a keyboard paste: its
+ * endpoint groups render and its intent is captured before it writes. Returns the uninstall.
+ */
+export function installReplayInsertHook(): () => void {
+  const editor = window.vditor as
+    | { insertValue?: (value: string, render?: boolean) => void }
+    | undefined
+  const original = editor?.insertValue
+  if (!editor || !original)
+    return () => {
+      // Nothing was installed.
+    }
+  editor.insertValue = function (value, render) {
+    const session = sessionState.modelSession
+    // 036 core C4 (M1): one cancelable event per insert, so a refusal is seen on it.
+    const paste = new Event('paste', { cancelable: true })
+    // H2 fix design rev2 (review point 4): after a mismatch every edit is refused before it reaches the DOM.
+    if (session?.editsRefused?.()) return
+    if (session?.replayLive()) {
+      // 036 core C4 (M1, R2.1): prepare the endpoint, admit, then recheck right before the write.
+      session.beforeReplayInput(paste)
+      const selection = document.getSelection()
+      if (
+        paste.defaultPrevented ||
+        (selection?.anchorNode &&
+          selection.focusNode &&
+          !session.replayAcceptsInput({
+            startContainer: selection.anchorNode,
+            endContainer: selection.focusNode,
+          }))
+      ) {
+        if (!paste.defaultPrevented) session.refuseReplayInput(paste)
+        return
+      }
+    }
+    return original.call(this, value, render)
+  }
+  return () => {
+    if (editor.insertValue !== original) editor.insertValue = original
+  }
+}
+
 function installUnitHistoryHook(): () => void {
   const sessionAtInit = sessionState.modelSession
   const liveSession = () => {
@@ -372,8 +485,31 @@ function installUnitHistoryHook(): () => void {
   return installUnitHistory(window, {
     port: () => liveSession()?.historyPort(),
     liveMode: () => liveSession()?.liveMode(),
-    publishHistory: (kind, steps) =>
-      sessionState.deltaSync?.publishHistory(kind, steps) ?? 'nothing',
+    publishHistory: (kind, steps, exactId) => {
+      // Task 733 / 036 (step C, fix design 2.6): during a replay the typing goes out first, so a
+      // superseding move follows it; an untagged move is reserved and posted against `L`.
+      // 036 core C4 (R35.1): the transition wrapper already drained the user mutations before the move,
+      // so the reserved history delta carries the restoration only.
+      const session = liveSession()
+      if (session?.replayLive() && exactId === undefined)
+        return session.publishReplayHistory(kind, steps)
+      return (
+        sessionState.deltaSync?.publishHistory(kind, steps, exactId) ??
+        'nothing'
+      )
+    },
+    // Task 733 / 036: an evicted Find pair takes the Task 685 exact recovery; a refusal keeps the DOM.
+    postExactHistory: (exact, before, kind) => {
+      sessionState.editSync?.postExact(exact, {
+        before,
+        history: kind,
+        rollback: false,
+      })
+    },
+    exactBusy: () => liveSession()?.exactBusy() ?? false,
+    replayLive: () => liveSession()?.replayLive() ?? false,
+    beforeReplayInput: (event) => liveSession()?.beforeReplayInput(event),
+    renderReplayCaretGroup: () => liveSession()?.renderReplayCaretGroup(),
     lastPostedSequence: () => sessionState.deltaSync?.lastPostedSequence() ?? 0,
     epoch: () => liveSession()?.deltaPort().epoch(),
   })
@@ -515,6 +651,14 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       reserveSequence: () => sessionState.editSync?.reserveSequence(),
       transitionHeld: () =>
         sessionState.modelSession?.publicationHeld() ?? false,
+      // Task 733 / 036: a tagged exact move is decided before the 022 hold.
+      exactMove: (inner, kind) =>
+        window.__vmdeUnitHistory?.peekExact(inner, kind) ?? false,
+      // 036 core C4 (R35.1): the transition wrapper drains the replay input before the move.
+      replayLive: () => sessionState.modelSession?.replayLive() ?? false,
+      drainReplayInput: () => sessionState.modelSession?.drainReplayInput(),
+      refuseReplayReentry: () =>
+        sessionState.modelSession?.refuseReplayReentry(),
     },
   )
   installScreenReaderSemantics(msg.documentName)
@@ -527,8 +671,19 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     innerVditor()?.wysiwyg?.element,
   ]
     .filter((element): element is HTMLElement => Boolean(element))
-    .map((element) => installTableCellSelection(element))
+    .map((element) =>
+      installTableCellSelection(element, {
+        // Task 733 / 036 (step C, 2.6): a rectangle Copy renders its table's pending groups first.
+        beforeRectangleCopy: (table) =>
+          void sessionState.modelSession?.replayTableSource(table),
+      }),
+    )
+  // Task 733 / 036 (step C, 2.6): rectangle Copy reads a table's logical bytes during a replay.
+  provideReplayTableSource((table) =>
+    sessionState.modelSession?.replayTableSource(table),
+  )
   observers.set('table-cell-selection', () => {
+    provideReplayTableSource(undefined)
     tableSelections.forEach((selection) => {
       selection.dispose()
     })
@@ -572,6 +727,8 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     getActiveRoot: activeBlockRoot,
     projection: currentBlockProjection,
     snapshotPair: countedSnapshotPair,
+    // Task 733 / 036 (Q9 (b)): passive display reads (Details) take a pair that never publishes.
+    passivePair: () => sessionState.editSync?.passiveSnapshotPair() ?? null,
     snapshotRevision,
     acquireExactAuthority,
     resolveUnits: (root, exact, rendered) =>
@@ -840,13 +997,17 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'source-input-hooks',
     installSourceInputHooks(window, {
       modeSwitchText: () => sessionState.modelSession?.modeSwitchText(),
+      replayText: () => sessionState.modelSession?.replayLogicalText(),
     }),
   )
+  observers.set('before-edit-mode', installBeforeEditMode())
+  observers.set('replay-admission', installReplayAdmission())
   // Task 733 / 004: Undo and Redo of IR restore the changed units and post a `history-delta`. The
   // end-to-end harness can keep Vditor's own engine for the specs that read its internals
   // (`VMDE_E2E_HISTORY_ENGINE=vditor`, sent in `init` only under `VMDE_E2E`).
   if (!(msg.e2e === true && msg.historyEngine === 'vditor')) {
     observers.set('unit-history', installUnitHistoryHook())
+    observers.set('replay-insert', installReplayInsertHook())
   }
   observers.set('callouts', observeCallouts(app))
   // Task 257: Lute splits details into sibling HTML/body/HTML blocks in edit modes. Pair those
@@ -1051,6 +1212,9 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
       equivalentToHost,
       flushRespin: flushPendingEditorRespin,
       publishNow: publishBoundaryNow,
+      // Task 733 / 036 (re-review finding 1): a tagged exact move takes no outstanding-input flush.
+      exactMove: (inner, kind) =>
+        window.__vmdeUnitHistory?.peekExact(inner, kind) ?? false,
     }),
   )
   observers.set(

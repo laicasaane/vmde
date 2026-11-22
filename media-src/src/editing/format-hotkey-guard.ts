@@ -27,6 +27,12 @@
 import { isMac } from '../util/platform'
 import { writeSelectionKeepingIntent } from './caret'
 import { guardComposition } from '../util/caret-gesture'
+import {
+  type HistoryKind,
+  isDeletionKey,
+  matchUndoRedo,
+  type UndoRedoMatcher,
+} from './undo-redo-keys'
 import { activeModeElement } from '../util/source-map'
 import { hasClosestBlock } from 'vditor/src/ts/util/hasClosest'
 
@@ -333,11 +339,131 @@ function refreshPendingSnapshot(win: Window & typeof globalThis): void {
 // Wire the listeners. `win` is the global object the webview runs in. Everything is capture phase on the window
 // so it runs before the browser's native contenteditable handling and before Vditor's bubble-phase
 // `recordFirstPosition`. Nothing here stops propagation: VS Code must still receive the key.
+/**
+ * Task 733 / 036 D-18: what the IR-owned Undo/Redo keys need, injected from boot/main.ts (this module may
+ * not import the bridge). Getters, not values: the boot listener outlives each editor instance.
+ */
+export interface OwnedHistoryOptions {
+  /** The current chord matcher (swapped whole on a setting change). */
+  matcher(): UndoRedoMatcher
+  /** The edit view is fully built (not deferred, not streaming). */
+  viewReady(): boolean
+  /** The unit engine owns this editor's history now (`__vmdeUnitHistory.ownsHistoryNow`). */
+  ownsHistoryNow(inner: unknown): boolean
+  /** A VMDE text field (Find, Replace, link popover) has focus. */
+  focusedField(): unknown
+  cancelAutoWrap(): void
+  /** One Undo or Redo through the wrapped history store (bridge/message-router.ts `runHistoryMove`). */
+  run(kind: HistoryKind): void
+  /**
+   * 036 core C3 (L1): a trusted user input arrived (keydown, pointerdown, beforeinput); the replay's next
+   * frame yields to it (`ModelSession.noteInput`). Called first, before an owned key runs.
+   */
+  noteInput?(): void
+}
+
+// Elements inside the editor whose keys keep native handling (fields, overlays, menus, Find).
+const NOT_OWNED_TARGETS =
+  'input, textarea, select, [role="dialog"], [role="menu"], .vditor-panel, .vditor-hint, .vmde-find-replace'
+
+/** E2e counters of the owned path (counts only). */
+function countOwned(win: Window, name: string): void {
+  const slot = win as unknown as {
+    __vmdeE2EReadiness?: unknown
+    __vmdeOwnedHistory?: Record<string, number>
+  }
+  if (!slot.__vmdeE2EReadiness) return
+  slot.__vmdeOwnedHistory ??= {}
+  slot.__vmdeOwnedHistory[name] = (slot.__vmdeOwnedHistory[name] ?? 0) + 1
+}
+
+/**
+ * Task 733 / 036 D-18 (design rev 4.1 R41.2): the history kind of an owned keydown, or undefined. Owned
+ * only for a trusted, non-composing chord of the current matcher, in IR, on the focused, writable, fully
+ * built editing root whose own editing host is the target's, outside fields and overlays, while the unit
+ * engine owns the history now. O(1) apart from two `closest` walks; no allocation.
+ */
+function ownedHistoryKind(
+  event: KeyboardEvent,
+  win: Window & typeof globalThis,
+  owned: OwnedHistoryOptions,
+): HistoryKind | undefined {
+  if (!event.isTrusted || guardComposition(event)) return undefined
+  const matcher = owned.matcher()
+  if (!matcher.inEditor) return undefined
+  const kind = matchUndoRedo(matcher, event)
+  if (!kind) return undefined
+  const inner = ownableIrEditor(win, owned)
+  if (!inner || !targetIsOwnable(event, win, inner.root, owned))
+    return undefined
+  return owned.ownsHistoryNow(inner.vditor) ? kind : undefined
+}
+
+/** The IR editor and its root when ownership can apply: IR, connected, writable, not composing, built. */
+function ownableIrEditor(
+  win: Window & typeof globalThis,
+  owned: OwnedHistoryOptions,
+): { vditor: unknown; root: HTMLElement } | undefined {
+  const vditor = (
+    win as unknown as {
+      vditor?: {
+        vditor?: {
+          currentMode?: string
+          ir?: { element?: HTMLElement; composingLock?: boolean }
+        }
+      }
+    }
+  ).vditor?.vditor
+  const root = vditor?.ir?.element
+  if (vditor?.currentMode !== 'ir' || !root?.isConnected) return undefined
+  if (root.getAttribute('contenteditable') !== 'true') return undefined
+  if (vditor.ir?.composingLock || !owned.viewReady()) return undefined
+  return { vditor, root }
+}
+
+/** Focus is in the root, the root is the target's own editing host, and no field or overlay holds it. */
+function targetIsOwnable(
+  event: KeyboardEvent,
+  win: Window & typeof globalThis,
+  root: HTMLElement,
+  owned: OwnedHistoryOptions,
+): boolean {
+  const active = win.document.activeElement
+  if (!active || !root.contains(active)) return false
+  const target = event.target instanceof Node ? event.target : null
+  const element =
+    target instanceof Element ? target : (target?.parentElement ?? null)
+  if (!element || !root.contains(element)) return false
+  if (element.closest('[contenteditable]') !== root) return false
+  return !element.closest(NOT_OWNED_TARGETS) && !owned.focusedField()
+}
+
 export function setupFormatHotkeyGuard(
   win: Window & typeof globalThis,
+  owned?: OwnedHistoryOptions,
 ): () => void {
   const onMac = isMac(win.navigator)
+  // D-18: the physical key of an owned Backspace/Delete chord whose keyup is suppressed (Vditor's IR
+  // keyup handler would otherwise act on the restored DOM), kept until that key comes up.
+  let suppressKeyupCode: string | null = null
+  const runOwned = (event: KeyboardEvent): boolean => {
+    const kind = owned ? ownedHistoryKind(event, win, owned) : undefined
+    if (!kind || !owned) return false
+    // Consumed once: no later listener runs and VS Code does not forward the key (probe: zero
+    // commands). The document-level auto-wrap cancel (boot/main.ts) no longer sees it, so it is
+    // called here, then one move through the wrapped store (Task 601 drains pending typing there).
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    owned.cancelAutoWrap()
+    if (isDeletionKey(event)) suppressKeyupCode = event.code
+    owned.run(kind)
+    countOwned(win, kind === 'undo' ? 'ownedUndo' : 'ownedRedo')
+    return true
+  }
   const onKeydown = (event: KeyboardEvent): void => {
+    // 036 core C3 (L1): the key that starts a replay is noted before the move, so its first frame yields.
+    if (event.isTrusted) owned?.noteInput?.()
+    if (runOwned(event)) return
     if (guardComposition(event)) return
     if (event.isTrusted) {
       if (nativeEditingDefaultToBlock(event, onMac, activeSurface(win)))
@@ -347,7 +473,18 @@ export function setupFormatHotkeyGuard(
     }
   }
   const onKeyup = (event: KeyboardEvent): void => {
+    // D-18: the release of an owned Backspace/Delete chord, even after its modifier came up first.
+    if (suppressKeyupCode !== null && event.code === suppressKeyupCode) {
+      suppressKeyupCode = null
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      countOwned(win, 'keyupSuppressed')
+      return
+    }
     if (event.isTrusted && !guardComposition(event)) refreshPendingSnapshot(win)
+  }
+  const clearKeyupTracking = (): void => {
+    suppressKeyupCode = null
   }
   // Each of these means the user moved the selection or edited the text after the chord, so the
   // chord's snapshot no longer describes what a later command should act on. Only user text
@@ -355,12 +492,22 @@ export function setupFormatHotkeyGuard(
   const invalidateOnTrustedInput = (event: Event): void => {
     if (event.isTrusted) clearCommandSelectionSnapshot()
   }
+  // 036 core C3 (L1): a pointer press and a trusted `beforeinput` are inputs the replay yields to too.
+  const onPointerdown = (event: Event): void => {
+    if (event.isTrusted) owned?.noteInput?.()
+    clearCommandSelectionSnapshot()
+  }
+  const onBeforeinput = (event: Event): void => {
+    if (event.isTrusted) owned?.noteInput?.()
+    invalidateOnTrustedInput(event)
+  }
   const listeners = [
     ['keydown', onKeydown],
     ['keyup', onKeyup],
-    ['pointerdown', clearCommandSelectionSnapshot],
+    ['blur', clearKeyupTracking],
+    ['pointerdown', onPointerdown],
     ['compositionstart', clearCommandSelectionSnapshot],
-    ['beforeinput', invalidateOnTrustedInput],
+    ['beforeinput', onBeforeinput],
     ['input', invalidateOnTrustedInput],
   ] as const
   for (const [type, listener] of listeners)
@@ -369,5 +516,6 @@ export function setupFormatHotkeyGuard(
     for (const [type, listener] of listeners)
       win.removeEventListener(type, listener as EventListener, true)
     clearCommandSelectionSnapshot()
+    clearKeyupTracking()
   }
 }

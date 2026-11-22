@@ -989,3 +989,150 @@ describe('installVditorHistoryCoupling held transition (022)', () => {
     expect(h.post).not.toHaveBeenCalled()
   })
 })
+
+// Task 733 / 036 (F6 precedence): a tagged move (the entry `move(kind)` would pop has a replayable or
+// evicted Find record) is decided before the 022 hold. It installs no hold, because `publicationBase()`
+// would clear the hold's `keptBeforePost` and `held` would never be released; while a hold is active it is
+// refused. `kind` is threaded into `prepare`. The option `exactMove` does not exist before step 6.
+describe('036 precedence', () => {
+  type Publish = (transition: {
+    kind: 'undo' | 'redo'
+    before: string
+    after: string
+  }) => number | undefined
+  type ExactMoveOptions = Parameters<typeof installVditorHistoryCoupling>[3] & {
+    exactMove?: (inner: unknown, kind: 'undo' | 'redo') => boolean
+  }
+  function coupling(tagged: boolean, heldAlready = false) {
+    let value = 'replaced'
+    const undo = vi.fn((_inner: unknown) => {
+      value = 'restored'
+    })
+    const redo = vi.fn((_inner: unknown) => undefined)
+    const inner = { undo: { undo, redo } }
+    const post = vi.fn()
+    const win = { vditor: { vditor: inner, getValue: () => value } } as any
+    const state = { held: heldAlready }
+    const holdTransition = vi.fn(
+      (_kind: 'undo' | 'redo', _publish: Publish) => {
+        if (state.held) return false
+        state.held = true
+        return true
+      },
+    )
+    const prepare = vi.fn((_inner: unknown, _kind?: 'undo' | 'redo') => true)
+    const exactMove = vi.fn((_inner: unknown, _kind: 'undo' | 'redo') => tagged)
+    const options: ExactMoveOptions = {
+      holdTransition,
+      reserveSequence: () => 7,
+      transitionHeld: () => state.held,
+      exactMove,
+    }
+    installVditorHistoryCoupling(win, post, prepare, options)
+    return {
+      inner,
+      undo,
+      redo,
+      post,
+      state,
+      holdTransition,
+      prepare,
+      exactMove,
+    }
+  }
+
+  it('a tagged move installs no hold and runs the engine once', () => {
+    const h = coupling(true)
+    h.inner.undo.undo(h.inner)
+
+    expect(h.exactMove).toHaveBeenCalledWith(h.inner, 'undo')
+    expect(h.holdTransition).not.toHaveBeenCalled()
+    expect(h.state.held).toBe(false)
+    expect(h.undo).toHaveBeenCalledTimes(1)
+    expect(h.post).not.toHaveBeenCalled()
+  })
+
+  it('a tagged move while a hold is active is refused: no engine call, nothing posted', () => {
+    const h = coupling(true, true)
+    h.inner.undo.redo(h.inner)
+
+    expect(h.exactMove).toHaveBeenCalledWith(h.inner, 'redo')
+    expect(h.redo).not.toHaveBeenCalled()
+    expect(h.post).not.toHaveBeenCalled()
+  })
+
+  // Preservation test: an untagged Undo before Find's confirmation keeps today's 022 hold (already exact).
+  it('an untagged Undo before Find confirmation keeps the 022 hold', () => {
+    const h = coupling(false)
+    h.inner.undo.undo(h.inner)
+
+    expect(h.holdTransition).toHaveBeenCalledTimes(1)
+    expect(h.undo).toHaveBeenCalledTimes(1)
+    expect(h.post).not.toHaveBeenCalled()
+  })
+
+  it('threads the direction into prepare', () => {
+    const h = coupling(false)
+    h.inner.undo.redo(h.inner)
+
+    expect(h.prepare).toHaveBeenCalledWith(h.inner, 'redo')
+  })
+})
+
+// 036 core C4 (R35.1, K12): during a replay the wrapper drains the user mutations before the move; a move
+// requested inside that drain is refused and counted; a drain that ends the replay makes no move.
+describe('036 core C4 transition wrapper order', () => {
+  function coupling(live: { value: boolean }, onDrain?: () => void) {
+    const calls: string[] = []
+    const undo = vi.fn((_inner: unknown) => calls.push('engine'))
+    const inner = {
+      undo: { undo, redo: vi.fn((_inner: unknown) => undefined) },
+    }
+    const win = { vditor: { vditor: inner, getValue: () => 'x' } } as any
+    const prepare = vi.fn(() => {
+      calls.push('prepare')
+      return true
+    })
+    const refuseReplayReentry = vi.fn(() => calls.push('reentry'))
+    installVditorHistoryCoupling(win, vi.fn(), prepare, {
+      replayLive: () => live.value,
+      drainReplayInput: () => {
+        calls.push('drain')
+        onDrain?.()
+      },
+      refuseReplayReentry,
+      exactMove: () => false,
+    } as never)
+    return { inner, calls, undo, refuseReplayReentry }
+  }
+
+  it('drains before prepare and the move during a replay; nothing outside one', () => {
+    const live = { value: true }
+    const h = coupling(live)
+    h.inner.undo.undo(h.inner)
+    expect(h.calls.slice(0, 2)).toEqual(['drain', 'prepare'])
+    live.value = false
+    h.calls.length = 0
+    h.inner.undo.undo(h.inner)
+    expect(h.calls[0]).toBe('prepare')
+  })
+
+  it('a move requested inside the drain is refused and counted; the outer move still runs', () => {
+    const live = { value: true }
+    let h: ReturnType<typeof coupling> | undefined
+    h = coupling(live, () => h?.inner.undo.undo(h.inner))
+    h.inner.undo.undo(h.inner)
+    expect(h.refuseReplayReentry).toHaveBeenCalledTimes(1)
+    expect(h.calls.filter((c) => c === 'drain')).toHaveLength(1)
+  })
+
+  it('a drain that ends the replay makes no move', () => {
+    const live = { value: true }
+    const h = coupling(live, () => {
+      live.value = false
+    })
+    h.inner.undo.undo(h.inner)
+    expect(h.calls).toEqual(['drain'])
+    expect(h.undo).not.toHaveBeenCalled()
+  })
+})

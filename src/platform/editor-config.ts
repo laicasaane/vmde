@@ -321,6 +321,12 @@ export function collectConfigOptions(uri?: vscode.Uri): VmdeConfigOptions {
     // Task 175/180 — defer the per-keystroke spin in fenced diagram/code bodies + for inert prose
     // keystrokes are ALWAYS ON (no setting); nothing to read here.
     linkOpenWithModifier: c.get<boolean>('editor.modifierClickLinks'),
+    // Task 733 / 036 D-18 — raw values; the webview validates them (settings.json can hold anything).
+    undoRedoKeys: {
+      inEditor: c.get<unknown>('editor.undoRedoKeys.inEditor'),
+      undo: c.get<unknown>('editor.undoRedoKeys.undo'),
+      redo: c.get<unknown>('editor.undoRedoKeys.redo'),
+    },
     // Task 392 — paste a URL as a markdown link. A reflex action, so it must be switchable off.
     pasteUrlAsLink: c.get<boolean>('paste.urlAsLink'),
     // Image upload conversion (task 74) — read by the webview's upload handler.

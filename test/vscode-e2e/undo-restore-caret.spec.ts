@@ -265,6 +265,72 @@ const probe = (doc: Doc) => doc.frame.locator('body').evaluate(readProbe)
 const hostText = async (s: Session, doc: Doc) =>
   (await docText(s.host as never, doc.file)) as string
 
+// Task 733 / 036: the host's own SHA-256 of its text, its document version and `isDirty`; no document
+// text crosses back.
+interface HostState {
+  sha256: string
+  version: number
+  isDirty: boolean
+}
+const sha256 = (text: string) =>
+  createHash('sha256').update(text, 'utf8').digest('hex')
+const hostState = async (s: Session, doc: Doc): Promise<HostState> =>
+  (await s.host(
+    async (vscode: typeof import('vscode'), args: string[]) => {
+      const document = vscode.workspace.textDocuments.find(
+        (d) => d.uri.fsPath === args[0],
+      )
+      if (!document) return { sha256: '', version: -1, isDirty: false }
+      const digest = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(document.getText()),
+      )
+      return {
+        sha256: Array.from(new Uint8Array(digest), (n) =>
+          n.toString(16).padStart(2, '0'),
+        ).join(''),
+        version: document.version,
+        isDirty: document.isDirty,
+      }
+    },
+    [doc.file],
+  )) as HostState
+
+// Task 733 / 036 (settle oracle): passes only when the host hash equals `target` and the document version
+// stays unchanged for one continuous second; either mismatch resets the second. Polled every 100 ms, at
+// most 20 s. A single matching poll is not a pass (R1: three false passes while the host walk rolled back).
+async function expectHostSettled(
+  s: Session,
+  doc: Doc,
+  target: string,
+  what: string,
+): Promise<HostState> {
+  const want = sha256(target)
+  const deadline = Date.now() + 20_000
+  let since: number | undefined
+  let held: HostState | undefined
+  while (Date.now() < deadline) {
+    const now = await hostState(s, doc)
+    if (now.sha256 !== want) {
+      since = undefined
+      held = undefined
+    } else if (held && now.version === held.version && since !== undefined) {
+      if (Date.now() - since >= 1_000) return now
+    } else {
+      since = Date.now()
+      held = now
+    }
+    await s.workbox.waitForTimeout(100)
+  }
+  expect(
+    held,
+    `${doc.mode}: ${what} (host settled for one second)`,
+  ).toBeDefined()
+  throw new Error(
+    `${doc.mode}: ${what}: the host did not settle for one second`,
+  )
+}
+
 /** `text` with `insert` spliced `at` characters into its only occurrence of `needle`. */
 function spliceAtUnique(
   text: string,
@@ -642,8 +708,16 @@ async function keybindingReplaceLeg(s: Session) {
 async function keyboardToolbarLeg(s: Session) {
   const doc = await openDoc(s, 'keyboard-toolbar-ir', LARGE, 'ir')
   await replaceOneAndClose(s, doc)
+  // Task 733 / 036 (row 7): the Replace One bytes and the document version hold from Find close
+  // through Tab, before Return (R1: the second Escape and Tab published canonical text, +7,338).
+  const closed = await hostState(s, doc)
   await s.xtest.key('Escape')
   await s.xtest.key('Tab')
+  const tabbed = await hostState(s, doc)
+  expect(
+    { sha256: tabbed.sha256, version: tabbed.version },
+    'Replace One bytes and version hold from Find close through Tab',
+  ).toEqual({ sha256: sha256(AFTER_ONE), version: closed.version })
   const active = () =>
     doc.frame
       .locator('body')
@@ -655,7 +729,12 @@ async function keyboardToolbarLeg(s: Session) {
     await s.xtest.key('Left')
   expect(await active(), 'Undo reachable in the toolbar row').toBe('undo')
   await s.xtest.key('Return')
-  await expectHost(s, doc, LARGE, 'toolbar Undo restores the exact fixture')
+  await expectHostSettled(
+    s,
+    doc,
+    LARGE,
+    'toolbar Undo restores the exact fixture',
+  )
   await expectCaret(doc, { before: '', after: TOKEN }, 'keyboard toolbar Undo')
   const toolbarMs = await expectToolbar(doc, AT_TOKEN, 'keyboard toolbar Undo')
   await typeAndExpect(
@@ -665,8 +744,18 @@ async function keyboardToolbarLeg(s: Session) {
     (r) => spliceAtUnique(r, TOKEN, 0, 'Q'),
     'keyboard toolbar Undo',
   )
+  // Task 733 / 036 (Q4): `Q` lands in the known fixture, not in whatever the host held before the key.
+  const withQ = spliceAtUnique(LARGE, TOKEN, 0, 'Q')
+  await expectHostSettled(s, doc, withQ, 'Q spliced into the exact fixture')
   await record(s, doc, 'keyboard-toolbar-undo', { toolbarMs })
   await save(s, doc)
+  // Task 733 / 036 (Q4): the saved bytes are the expected text and the document is clean at them.
+  expect(readFileSync(doc.file, 'utf8') === withQ, 'saved bytes').toBe(true)
+  await expect
+    .poll(async () => (await hostState(s, doc)).isDirty, {
+      message: 'isDirty false at the saved baseline',
+    })
+    .toBe(false)
 }
 
 // A mouse Undo on the toolbar with the change site above the viewport: the toolbar scroll guard

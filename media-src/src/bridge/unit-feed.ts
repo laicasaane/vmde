@@ -67,6 +67,8 @@ function feedOf(
       return mine() && session.confirmedUnits() !== undefined
     },
     confirmedLines: () => (mine() ? session.confirmedLines() : undefined),
+    // Task 733 / 036 (step D, 4.2): the account the deferred consumers charge replay work to.
+    replayAccount: () => (mine() ? session.replayAccount?.() : undefined),
   }
 }
 

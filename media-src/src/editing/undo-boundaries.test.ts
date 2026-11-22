@@ -1735,6 +1735,81 @@ describe('pending checkpoint before history (Task 601)', () => {
     expect(t.order.slice(0, 3)).toEqual(['run', 'input', 'add'])
     t.dispose()
   })
+
+  // Task 733 / 036 (F6, re-review finding 1): `prepareHistory(target, kind)` asks the unit history's
+  // `exactMove(inner, kind)` after draining the checkpoint. A tagged top entry with nothing pending skips
+  // `flushHistoryInput`, so no preparation flush publishes whole text before the exact replay; genuine
+  // typing makes the hook false and is flushed and popped as today. Both the keyboard (engine wrapper)
+  // and the toolbar capture thread `kind`. The option does not exist before step 6.
+  describe('036 tagged move', () => {
+    const tagged = (answer: boolean) =>
+      vi.fn((_inner: unknown, _kind: 'undo' | 'redo') => answer)
+
+    it.each(['undo', 'redo'] as const)(
+      'keyboard %s with a tagged top entry and nothing pending: no flush',
+      (kind) => {
+        vi.useFakeTimers()
+        const exactMove = tagged(true)
+        const t = setup('ir', { exactMove })
+        couple(t)
+        if (kind === 'redo') t.inner.undo.ir.redoStack.push('entry')
+        t.inner.undo[kind](t.inner)
+        expect(exactMove).toHaveBeenCalledWith(t.inner, kind)
+        expect(t.flushHistoryInput).not.toHaveBeenCalled()
+        // This rig's old engine still posts its own transition after the move (edited after step 1).
+        expect(t.order[0]).toBe(kind)
+        expect(t.order).not.toContain('flush')
+        t.dispose()
+      },
+    )
+
+    it.each(['undo', 'redo'] as const)(
+      'toolbar %s with a tagged top entry and nothing pending: no flush',
+      (kind) => {
+        vi.useFakeTimers()
+        const exactMove = tagged(true)
+        const t = setup('ir', { exactMove })
+        t.button(kind).classList.remove('vditor-menu--disabled')
+        if (kind === 'redo') t.inner.undo.ir.redoStack.push('entry')
+        t.button(kind)
+          .querySelector('use')!
+          .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        expect(exactMove).toHaveBeenCalledWith(t.inner, kind)
+        expect(t.flushHistoryInput).not.toHaveBeenCalled()
+        expect(t.order).toEqual([kind])
+        t.dispose()
+      },
+    )
+
+    // Preservation test at this layer: with genuine pending typing the hook answers false
+    // (`port.pending()`), the flush runs as today and the typing entry is the one popped.
+    it.each(['keyboard', 'toolbar'] as const)(
+      '%s Undo with genuine pending typing: the flush runs and the typing entry is popped',
+      (path) => {
+        vi.useFakeTimers()
+        const exactMove = tagged(false)
+        const t = setup('ir', { exactMove })
+        if (path === 'keyboard') couple(t)
+        t.arm()
+        if (path === 'keyboard') t.inner.undo.undo(t.inner)
+        else {
+          t.button('undo').classList.remove('vditor-menu--disabled')
+          t.button('undo')
+            .querySelector('use')!
+            .dispatchEvent(new MouseEvent('click', { bubbles: true }))
+        }
+        expect(t.order.slice(0, 5)).toEqual([
+          'run',
+          'input',
+          'add',
+          'flush',
+          'undo',
+        ])
+        expect(t.inner.undo.ir.redoStack).toEqual(['entry'])
+        t.dispose()
+      },
+    )
+  })
 })
 
 // Task 603 item 3 — an external update's setValue arms the active mode's delayed after-render record

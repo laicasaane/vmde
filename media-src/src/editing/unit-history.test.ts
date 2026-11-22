@@ -96,6 +96,8 @@ interface Hook {
   resetIcon(vditor: unknown): void
   seedBaseline(vditor: unknown, event?: Event): boolean
   settled(vditor: unknown): boolean
+  moves(vditor: unknown): number
+  ownsHistoryNow(vditor: unknown): boolean
 }
 const hookOf = () =>
   (window as unknown as { __vmdeUnitHistory: Hook }).__vmdeUnitHistory
@@ -121,6 +123,9 @@ function rig(
     liveMode?: () => 'ir' | 'sv' | undefined
     /** Task 015: the Source root the inner Vditor shows. */
     svRoot?: HTMLElement
+    /** Task 733 / 036 (step C): more dependencies (the replay hooks) and a sliced restore on the port. */
+    deps?: Record<string, unknown>
+    sliced?: boolean
   } = {},
 ) {
   const mode = options.mode ?? 'ir'
@@ -168,7 +173,11 @@ function rig(
     pending: false,
     ready: true,
     claimable: true,
-    published: [] as Array<['undo' | 'redo', number]>,
+    published: [] as Array<
+      ['undo' | 'redo', number] | ['undo' | 'redo', number, string]
+    >,
+    /** Task 733 / 036: the evicted-pair exact recoveries (the Task 685 route). */
+    recovered: [] as Array<{ exact: string; before: string; kind: string }>,
     publishResult: 'delta' as 'delta' | 'nothing' | 'fallback',
     sequence: 0,
     epoch: 1 as number | undefined,
@@ -194,17 +203,44 @@ function rig(
             state.restoreHook?.(caret)
             return state.restoreResult
           },
+          ...(options.sliced
+            ? {
+                restoreSliced: (
+                  c: HistoryCapture,
+                  side: 'before' | 'after',
+                ) => {
+                  state.restores.push([c, side])
+                  return Promise.resolve(true)
+                },
+              }
+            : {}),
         }
   // A variable, not a literal: `liveMode` is not a dependency of the engine yet (task 015 section 6.2 D-7).
   const deps = {
     ...(options.liveMode ? { liveMode: options.liveMode } : {}),
     port: () => port as never,
-    publishHistory: (kind, steps) => {
-      state.published.push([kind, steps])
+    // Task 733 / 036: a tagged move passes the record's request ID as a third argument.
+    publishHistory: (
+      kind: 'undo' | 'redo',
+      steps: number,
+      exactId?: string,
+    ) => {
+      state.published.push(
+        exactId === undefined ? [kind, steps] : [kind, steps, exactId],
+      )
       return state.publishResult
+    },
+    // Task 733 / 036: the evicted-pair recovery (provisional dependency name, settled in the contract step).
+    postExactHistory: (
+      exact: string,
+      before: string,
+      kind: 'undo' | 'redo',
+    ) => {
+      state.recovered.push({ exact, before, kind })
     },
     lastPostedSequence: () => state.sequence,
     epoch: () => state.epoch,
+    ...options.deps,
   }
   uninstall = installUnitHistory(window, deps)
   const hook = hookOf()
@@ -281,6 +317,54 @@ describe('claims', () => {
   })
 })
 
+// Task 733 / 036 D-18: the IR-owned Undo/Redo keys read ownership without side effects.
+describe('ownsHistoryNow', () => {
+  it('is false before any claim and true after a claim in the same mode', () => {
+    const r = rig()
+    expect(r.hook.ownsHistoryNow(r.vditor)).toBe(false)
+    expect(r.hook.claims(r.vditor)).toBe(true)
+    expect(r.hook.ownsHistoryNow(r.vditor)).toBe(true)
+  })
+  it('changes no history: repeated reads leave the stacks and the claim as they were', () => {
+    const r = rig()
+    r.hook.claims(r.vditor)
+    r.record()
+    r.record(cap('A'))
+    const moves = r.hook.moves(r.vditor)
+    for (let i = 0; i < 3; i++) r.hook.ownsHistoryNow(r.vditor)
+    expect(r.hook.moves(r.vditor)).toBe(moves)
+    r.hook.undo(r.vditor)
+    expect(r.names(r.state.restores)).toEqual([['A', 'before']])
+  })
+  it('stays owned during a scheduled rebuild that keeps the port claimable (not ready)', () => {
+    const r = rig()
+    r.hook.claims(r.vditor)
+    r.state.ready = false
+    r.state.claimable = true
+    expect(r.hook.ownsHistoryNow(r.vditor)).toBe(true)
+  })
+  it('is false once the port lost its claim, before the next claims call', () => {
+    const r = rig()
+    r.hook.claims(r.vditor)
+    r.state.claimable = false
+    expect(r.hook.ownsHistoryNow(r.vditor)).toBe(false)
+  })
+  it("is false when the engine is 'vditor' or the claim was made in another mode", () => {
+    const r = rig()
+    r.hook.claims(r.vditor)
+    engine.value = 'vditor'
+    expect(r.hook.ownsHistoryNow(r.vditor)).toBe(false)
+    engine.value = 'unit'
+    r.vditor.currentMode = 'wysiwyg'
+    expect(r.hook.ownsHistoryNow(r.vditor)).toBe(false)
+  })
+  it('is false without a port', () => {
+    const r = rig({ port: false })
+    r.hook.claims(r.vditor)
+    expect(r.hook.ownsHistoryNow(r.vditor)).toBe(false)
+  })
+})
+
 describe('stacks', () => {
   it('records three entries; undo twice and redo once restore in order', () => {
     const r = rig()
@@ -300,6 +384,18 @@ describe('stacks', () => {
       'undo',
       'redo',
     ])
+  })
+
+  it('036: counts each Undo and Redo move that restored an entry, not a refused one', () => {
+    const r = rig()
+    expect(r.hook.moves(r.vditor)).toBe(0)
+    r.record() // the base
+    r.record(cap('A'))
+    r.hook.undo(r.vditor)
+    r.hook.undo(r.vditor) // nothing left to undo
+    r.hook.redo(r.vditor)
+    expect(r.state.restores).toHaveLength(2)
+    expect(r.hook.moves(r.vditor)).toBe(2)
   })
 
   it('the first record only creates the base: no entry, an empty-history report', () => {
@@ -1686,5 +1782,411 @@ describe('020 WYSIWYG claim after a kept-text switch', () => {
     r.record(cap('wysiwyg key'))
     r.hook.undo(r.vditor)
     expect(r.names(r.state.restores)).toEqual([['wysiwyg key', 'before']])
+  })
+})
+
+// Task 733 / 036 (F6 publication, F8 guard): `finishMove` reads the moved Find record. A replayable record
+// publishes `history-exact` with its request ID (`publishHistory(kind, steps, requestId)`); an evicted
+// one takes the Task 685 exact recovery with its directional strings; an untagged entry takes today's
+// history delta. `peekExact` is the preparation hook: true only when the engine claims, nothing is
+// pending and the entry `move(kind)` would pop carries a tagged record. While the exact replay is pending
+// a second Undo or Redo is refused and editing input on the root is prevented. None of this exists
+// before steps 6 and 7.
+describe('036 exact replay', () => {
+  interface ExactHook {
+    peekExact(vditor: unknown, kind: 'undo' | 'redo'): boolean
+    historyBusy(vditor: unknown): boolean
+  }
+  type RecordInput = Parameters<typeof recordRewrapDocumentHistory>[0]
+  const exactHook = () => hookOf() as unknown as Hook & ExactHook
+
+  /** A Find entry on top of the unit stack with its record in `state`. */
+  const findEntry = (
+    state: 'posted' | 'replayable' | 'evicted' | 'untagged',
+  ) => {
+    const r = rig()
+    r.record()
+    r.record(cap('find'))
+    const requestId = `036-${state}-${Math.random().toString(36).slice(2)}`
+    recordRewrapDocumentHistory({
+      owner: r.vditor as never,
+      mode: 'ir',
+      nativeState: historyStoreOf(r.vditor)?.top() as never,
+      beforeRendered: 'before rendered',
+      beforeExact: 'before exact\r\n',
+      afterRendered: 'after rendered',
+      afterExact: 'after exact\r\n',
+      ...(state === 'untagged' ? {} : { requestId }),
+    } as RecordInput)
+    const rewrap = import('./rewrap-command') as unknown as Promise<{
+      confirmExactHistory(id: string): void
+      evictExactHistory(id: string): void
+    }>
+    return { r, requestId, rewrap }
+  }
+
+  it('a replayable entry publishes history-exact with its request ID', async () => {
+    const { r, requestId, rewrap } = findEntry('replayable')
+    ;(await rewrap).confirmExactHistory(requestId)
+
+    r.hook.undo(r.vditor)
+
+    expect(r.state.published).toEqual([['undo', 1, requestId]])
+    expect(r.state.recovered).toEqual([])
+  })
+
+  it('an evicted entry takes the Task 685 exact recovery with its directional strings', async () => {
+    const { r, requestId, rewrap } = findEntry('evicted')
+    const api = await rewrap
+    api.confirmExactHistory(requestId)
+    api.evictExactHistory(requestId)
+
+    r.hook.undo(r.vditor)
+
+    expect(r.state.published).toEqual([])
+    expect(r.state.recovered).toEqual([
+      { exact: 'before exact\r\n', before: 'after exact\r\n', kind: 'undo' },
+    ])
+  })
+
+  // Preservation test: an untagged entry (no request ID) keeps today's history delta.
+  it('an untagged entry takes the history delta path', () => {
+    const { r } = findEntry('untagged')
+    r.hook.undo(r.vditor)
+    expect(r.state.published).toEqual([['undo', 1]])
+    expect(r.state.recovered).toEqual([])
+  })
+
+  it('peekExact: true for a replayable top entry with nothing pending, false with pending typing or no tag', async () => {
+    const tagged = findEntry('replayable')
+    ;(await tagged.rewrap).confirmExactHistory(tagged.requestId)
+    expect(exactHook().peekExact(tagged.r.vditor, 'undo')).toBe(true)
+    tagged.r.state.pending = true
+    expect(exactHook().peekExact(tagged.r.vditor, 'undo')).toBe(false)
+    tagged.r.state.pending = false
+    // Redo would pop no tagged entry.
+    expect(exactHook().peekExact(tagged.r.vditor, 'redo')).toBe(false)
+  })
+
+  it('a second Undo or Redo while the exact replay is pending is refused', async () => {
+    const { r, requestId, rewrap } = findEntry('replayable')
+    ;(await rewrap).confirmExactHistory(requestId)
+    r.record(cap('next'))
+    r.hook.undo(r.vditor) // `next`: today's delta
+    r.hook.undo(r.vditor) // the Find entry: the exact replay is now pending
+    const restores = r.state.restores.length
+    const published = r.state.published.length
+
+    r.hook.undo(r.vditor)
+    r.hook.redo(r.vditor)
+
+    expect(exactHook().historyBusy(r.vditor)).toBe(true)
+    expect(r.state.restores).toHaveLength(restores)
+    expect(r.state.published).toHaveLength(published)
+  })
+
+  // H2 fix design rev2 (D7.1, O1 (b)): the resync that ended the replay reset both stacks; a history key
+  // then is a visible, counted refusal (no post, no restore, icons disabled), never held or replayed.
+  it('D7.1: a history key after a resync reset during a replay is a counted refusal, with no post', async () => {
+    const lines: string[] = []
+    for (const method of ['debug', 'info', 'log', 'warn'] as const) {
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        lines.push(args.map(String).join(' '))
+      })
+    }
+    const busy = { value: true }
+    const r = rig({ deps: { exactBusy: () => busy.value } })
+    r.record()
+    r.record(cap('find'))
+    const requestId = `036-d7-${Math.random().toString(36).slice(2)}`
+    recordRewrapDocumentHistory({
+      owner: r.vditor as never,
+      mode: 'ir',
+      nativeState: historyStoreOf(r.vditor)?.top() as never,
+      beforeRendered: 'before rendered',
+      beforeExact: 'before exact',
+      afterRendered: 'after rendered',
+      afterExact: 'after exact',
+      requestId,
+    } as Parameters<typeof recordRewrapDocumentHistory>[0])
+    ;(
+      (await import('./rewrap-command')) as unknown as {
+        confirmExactHistory(id: string): void
+      }
+    ).confirmExactHistory(requestId)
+    r.hook.undo(r.vditor)
+    expect(r.state.published).toEqual([['undo', 1, requestId]])
+    const restores = r.state.restores.length
+    // The host's resync update resets the history (`clearStack`) while the recovery still renders.
+    r.hook.clear(r.vditor)
+    const refusals = () =>
+      lines.filter((l) => l.includes('history-reset-refused'))
+    r.hook.undo(r.vditor)
+    expect(refusals()).toEqual([
+      '[unit-history] history-reset-refused (1 so far)',
+    ])
+    // The recovery finished: the busy gate is open and the stacks are still empty.
+    busy.value = false
+    r.hook.undo(r.vditor)
+    r.hook.redo(r.vditor)
+    expect(refusals()).toHaveLength(3)
+    expect(r.state.published).toEqual([['undo', 1, requestId]])
+    expect(r.state.restores).toHaveLength(restores)
+    const undo = r.vditor.toolbar.elements.undo.firstElementChild
+    expect(undo?.classList.contains('vditor-menu--disabled')).toBe(true)
+    // A new entry ends the refusal: its Undo restores it as usual.
+    r.record(cap('typed'))
+    r.hook.undo(r.vditor)
+    expect(refusals()).toHaveLength(3)
+    expect(r.state.published.at(-1)).toEqual(['undo', 1])
+  })
+
+  it('D7.1: an ordinary empty stack is no refusal', () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '))
+    })
+    const r = rig()
+    r.record()
+    r.hook.clear(r.vditor)
+    r.hook.undo(r.vditor)
+    expect(lines.filter((l) => l.includes('history-reset-refused'))).toEqual([])
+  })
+
+  it('editing input on the root is refused while busy', async () => {
+    const { r, requestId, rewrap } = findEntry('replayable')
+    ;(await rewrap).confirmExactHistory(requestId)
+    r.hook.undo(r.vditor)
+    expect(exactHook().historyBusy(r.vditor)).toBe(true)
+
+    const prevented = (event: Event) => {
+      r.root.dispatchEvent(event)
+      return event.defaultPrevented
+    }
+    expect(
+      prevented(
+        new KeyboardEvent('keydown', {
+          key: 'a',
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    ).toBe(true)
+    expect(
+      prevented(
+        new InputEvent('beforeinput', {
+          inputType: 'insertText',
+          data: 'a',
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    ).toBe(true)
+    for (const type of ['paste', 'cut', 'drop'])
+      expect(
+        prevented(new Event(type, { bubbles: true, cancelable: true })),
+      ).toBe(true)
+  })
+})
+
+// Task 733 / 036 (step C, fix design 2.6, 2.7): while the replay's logical text is live the busy gate is
+// retired: input continues after its endpoints render, the step's caret is put back before the first
+// input, a pointer selection discards it, a second move is not dropped, and typing is its own entry.
+describe('036 C input during a live replay', () => {
+  type RecordInput = Parameters<typeof recordRewrapDocumentHistory>[0]
+
+  const liveRig = async (options: { sliced?: boolean } = {}) => {
+    const calls: string[] = []
+    const r = rig({
+      sliced: options.sliced,
+      deps: {
+        exactBusy: () => true,
+        replayLive: () => true,
+        beforeReplayInput: (event: Event) => calls.push(`input:${event.type}`),
+        renderReplayCaretGroup: () => calls.push('caret-group'),
+      },
+    })
+    r.caretAt(0, 2)
+    r.record()
+    r.record(cap('find'))
+    const requestId = `036-c-${Math.random().toString(36).slice(2)}`
+    recordRewrapDocumentHistory({
+      owner: r.vditor as never,
+      mode: 'ir',
+      nativeState: historyStoreOf(r.vditor)?.top() as never,
+      beforeRendered: 'before rendered',
+      beforeExact: 'before exact',
+      afterRendered: 'after rendered',
+      afterExact: 'after exact',
+      requestId,
+    } as RecordInput)
+    const rewrap = (await import('./rewrap-command')) as unknown as {
+      confirmExactHistory(id: string): void
+    }
+    rewrap.confirmExactHistory(requestId)
+    vi.mocked(requestCaret).mockImplementation((() => {
+      calls.push('request-caret')
+      return true
+    }) as never)
+    return { r, calls, requestId }
+  }
+
+  it('editing input continues and renders its endpoints first; navigation keys do not', async () => {
+    const { r, calls } = await liveRig()
+    r.hook.undo(r.vditor)
+    calls.length = 0
+    const prevented = (event: Event) => {
+      r.root.dispatchEvent(event)
+      return event.defaultPrevented
+    }
+    const key = (k: string) =>
+      new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })
+    expect(prevented(key('a'))).toBe(false)
+    expect(prevented(key('ArrowLeft'))).toBe(false)
+    expect(
+      prevented(
+        new InputEvent('beforeinput', {
+          inputType: 'insertText',
+          data: 'a',
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    ).toBe(false)
+    for (const type of ['paste', 'cut', 'copy', 'drop', 'compositionstart'])
+      expect(
+        prevented(new Event(type, { bubbles: true, cancelable: true })),
+      ).toBe(false)
+    expect(calls).toEqual([
+      'input:keydown',
+      'input:beforeinput',
+      'input:paste',
+      'input:cut',
+      'input:copy',
+      'input:drop',
+      'input:compositionstart',
+    ])
+  })
+
+  it('the step caret is put back after its group renders, before the first input only', async () => {
+    const { r, calls } = await liveRig({ sliced: true })
+    r.hook.undo(r.vditor)
+    calls.length = 0
+    r.root.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'x', bubbles: true }),
+    )
+    r.root.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'y', bubbles: true }),
+    )
+    expect(calls).toEqual([
+      'caret-group',
+      'request-caret',
+      'input:keydown',
+      'input:keydown',
+    ])
+  })
+
+  it('H2 D3.1: Cut and Copy reach the session first, before the caret intent and a document listener', async () => {
+    const { r, calls } = await liveRig({ sliced: true })
+    r.hook.undo(r.vditor)
+    calls.length = 0
+    const onDocument = (event: Event) => calls.push(`document:${event.type}`)
+    const types = ['beforecut', 'cut', 'beforecopy', 'copy'] as const
+    for (const type of types) document.addEventListener(type, onDocument, true)
+    try {
+      for (const type of types)
+        r.root.dispatchEvent(
+          new Event(type, { bubbles: true, cancelable: true }),
+        )
+    } finally {
+      for (const type of types)
+        document.removeEventListener(type, onDocument, true)
+    }
+    expect(calls).toEqual([
+      'input:beforecut',
+      'document:beforecut',
+      'input:cut',
+      'document:cut',
+      'input:beforecopy',
+      'document:beforecopy',
+      'input:copy',
+      'document:copy',
+    ])
+  })
+
+  it('H2 D3.3: an expanded Backspace reaches the session before the caret intent can collapse it', async () => {
+    const { r, calls } = await liveRig({ sliced: true })
+    r.hook.undo(r.vditor)
+    calls.length = 0
+    const text = r.root.querySelector('p')?.firstChild as Text
+    document.getSelection()?.setBaseAndExtent(text, 0, text, 1)
+    r.root.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }),
+    )
+    expect(calls).toEqual(['input:keydown'])
+  })
+
+  it('a pointer selection discards the caret intent', async () => {
+    const { r, calls } = await liveRig({ sliced: true })
+    r.hook.undo(r.vditor)
+    calls.length = 0
+    r.root.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    r.root.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'x', bubbles: true }),
+    )
+    expect(calls).toEqual(['input:keydown'])
+  })
+
+  it('Redo right after Undo is not dropped', async () => {
+    const { r, requestId } = await liveRig({ sliced: true })
+    r.hook.undo(r.vditor)
+    r.hook.redo(r.vditor)
+    expect(r.state.published).toEqual([
+      ['undo', 1, requestId],
+      ['redo', 1, requestId],
+    ])
+    expect(r.state.restores.map(([, side]) => side)).toEqual([
+      'before',
+      'after',
+    ])
+  })
+
+  it('typing during the replay is its own undo entry, undone before the replayed move', async () => {
+    const { r, requestId } = await liveRig({ sliced: true })
+    r.hook.undo(r.vditor)
+    const depthOf = (
+      r.hook as unknown as {
+        depth(v: unknown): { undo: number; redo: number }
+      }
+    ).depth
+    const depth = depthOf(r.vditor)
+    r.record(cap('typed'))
+    expect(depthOf(r.vditor).undo).toBe(depth.undo + 1)
+    r.hook.undo(r.vditor)
+    expect(r.names(r.state.restores).at(-1)).toEqual(['typed', 'before'])
+    // The typed entry's Undo is today's (untagged) history delta, not the replay's.
+    expect(r.state.published.at(-1)).toEqual(['undo', 1])
+    expect(r.state.published[0]).toEqual(['undo', 1, requestId])
+  })
+})
+
+// H2 fix design rev2 (D3.1): a clipboard token is taken once, after the replay ended too, so Cut and Copy
+// reach the session while no move is busy; the session leaves the event alone when it holds none.
+describe('036 H2 D3 clipboard routing', () => {
+  it('Cut and Copy reach the session with no move in flight; other input does not', () => {
+    const calls: string[] = []
+    const r = rig({
+      deps: {
+        exactBusy: () => false,
+        replayLive: () => false,
+        beforeReplayInput: (event: Event) => calls.push(event.type),
+      },
+    })
+    for (const type of ['beforecut', 'cut', 'beforecopy', 'copy', 'paste'])
+      r.root.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }))
+    r.root.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'a', bubbles: true }),
+    )
+    expect(calls).toEqual(['beforecut', 'cut', 'beforecopy', 'copy'])
   })
 })

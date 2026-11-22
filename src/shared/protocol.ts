@@ -148,6 +148,9 @@ export interface VmdeConfigOptions {
   contentVisibility?: boolean
   restorePosition?: boolean
   linkOpenWithModifier?: boolean
+  // Task 733 / 036 D-18: the Undo/Redo chords the IR editor owns at keydown (raw setting values; the
+  // webview validates them, media-src/src/editing/undo-redo-keys.ts).
+  undoRedoKeys?: { inEditor?: unknown; undo?: unknown; redo?: unknown }
   pasteUrlAsLink?: boolean
   imageFormat?: string
   imageQuality?: number
@@ -246,6 +249,19 @@ interface UploadFile {
 }
 
 // ── Host → webview ──────────────────────────────────────────────────────────
+/** Task 733 / 036: the replay pairs the host keeps (a FIFO; the oldest is evicted). */
+export const EXACT_HISTORY_PAIRS = 8
+
+/** Task 733 / 036 (B0): the host's state of one replay operation (`replay-status`). */
+export type ReplayOpStatus =
+  | 'applied'
+  | 'running'
+  | 'queued'
+  | 'reserved'
+  | 'refused'
+  | 'ended'
+  | 'unknown'
+
 export type HostMessage =
   | {
       command: 'update'
@@ -259,6 +275,9 @@ export type HostMessage =
       // Task 733: present when this update starts a new epoch; the count of deltas the host accepted
       // in the epoch it ends.
       afterSequence?: number
+      // Task 733 / 036 (B0): beside `afterSequence` when the ended epoch carried replay operations; the
+      // highest operation of its contiguous applied prefix.
+      replayAfterOp?: number
       // Task 646: the host's external-change revision when this was posted. The webview echoes the
       // last one it applied on every plain `edit`, so the host can refuse an edit made from older text.
       revision?: number
@@ -302,6 +321,38 @@ export type HostMessage =
       afterSequence: number
       content: string
       editSequence?: number
+      // Task 733 / 036: the replay pair the host admitted for this answer's replayable exact edit, and
+      // the pair its FIFO of `EXACT_HISTORY_PAIRS` dropped. Read before the matched-sequence check.
+      exactRequestId?: string
+      exactEvicted?: string
+    }
+  // Task 733 / 036 (B0): the contiguous prefix of replay operations of `epoch` that applied and passed
+  // their proof; `acceptedSequence` is the delta writer's accepted count when posted.
+  | {
+      command: 'replay-ack'
+      epoch: number
+      replayOp: number
+      acceptedSequence: number
+    }
+  // Task 733 / 036 (B0): the answer to `replay-query`, for the requested operation of the named epoch.
+  | {
+      command: 'replay-status'
+      epoch: number
+      replayOp: number
+      state: ReplayOpStatus
+      applied: number
+      acceptedSequence: number
+    }
+  // Task 733 / 036 (B0): the answer to `host-state-query` (the fields an `update` carries).
+  | {
+      command: 'host-state'
+      requestId: string
+      epoch: number
+      revision: number
+      content: string
+      raw?: string
+      afterSequence?: number
+      replayAfterOp?: number
     }
   // Task 733: the host saved or saw a clean external state; the webview may clear its dirty forms.
   | { command: 'baseline'; epoch: number; afterSequence: number }
@@ -588,10 +639,17 @@ export type WebviewMessage =
       requestId?: string
       // Task 733: ask the host for exactly one `rebind` answer to this edit.
       rebind?: true
+      // Task 733 / 036: Find's exact post with `rebind`, whose `before` is the plan source; the host may
+      // admit its replay pair (`rebind.exactRequestId`).
+      replayable?: true
       // Task 685 (exact edits only): this edit replays the Undo or Redo of an exact action.
       history?: 'undo' | 'redo'
       rewrapDocument?: boolean
       perf?: RendererEditPerf
+      // Task 733 / 036 (B0): the evicted exact edit and the whole post of the logical text are replay
+      // operations; they carry both numbers, or neither.
+      epoch?: number
+      replayOp?: number
     }
   // Task 733: ranged edits against the pre-edit text of the host's current epoch. `sequence` is the last
   // accepted sequence + 1 (the first delta of an epoch is 1). `oldText` and `text` use `\n` line endings.
@@ -606,6 +664,10 @@ export type WebviewMessage =
         text: string
       }>
       perf?: RendererEditPerf
+      // Task 733 / 036 (B0): present exactly while a replay is active (the replay operation number).
+      replayOp?: number
+      // Task 733 / 036 (B0): this delta reapplies the refused replay operation it names.
+      recoveryOf?: { epoch: number; replayOp: number }
     }
   // Task 733 (task 004): the text change of one Undo or Redo. `steps` is a lower bound of the native
   // steps the host walks first; the other fields are those of `edit-delta`.
@@ -621,7 +683,36 @@ export type WebviewMessage =
         oldText: string
         text: string
       }>
+      // Task 733 / 036 (B0): the replay operation number while a replay is active, or of a reserved Undo.
+      replayOp?: number
     }
+  // Task 733 / 036: replay the admitted pair named by `requestId` (an Undo of a Find action, or its
+  // Redo). `sequence` comes from the whole-edit counter. B0: the move is replay operation `replayOp` of
+  // `epoch`; the host answers with `replay-ack`, or with one `update` when it cannot replay.
+  | {
+      command: 'history-exact'
+      kind: 'undo' | 'redo'
+      requestId: string
+      sequence: number
+      epoch: number
+      replayOp: number
+    }
+  // Task 733 / 036 (B0): an untagged Undo or Redo whose `history-delta` waits for rendering keeps its
+  // place on the host's edit chain.
+  | {
+      command: 'replay-reserve'
+      epoch: number
+      replayOp: number
+      kind: 'undo' | 'redo'
+    }
+  // Task 733 / 036 (B0): the status of one replay operation; idempotent, answered at once.
+  | { command: 'replay-query'; epoch: number; replayOp: number }
+  // Task 733 / 036 (B0): the current host state; idempotent, starts no epoch.
+  | { command: 'host-state-query'; requestId: string }
+  // Task 733 / 036 (B0): the webview cannot reach the logical text for this operation.
+  | { command: 'replay-abandon'; epoch: number; replayOp: number }
+  // Task 733 / 036 (B0): every reapplication of the refused `epoch` has been posted.
+  | { command: 'recovery-done'; epoch: number }
   | {
       command: 'edit-perf-renderer'
       id: string

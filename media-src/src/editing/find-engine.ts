@@ -15,11 +15,42 @@ export interface MarkdownMatch {
   blockIndex: number | null
 }
 
+/**
+ * Task 733 / 036 (fix design 2.2): the replacements Replace applied, in raw offsets of the plan source:
+ * `insert` replaced each `[starts[i], ends[i])`, ascending and non-overlapping. The expected old text of
+ * hunk `i` is the plan source's `slice(starts[i], ends[i])`; the record keeps that source by reference,
+ * so no old text is copied.
+ */
+export interface ReplaceHunks {
+  starts: Int32Array
+  ends: Int32Array
+  insert: string
+}
+
 export interface MarkdownReplaceResult {
   changed: boolean
   markdown: string
   replacements: number
   caretOffset: number
+  /** Absent when nothing was replaced. */
+  hunks?: ReplaceHunks
+}
+
+/**
+ * Task 733 / 036 (fix design 2.2): the hunks in normalized (LF) text, which the model compares. `before`
+ * and `after` are the normalized Undo and Redo targets; a text without `\r` is the raw string itself,
+ * and offsets of a source without `\r` are the raw arrays. `incremental` is false when a hunk endpoint
+ * splits `\r\n` on either side or a hunk fails its check; such a record cannot replay hunk by hunk.
+ */
+export interface NormalizedReplaceHunks {
+  incremental: boolean
+  before: string
+  after: string
+  insert: string
+  oldStarts: Int32Array
+  oldEnds: Int32Array
+  newStarts: Int32Array
+  newEnds: Int32Array
 }
 
 const FIND_WORD_CHAR = /[\p{L}\p{N}\p{M}_]/u
@@ -162,12 +193,20 @@ export function replaceMarkdownMatch(
       replacements: 0,
       caretOffset: Math.max(0, match.start),
     }
+  const offsets = new Int32Array(2)
+  offsets[0] = match.start
+  offsets[1] = match.end
   return {
     changed: markdown.slice(match.start, match.end) !== replacement,
     markdown:
       markdown.slice(0, match.start) + replacement + markdown.slice(match.end),
     replacements: 1,
     caretOffset: match.start + replacement.length,
+    hunks: {
+      starts: offsets.subarray(0, 1),
+      ends: offsets.subarray(1),
+      insert: replacement,
+    },
   }
 }
 
@@ -178,17 +217,137 @@ export function replaceAllMarkdownMatches(
 ): MarkdownReplaceResult {
   if (matches.length === 0)
     return { changed: false, markdown, replacements: 0, caretOffset: 0 }
+  // Task 733 / 036: one buffer holds both offset arrays, so Replace All allocates its hunks once.
+  const count = matches.length
+  const offsets = new Int32Array(count * 2)
   let output = ''
   let cursor = 0
-  for (const match of matches) {
+  for (let index = 0; index < count; index++) {
+    const match = matches[index]
     output += markdown.slice(cursor, match.start) + replacement
+    offsets[index] = match.start
+    offsets[count + index] = match.end
     cursor = match.end
   }
   output += markdown.slice(cursor)
   return {
     changed: output !== markdown,
     markdown: output,
-    replacements: matches.length,
+    replacements: count,
     caretOffset: matches[0].start + replacement.length,
+    hunks: {
+      starts: offsets.subarray(0, count),
+      ends: offsets.subarray(count),
+      insert: replacement,
+    },
+  }
+}
+
+// The model's line-ending normalization (`B/model-session.ts`): CRLF and a lone CR both become LF.
+const normalizeEol = (text: string): string => text.replace(/\r\n?/g, '\n')
+
+/** The index of the next `\r\n` at or after `from`, or -1. */
+function nextCrlf(text: string, from: number): number {
+  let index = text.indexOf('\r', from)
+  while (index >= 0 && text.charCodeAt(index + 1) !== 10)
+    index = text.indexOf('\r', index + 1)
+  return index
+}
+
+/**
+ * Maps ascending raw offsets (`starts[i] <= ends[i] <= starts[i + 1]`) to normalized offsets in one
+ * forward pass: each `\r\n` before an offset removes one code unit; a lone CR keeps its length. Returns
+ * false when an offset falls between `\r` and `\n`.
+ */
+function normalizeOffsets(
+  text: string,
+  starts: Int32Array,
+  ends: Int32Array,
+  outStarts: Int32Array,
+  outEnds: Int32Array,
+): boolean {
+  let removed = 0
+  let next = nextCrlf(text, 0)
+  let whole = true
+  const map = (offset: number): number => {
+    while (next >= 0 && next < offset) {
+      if (next + 1 === offset) whole = false
+      removed++
+      next = nextCrlf(text, next + 2)
+    }
+    return offset - removed
+  }
+  for (let index = 0; index < starts.length; index++) {
+    outStarts[index] = map(starts[index])
+    outEnds[index] = map(ends[index])
+  }
+  return whole
+}
+
+/**
+ * Task 733 / 036 (fix design 2.2): the idle check of a Replace record. Computes each hunk's range in
+ * `after`, the normalized offsets and targets, and checks every hunk: normalized `after` at its new
+ * range equals the normalized `insert`, and normalized `before` at its old range equals its normalized
+ * old text. Runs off the edit path (idle, or once at the Undo or Redo key); it allocates its arrays once.
+ */
+export function normalizeReplaceHunks(
+  before: string,
+  after: string,
+  hunks: ReplaceHunks,
+): NormalizedReplaceHunks {
+  const { starts, ends, insert } = hunks
+  const count = starts.length
+  const rawNew = new Int32Array(count * 2)
+  const rawNewStarts = rawNew.subarray(0, count)
+  const rawNewEnds = rawNew.subarray(count)
+  let shift = 0
+  for (let index = 0; index < count; index++) {
+    rawNewStarts[index] = starts[index] + shift
+    rawNewEnds[index] = rawNewStarts[index] + insert.length
+    shift += insert.length - (ends[index] - starts[index])
+  }
+  let incremental = after.length === before.length + shift
+  const beforeCr = before.indexOf('\r') >= 0
+  const afterCr = after.indexOf('\r') >= 0
+  const normalBefore = beforeCr ? normalizeEol(before) : before
+  const normalAfter = afterCr ? normalizeEol(after) : after
+  const normalInsert = insert.indexOf('\r') >= 0 ? normalizeEol(insert) : insert
+  let oldStarts = starts
+  let oldEnds = ends
+  if (beforeCr) {
+    const offsets = new Int32Array(count * 2)
+    oldStarts = offsets.subarray(0, count)
+    oldEnds = offsets.subarray(count)
+    incremental =
+      normalizeOffsets(before, starts, ends, oldStarts, oldEnds) && incremental
+  }
+  let newStarts = rawNewStarts
+  let newEnds = rawNewEnds
+  if (afterCr) {
+    const offsets = new Int32Array(count * 2)
+    newStarts = offsets.subarray(0, count)
+    newEnds = offsets.subarray(count)
+    incremental =
+      normalizeOffsets(after, rawNewStarts, rawNewEnds, newStarts, newEnds) &&
+      incremental
+  }
+  for (let index = 0; incremental && index < count; index++) {
+    if (
+      normalAfter.slice(newStarts[index], newEnds[index]) !== normalInsert ||
+      (beforeCr &&
+        normalBefore.slice(oldStarts[index], oldEnds[index]) !==
+          normalizeEol(before.slice(starts[index], ends[index])))
+    )
+      incremental = false
+  }
+  return {
+    incremental,
+    before: normalBefore,
+    after: normalAfter,
+    insert: normalInsert,
+    oldStarts,
+    oldEnds,
+    newStarts,
+    newEnds,
   }
 }

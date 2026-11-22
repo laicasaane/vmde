@@ -244,4 +244,26 @@ describe('escape-toolbar keyboard selection origin (task 553)', () => {
     key('Tab')
     expect(peekConsumedToolbarSelectionOrigin()?.range.toString()).toBe('hello')
   })
+
+  // Task 733 / 036 (review of revision 4, point 2): the origin capture rejects editor-root endpoints, but
+  // the handoff still happened; consuming it reports true with no origin, so no consumer falls back to
+  // the live (widened) range.
+  it('036: an Escape→Tab handoff from editor-root endpoints is consumed with no origin', () => {
+    const { editor } = mount()
+    dispose = installEscapeToolbar()
+    editor.focus()
+    const range = document.createRange()
+    range.setStart(editor, 0)
+    range.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    key('Escape')
+    key('Tab')
+
+    expect(peekConsumedToolbarSelectionOrigin()).toBeNull()
+    expect(consumeToolbarSelectionOrigin()).toBe(true)
+    expect(consumeToolbarSelectionOrigin()).toBe(false)
+  })
 })

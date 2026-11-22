@@ -4408,7 +4408,11 @@ describe('Task 580 CP3-2 key-hint removal patches', () => {
     // The registry entry chains the key-hint patch and V-S2 (task 733 / 015, Q-125).
     expect(
       entryFor('/vditor/src/ts/toolbar/EditMode.ts').transform(editModeSource),
-    ).toBe(sourcePatches.patchEditModeModelText(patched))
+    ).toBe(
+      sourcePatches.patchBeforeEditMode(
+        sourcePatches.patchEditModeModelText(patched),
+      ),
+    )
   })
 
   it('the WYSIWYG popover labels and placeholders keep their names and lose every key', () => {
@@ -6494,10 +6498,35 @@ describe('Source unit patches V-S1 to V-S4 (task 733 / 015)', () => {
       editModeSource,
     )
     expect(chained).toContain('__vmdeModeSwitchText')
-    // V-S2 is chained after the key-hint patch of the same entry (task 015 section 6.4).
+    // V-S2 is chained after the key-hint patch of the same entry (task 015 section 6.4), then the
+    // 036 core C2 flush hook.
     expect(chained).toBe(
-      patch?.(sourcePatches.patchEditModeKeyHints(editModeSource)),
+      sourcePatches.patchBeforeEditMode(
+        patch?.(sourcePatches.patchEditModeKeyHints(editModeSource)) ?? '',
+      ),
     )
+  })
+
+  // 036 core C2 (R4.3): the flush hook is the first statement of `setEditMode`, applied exactly once.
+  it('R4.3 calls __vmdeBeforeEditMode first in setEditMode, once', () => {
+    const patch = sourcePatches.patchBeforeEditMode
+    const patched = patch(editModeSource)
+    expect(patched.split('__vmdeBeforeEditMode').length - 1).toBe(1)
+    const body = patched.slice(patched.indexOf('export const setEditMode'))
+    const hook = body.indexOf(
+      '__vmdeBeforeEditMode?.(vditor, type, typeof event !== "string")',
+    )
+    expect(hook).toBeGreaterThan(0)
+    // Before the Markdown read, the panel hide and the surface change.
+    expect(hook).toBeLessThan(body.indexOf('hidePanel(vditor'))
+    expect(hook).toBeLessThan(body.indexOf('getMarkdown(vditor)'))
+    compiles(patched)
+    expect(() => patch(patched)).toThrow(/already patched/)
+    expect(() => patch('')).toThrow()
+    const chained = registryTransform('/vditor/src/ts/toolbar/EditMode.ts')(
+      editModeSource,
+    )
+    expect(chained.split('__vmdeBeforeEditMode').length - 1).toBe(1)
   })
 
   it("V-S3 builds Source setValue with processSpinVditorSVDOM's split", () => {

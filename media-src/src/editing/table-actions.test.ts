@@ -2,9 +2,11 @@
 import { afterEach, beforeEach, expect, it, vi, type Mock } from 'vitest'
 import {
   configureTableActions,
+  provideReplayTableSource,
   restoreTableUndoForRollback,
   runTableMove,
   snapshotTableUndoForRollback,
+  tableRectangleClipboard,
 } from './table-actions'
 
 // Task 607: the table move acquires exact authority before it plans, and a host refusal restores
@@ -194,4 +196,20 @@ it('restores the contents of the top Undo entry that an in-place rewrite changed
   expect(top).toEqual(original)
   expect(state.inner.undo.ir.lastText).toBe('last')
   expect(state.inner.undo.ir.redoStack).toEqual(['r1'])
+})
+
+// Task 733 / 036 (step C, fix design 2.6): during a replay the rectangle's Markdown comes from the table's
+// own logical bytes, not from a whole-document `getValue()` of a DOM whose other groups are pending.
+it('reads the rectangle Markdown from the replay table source, without getValue', () => {
+  const getValue = vi.fn(() => rendered)
+  ;(window as any).vditor = { getValue, setValue }
+  provideReplayTableSource(() => '| a | b |\n| --- | --- |\n| one | 2 |')
+  try {
+    expect(tableRectangleClipboard(table, 1, 1, 0, 0)).toContain('one')
+    expect(getValue).not.toHaveBeenCalled()
+  } finally {
+    provideReplayTableSource(undefined)
+  }
+  expect(tableRectangleClipboard(table, 1, 1, 0, 0)).toContain('1')
+  expect(getValue).toHaveBeenCalled()
 })

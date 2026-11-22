@@ -12,6 +12,7 @@ import {
   restoreCommandSelection,
   setupFormatHotkeyGuard,
 } from './format-hotkey-guard'
+import { buildUndoRedoMatcher, type UndoRedoMatcher } from './undo-redo-keys'
 
 const ev = (o: Partial<KeyboardEvent>) =>
   ({
@@ -247,5 +248,226 @@ describe('setupFormatHotkeyGuard', () => {
     expect(
       press({ key: 'b', ctrlKey: true, isComposing: true }).preventDefault,
     ).not.toHaveBeenCalled()
+  })
+})
+
+// Task 733 / 036 D-18: the IR editor owns its Undo/Redo chords at keydown.
+describe('setupFormatHotkeyGuard: IR-owned Undo/Redo keys', () => {
+  afterEach(() => {
+    document.body.replaceChildren()
+    ;(window as any).vditor = undefined
+  })
+
+  function installOwned(
+    options: {
+      mode?: string
+      owns?: boolean
+      ready?: boolean
+      field?: unknown
+      matcher?: UndoRedoMatcher
+    } = {},
+  ) {
+    document.body.innerHTML =
+      '<div id="surface" contenteditable="true"><p>Hello</p><div contenteditable="false"><span id="island">x</span></div><div class="vditor-hint"><b id="hint">h</b></div></div><input id="find">'
+    const surface = document.getElementById('surface') as HTMLElement
+    const paragraph = surface.firstElementChild as HTMLElement
+    surface.focus()
+    ;(window as any).vditor = {
+      vditor: { currentMode: options.mode ?? 'ir', ir: { element: surface } },
+    }
+    const listeners = new Map<string, (e: any) => void>()
+    const win = {
+      navigator: { platform: 'Linux x86_64' },
+      document,
+      getSelection: () => document.getSelection(),
+      get vditor() {
+        return (window as any).vditor
+      },
+      addEventListener: (type: string, fn: any) => listeners.set(type, fn),
+      removeEventListener: vi.fn(),
+    }
+    const calls: string[] = []
+    const owned = {
+      matcher: () =>
+        options.matcher ?? buildUndoRedoMatcher(undefined, 'linux'),
+      viewReady: () => options.ready ?? true,
+      ownsHistoryNow: () => options.owns ?? true,
+      focusedField: () => options.field ?? null,
+      cancelAutoWrap: () => calls.push('cancelAutoWrap'),
+      run: (kind: string) => calls.push(`run:${kind}`),
+      noteInput: () => calls.push('noteInput'),
+    }
+    const teardown = setupFormatHotkeyGuard(
+      win as unknown as Window & typeof globalThis,
+      owned,
+    )
+    const fire = (type: string, init: Partial<KeyboardEvent>) => {
+      const event = {
+        ...ev({ target: paragraph }),
+        code: '',
+        isTrusted: true,
+        isComposing: false,
+        preventDefault: vi.fn(() => calls.push('preventDefault')),
+        stopPropagation: vi.fn(),
+        stopImmediatePropagation: vi.fn(() => calls.push('stop')),
+        ...init,
+      }
+      listeners.get(type)?.(event)
+      return event
+    }
+    const press = (init: Partial<KeyboardEvent>) => fire('keydown', init)
+    return { press, fire, calls, listeners, teardown, surface }
+  }
+
+  const ctrlZ = { key: 'z', code: 'KeyZ', ctrlKey: true }
+
+  it('consumes the chord, cancels auto-wrap once, then runs one move', () => {
+    const { press, calls } = installOwned()
+    press(ctrlZ)
+    expect(calls).toEqual([
+      // 036 core C3 (L1): the input is noted first, before the owned move.
+      'noteInput',
+      'preventDefault',
+      'stop',
+      'cancelAutoWrap',
+      'run:undo',
+    ])
+  })
+
+  it('runs Redo for Ctrl+Shift+Z and Ctrl+Y, and one move per repeated keydown', () => {
+    const { press, calls } = installOwned()
+    press({ key: 'Z', code: 'KeyZ', ctrlKey: true, shiftKey: true })
+    press({ key: 'y', code: 'KeyY', ctrlKey: true, repeat: true })
+    press({ key: 'y', code: 'KeyY', ctrlKey: true, repeat: true })
+    expect(calls.filter((c) => c.startsWith('run:'))).toEqual([
+      'run:redo',
+      'run:redo',
+      'run:redo',
+    ])
+  })
+
+  it.each([
+    ['untrusted', { isTrusted: false }, {}],
+    ['composing', { isComposing: true }, {}],
+    ['keyCode 229', { keyCode: 229 }, {}],
+    ['outside IR', {}, { mode: 'wysiwyg' }],
+    ['history not owned', {}, { owns: false }],
+    ['view not ready', {}, { ready: false }],
+    ['a VMDE field focused', {}, { field: {} }],
+    [
+      'ownership switched off',
+      {},
+      { matcher: buildUndoRedoMatcher({ inEditor: false }, 'linux') },
+    ],
+  ])('leaves the chord to VS Code when %s', (_name, init, options) => {
+    const { press, calls } = installOwned(options)
+    const event = press({ ...ctrlZ, ...init })
+    expect(calls.filter((c) => c.startsWith('run:'))).toEqual([])
+    expect(event.stopImmediatePropagation).not.toHaveBeenCalled()
+  })
+
+  it.each(['island', 'hint', 'find'])(
+    'leaves the chord to VS Code for a target in #%s',
+    (id) => {
+      const { press, calls } = installOwned()
+      press({ ...ctrlZ, target: document.getElementById(id) })
+      expect(calls.filter((c) => c.startsWith('run:'))).toEqual([])
+    },
+  )
+
+  it('an unowned modifier chord still reaches the native-format guard and the selection snapshot', () => {
+    const { press, calls } = installOwned({ owns: false })
+    const bold = press({ key: 'b', code: 'KeyB', ctrlKey: true })
+    expect(bold.preventDefault).toHaveBeenCalled()
+    expect(bold.stopImmediatePropagation).not.toHaveBeenCalled()
+    // 036 core C3 (L1): every trusted keydown is noted first.
+    expect(calls).toEqual(['noteInput', 'preventDefault'])
+  })
+
+  it('suppresses the release of an owned Backspace chord, even after Alt came up first', () => {
+    const matcher = buildUndoRedoMatcher({ undo: ['alt+backspace'] }, 'linux')
+    const { press, fire, calls } = installOwned({ matcher })
+    press({ key: 'Backspace', code: 'Backspace', altKey: true })
+    expect(calls).toContain('run:undo')
+    const altUp = fire('keyup', { key: 'Alt', code: 'AltLeft' })
+    expect(altUp.stopImmediatePropagation).not.toHaveBeenCalled()
+    const release = fire('keyup', { key: 'Backspace', code: 'Backspace' })
+    expect(release.preventDefault).toHaveBeenCalled()
+    expect(release.stopImmediatePropagation).toHaveBeenCalled()
+    const next = fire('keyup', { key: 'Backspace', code: 'Backspace' })
+    expect(next.stopImmediatePropagation).not.toHaveBeenCalled()
+  })
+
+  it('does not suppress the release of a letter chord', () => {
+    const { press, fire } = installOwned()
+    press(ctrlZ)
+    expect(
+      fire('keyup', { key: 'z', code: 'KeyZ' }).stopImmediatePropagation,
+    ).not.toHaveBeenCalled()
+  })
+
+  it('clears the release tracking on blur and on teardown', () => {
+    const matcher = buildUndoRedoMatcher({ undo: ['alt+delete'] }, 'linux')
+    const first = installOwned({ matcher })
+    first.press({ key: 'Delete', code: 'Delete', altKey: true })
+    first.listeners.get('blur')?.({})
+    expect(
+      first.fire('keyup', { key: 'Delete', code: 'Delete' })
+        .stopImmediatePropagation,
+    ).not.toHaveBeenCalled()
+    first.press({ key: 'Delete', code: 'Delete', altKey: true })
+    first.teardown()
+    expect(
+      first.fire('keyup', { key: 'Delete', code: 'Delete' })
+        .stopImmediatePropagation,
+    ).not.toHaveBeenCalled()
+  })
+})
+
+// 036 core C3 (L1): the guard notes every trusted keydown, pointerdown and beforeinput for the replay.
+describe('setupFormatHotkeyGuard: replay input notification', () => {
+  function install() {
+    const listeners = new Map<string, (e: any) => void>()
+    const win = {
+      navigator: { platform: 'Linux x86_64' },
+      document,
+      getSelection: () => document.getSelection(),
+      vditor: undefined,
+      addEventListener: (type: string, fn: any) => listeners.set(type, fn),
+      removeEventListener: vi.fn(),
+    }
+    const noteInput = vi.fn()
+    setupFormatHotkeyGuard(win as unknown as Window & typeof globalThis, {
+      matcher: () => buildUndoRedoMatcher(undefined, 'linux'),
+      viewReady: () => true,
+      ownsHistoryNow: () => false,
+      focusedField: () => null,
+      cancelAutoWrap: vi.fn(),
+      run: vi.fn(),
+      noteInput,
+    })
+    const fire = (type: string, isTrusted: boolean) =>
+      listeners.get(type)?.({
+        type,
+        key: 'a',
+        code: 'KeyA',
+        isTrusted,
+        isComposing: false,
+        target: document.body,
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+        stopImmediatePropagation: vi.fn(),
+      })
+    return { fire, noteInput }
+  }
+
+  it('notes trusted keydown, pointerdown and beforeinput, never untrusted ones', () => {
+    const { fire, noteInput } = install()
+    for (const type of ['keydown', 'pointerdown', 'beforeinput'])
+      fire(type, false)
+    expect(noteInput).not.toHaveBeenCalled()
+    for (const type of ['keydown', 'pointerdown', 'beforeinput'])
+      fire(type, true)
+    expect(noteInput).toHaveBeenCalledTimes(3)
   })
 })

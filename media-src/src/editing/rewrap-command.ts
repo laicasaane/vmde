@@ -10,6 +10,11 @@ import {
 } from './history-store'
 import { requestCaret } from './caret'
 import {
+  normalizeReplaceHunks,
+  type NormalizedReplaceHunks,
+  type ReplaceHunks,
+} from './find-engine'
+import {
   checkpointOrCoalesceUndo,
   retireAfterRenderRecords,
 } from './undo-boundaries'
@@ -82,15 +87,148 @@ interface RewrapDocumentHistory {
   afterRendered: string
   afterExact: string
   side: 'before' | 'after'
+  /** Task 733 / 036: the request ID of the record's exact post (Find), when it asked for a replay pair. */
+  requestId?: string
+  /**
+   * Task 733 / 036: `posted` until the host admits the pair (`replayable`) or drops it from its FIFO
+   * (`evicted`); the record keeps its identity in every state.
+   */
+  state?: 'posted' | 'replayable' | 'evicted'
+  /** Task 733 / 036 (fix design 2.2): Replace's hunks in raw offsets of `beforeExact`, by reference. */
+  hunks?: ReplaceHunks
+  /** Task 733 / 036: the normalized hunks and targets, computed once on the first read of `hunks`. */
+  normalized?: NormalizedReplaceHunks
+}
+
+/** Task 733 / 036: what `moveRewrapDocumentHistory` reports for the record it moved. */
+export interface MovedRewrapDocumentHistory {
+  requestId?: string
+  state?: 'posted' | 'replayable' | 'evicted'
+  /** Only for an evicted pair: the bytes this move restores and the bytes the host holds before it. */
+  exact?: string
+  before?: string
 }
 
 const rewrapDocumentHistory: RewrapDocumentHistory[] = []
 
 export function recordRewrapDocumentHistory(
-  history: Omit<RewrapDocumentHistory, 'side'>,
+  history: Omit<RewrapDocumentHistory, 'side' | 'state' | 'normalized'>,
 ): void {
-  rewrapDocumentHistory.push({ ...history, side: 'after' })
+  rewrapDocumentHistory.push({
+    ...history,
+    side: 'after',
+    ...(history.requestId === undefined ? {} : { state: 'posted' as const }),
+  })
   if (rewrapDocumentHistory.length > 50) rewrapDocumentHistory.shift()
+}
+
+function exactHistoryRecord(
+  requestId: string,
+): RewrapDocumentHistory | undefined {
+  for (let index = rewrapDocumentHistory.length - 1; index >= 0; index--)
+    if (rewrapDocumentHistory[index].requestId === requestId)
+      return rewrapDocumentHistory[index]
+  return undefined
+}
+
+/** Task 733 / 036: the host admitted the replay pair of this request (`rebind.exactRequestId`). */
+export function confirmExactHistory(requestId: string): void {
+  const record = exactHistoryRecord(requestId)
+  if (record && record.state === 'posted') record.state = 'replayable'
+}
+
+/**
+ * Task 733 / 036 (B0, 3.7): the directional target of the last move of this request's replayable record:
+ * the bytes of the side the history now stands on (`beforeExact` after an Undo, `afterExact` after a
+ * Redo). The `replay-ack` that answers the move completes the wait with it. The moved report itself
+ * carries no text; the target is read by request ID when the acknowledgement arrives.
+ */
+export function exactHistoryTarget(requestId: string): string | undefined {
+  const record = exactHistoryRecord(requestId)
+  if (record?.state !== 'replayable') return undefined
+  return record.side === 'before' ? record.beforeExact : record.afterExact
+}
+
+/** Task 733 / 036 (fix design 2.2): a Find record's hunks, with the plan source and result they apply to. */
+export interface ExactHistoryHunks {
+  hunks: ReplaceHunks
+  beforeExact: string
+  afterExact: string
+  normalized: NormalizedReplaceHunks
+}
+
+/**
+ * Task 733 / 036 (fix design 2.2): the hunks of this request's record, or undefined for a record that
+ * has none. The normalized offsets and targets are computed on the first call (the idle check, or the
+ * Undo or Redo key when the idle check has not run) and kept on the record. The caller checks the state.
+ */
+export function exactHistoryHunks(
+  requestId: string,
+): ExactHistoryHunks | undefined {
+  const record = exactHistoryRecord(requestId)
+  if (!record?.hunks) return undefined
+  record.normalized ??= normalizeReplaceHunks(
+    record.beforeExact,
+    record.afterExact,
+    record.hunks,
+  )
+  return {
+    hunks: record.hunks,
+    beforeExact: record.beforeExact,
+    afterExact: record.afterExact,
+    normalized: record.normalized,
+  }
+}
+
+/** Task 733 / 036: the host's FIFO dropped this request's pair (`rebind.exactEvicted`). */
+export function evictExactHistory(requestId: string): void {
+  const record = exactHistoryRecord(requestId)
+  if (record) record.state = 'evicted'
+}
+
+/** Task 733 / 036: whether the entry `kind` would pop carries a replayable or evicted record. */
+export function hasTaggedRewrapDocumentHistory(
+  inner: InnerVditor,
+  kind: 'undo' | 'redo',
+  only?: 'replayable',
+): boolean {
+  const mode = inner.currentMode
+  const store = historyStoreOf(inner)
+  if (!mode || !store) return false
+  const token =
+    kind === 'undo'
+      ? store.top(mode as HistoryMode)
+      : store.redoTop(mode as HistoryMode)
+  if (token === undefined) return false
+  const wanted = kind === 'undo' ? 'after' : 'before'
+  for (let index = rewrapDocumentHistory.length - 1; index >= 0; index--) {
+    const history = rewrapDocumentHistory[index]
+    if (
+      history.owner === inner &&
+      history.mode === mode &&
+      history.side === wanted &&
+      history.nativeState === token
+    )
+      return only
+        ? history.state === only
+        : history.state === 'replayable' || history.state === 'evicted'
+  }
+  return false
+}
+
+function movedReport(
+  history: RewrapDocumentHistory,
+  kind: 'undo' | 'redo',
+): MovedRewrapDocumentHistory {
+  if (history.requestId === undefined) return {}
+  if (history.state !== 'evicted')
+    return { requestId: history.requestId, state: history.state }
+  return {
+    requestId: history.requestId,
+    state: 'evicted',
+    exact: kind === 'undo' ? history.beforeExact : history.afterExact,
+    before: kind === 'undo' ? history.afterExact : history.beforeExact,
+  }
 }
 
 export function hasRewrapDocumentHistoryTransition(
@@ -119,10 +257,12 @@ export function takeRewrapDocumentHistorySync(
 /** Task 733 (task 004): the unit history undid or redid an exact action's entry with a history
  * delta (it posts no replay): the record moves to the side the history now stands on, as the
  * replay would have moved it, so source proofs are not declined after the move. */
-export function moveRewrapDocumentHistory(inner: InnerVditor): void {
+export function moveRewrapDocumentHistory(
+  inner: InnerVditor,
+): MovedRewrapDocumentHistory | undefined {
   const mode = inner.currentMode
   const store = historyStoreOf(inner)
-  if (!store) return
+  if (!store) return undefined
   for (let index = rewrapDocumentHistory.length - 1; index >= 0; index--) {
     const history = rewrapDocumentHistory[index]
     if (history.owner !== inner || history.mode !== mode) continue
@@ -131,16 +271,17 @@ export function moveRewrapDocumentHistory(inner: InnerVditor): void {
       store.redoTop(mode as HistoryMode) === history.nativeState
     ) {
       history.side = 'before'
-      return
+      return movedReport(history, 'undo')
     }
     if (
       history.side === 'before' &&
       store.top(mode as HistoryMode) === history.nativeState
     ) {
       history.side = 'after'
-      return
+      return movedReport(history, 'redo')
     }
   }
+  return undefined
 }
 
 /** Task 607: the exact bytes a native Undo/Redo replays, and the record's other side, which is

@@ -800,7 +800,11 @@ export function installStructuralSelection(
 interface FindReplaceDeps {
   setApplying(applying: boolean): void
   /** `rollback` restores the Undo stacks if the host refuses the guarded exact edit. */
-  postExact(markdown: string, opts?: { rollback?: { restore(): void } }): void
+  /** Task 733 / 036: returns the post's request ID (undefined when nothing was posted). */
+  postExact(
+    markdown: string,
+    opts?: { rollback?: { restore(): void }; replayableBefore?: string },
+  ): string | undefined
   /** Task 607: settle typing, then pull the host's bytes when no exact source is owned. Resolves
    * `null` when no proof of the live rendering exists; the replacement then declines. */
   acquireExactAuthority?(): Promise<{ exact: string; rendered: string } | null>
@@ -931,6 +935,15 @@ function applyFindReplaceResult(
   } finally {
     deps.setApplying(false)
   }
+  // Task 607 (D2): a host refusal of this guarded exact edit rolls the DOM back to the acquired
+  // bytes (EditSync); the Undo stacks are restored here. Task 733 / 036: the post may ask the host for a
+  // replay pair (its `before` is the plan source), and the record carries the post's request ID.
+  const requestId = deps.postExact(result.markdown, {
+    rollback: {
+      restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
+    },
+    replayableBefore: before.exact,
+  })
   if (nativeState)
     recordRewrapDocumentHistory({
       owner: inner,
@@ -940,14 +953,10 @@ function applyFindReplaceResult(
       beforeExact: before.exact,
       afterRendered,
       afterExact: result.markdown,
+      ...(requestId === undefined ? {} : { requestId }),
+      // Task 733 / 036 (fix design 2.2): the hunks in raw offsets of `before.exact`, by reference.
+      ...(result.hunks === undefined ? {} : { hunks: result.hunks }),
     })
-  // Task 607 (D2): a host refusal of this guarded exact edit rolls the DOM back to the acquired
-  // bytes (EditSync); the Undo stacks are restored here.
-  deps.postExact(result.markdown, {
-    rollback: {
-      restore: () => restoreTableUndoForRollback(inner, undoSnapshot),
-    },
-  })
   return replacement
 }
 

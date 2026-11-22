@@ -11,6 +11,10 @@ import {
   type EmojiInsertionBookmark,
   invalidateEmojiInsertion,
 } from './emoji-insertion'
+import {
+  consumeToolbarSelectionOrigin,
+  peekConsumedToolbarSelectionOrigin,
+} from './escape-toolbar'
 
 // Task 576 feedback-path pass: EmojiEntry now lives in emoji-recents.ts. Re-exported here so every
 // existing importer of `EmojiEntry` from this module keeps working unchanged.
@@ -158,7 +162,9 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     endOffset: number
   }
   let rawEditorEndpoints: RawEditorEndpoints | null = null
-  let preparedBookmark: EmojiInsertionBookmark | null = null
+  // Task 733 / 036 (F7b): one resolution per activation. The attempt is recorded apart from its nullable
+  // result, so the click a keyboard activation generates never retries a failed or declined resolution.
+  let prepared: { bookmark: EmojiInsertionBookmark | null } | null = null
   let savedBookmark: EmojiInsertionBookmark | null = null
   let applyingEmoji = false
   let allowCollapsedEndpointUpdate = false
@@ -195,7 +201,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     trigger.setAttribute('aria-expanded', open ? 'true' : 'false')
     if (!open) {
       savedBookmark = null
-      preparedBookmark = null
+      prepared = null
       invalidateEmojiInsertion()
     }
   }
@@ -235,7 +241,7 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   const close = (returnFocus: boolean) => {
     openGeneration++
     savedBookmark = null
-    preparedBookmark = null
+    prepared = null
     invalidateEmojiInsertion()
     panel.style.display = 'none'
     trigger.setAttribute('aria-expanded', 'false')
@@ -446,18 +452,30 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     const retained = rangeFromEndpoints()
     return live && !live.collapsed ? live : (retained ?? live)
   }
-  const prepare = () => {
+  const liveBookmark = (): EmojiInsertionBookmark | null => {
     const range = currentEditorRange()
-    preparedBookmark = range ? captureEmojiInsertion(range) : null
+    return range ? captureEmojiInsertion(range) : null
+  }
+  // Task 733 / 036 (F7b, as Math): an Escape→Tab session resolves from its saved pre-Escape origin; a
+  // consumed but unusable origin (stale leaf, editor-root endpoints) gives no bookmark, never the live
+  // (widened) range. Without a session, today's live capture.
+  const prepareFromOrigin = (): EmojiInsertionBookmark | null => {
+    const origin = peekConsumedToolbarSelectionOrigin()
+    if (!consumeToolbarSelectionOrigin()) return liveBookmark()
+    return origin ? captureEmojiInsertion(origin.range) : null
+  }
+  // A pointer is newer than any keyboard origin: drop the session, then capture the live range.
+  const preparePointer = () => {
+    consumeToolbarSelectionOrigin()
+    prepared = { bookmark: liveBookmark() }
   }
   const activate = (event: Event) => {
     event.preventDefault()
     event.stopImmediatePropagation()
     if (panel.style.display === 'block') close(true)
     else {
-      if (!preparedBookmark) prepare()
-      const bookmark = preparedBookmark
-      preparedBookmark = null
+      const bookmark = prepared ? prepared.bookmark : prepareFromOrigin()
+      prepared = null
       void open(bookmark)
     }
   }
@@ -512,18 +530,9 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     if (editor && target instanceof Node && editor.contains(target))
       allowCollapsedEndpointUpdate = true
   }
-  const prepareKeyboardHandoff = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape' && event.key !== 'Tab') return
-    const editor = window.vditor ? activeModeElement(window.vditor) : null
-    if (!editor?.contains(document.activeElement)) return
-    // Window capture precedes escape-toolbar and structural-selection's document capture. Escape
-    // refreshes the source bookmark before either listener can consume/move focus; its armed Tab
-    // then preserves that bookmark rather than relying on a document listener that never runs.
-    if (event.key === 'Escape' || !preparedBookmark) prepare()
-  }
   const prepareKeyboardActivation = (event: KeyboardEvent) => {
-    if ((event.key === 'Enter' || event.key === ' ') && !preparedBookmark)
-      prepare()
+    if ((event.key === 'Enter' || event.key === ' ') && !prepared)
+      prepared = { bookmark: prepareFromOrigin() }
   }
   const onSearch = () => {
     query = search.value
@@ -576,9 +585,9 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     )
       close(false)
   }
-  trigger.addEventListener('pointerdown', prepare, true)
-  // A keyboard click has no pointerdown; capture only when Tab did not already preserve the
-  // editor range, otherwise Vditor's toolbar focus path can replace that saved selection.
+  trigger.addEventListener('pointerdown', preparePointer, true)
+  // A keyboard click has no pointerdown: Enter or Space resolves once (from the Escape→Tab origin when
+  // there is one), and the generated click uses that resolution.
   trigger.addEventListener('keydown', prepareKeyboardActivation, true)
   trigger.addEventListener('click', activate, true)
   search.addEventListener('input', onSearch)
@@ -592,10 +601,9 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
   document.addEventListener('selectionchange', rememberEditorEndpoints)
   document.addEventListener('pointerdown', noteEditorGesture, true)
   document.addEventListener('keydown', noteEditorGesture, true)
-  window.addEventListener('keydown', prepareKeyboardHandoff, true)
   document.addEventListener('mousedown', onOutside, true)
   return () => {
-    trigger.removeEventListener('pointerdown', prepare, true)
+    trigger.removeEventListener('pointerdown', preparePointer, true)
     trigger.removeEventListener('keydown', prepareKeyboardActivation, true)
     trigger.removeEventListener('click', activate, true)
     search.removeEventListener('input', onSearch)
@@ -603,7 +611,6 @@ export function installEmojiPicker(toolbar: HTMLElement): () => void {
     document.removeEventListener('selectionchange', rememberEditorEndpoints)
     document.removeEventListener('pointerdown', noteEditorGesture, true)
     document.removeEventListener('keydown', noteEditorGesture, true)
-    window.removeEventListener('keydown', prepareKeyboardHandoff, true)
     document.removeEventListener('mousedown', onOutside, true)
     document.removeEventListener('focus', onEditorFocus, true)
     expandedObserver.disconnect()

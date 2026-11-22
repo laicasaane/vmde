@@ -3700,6 +3700,58 @@ describe('createEditSync with a live text model (007-B)', () => {
     expect(t.session.rebuildAfterExact).not.toHaveBeenCalled()
   })
 
+  // Task 733 / 036 (E, fix design 3.5): a refused history post ends an active replay; the host text renders
+  // through the session's bounded writer, not by setValue, and the edit names the host bytes from then on.
+  it('a refused history post during a replay hands the host text to the replay recovery', () => {
+    const t = live()
+    const recoverReplay = vi.fn(() => 'recovering' as const)
+    ;(t.session as Record<string, unknown>).recoverReplay = recoverReplay
+    const setValue = vi.fn()
+    ;(window.vditor as unknown as { setValue: unknown }).setValue = setValue
+    const requestId = t.es.postExact('ALPHA\n', {
+      history: 'undo',
+      rollback: false,
+    })
+    t.es.receiveExactRefusal({ requestId, content: 'host\n' })
+    expect(recoverReplay).toHaveBeenCalledOnce()
+    expect(recoverReplay.mock.calls[0]).toEqual([
+      'host\n',
+      undefined,
+      undefined,
+      expect.any(Function),
+    ])
+    expect(setValue).not.toHaveBeenCalled()
+    expect(t.getValue).not.toHaveBeenCalled()
+    // A recovery that cannot render by units renders the host text whole and rebuilds the model.
+    recoverReplay.mockReturnValueOnce('fallback' as never)
+    const second = t.es.postExact('BETA\n', {
+      history: 'redo',
+      rollback: false,
+    })
+    t.es.receiveExactRefusal({ requestId: second, content: 'host2\n' })
+    expect(setValue).toHaveBeenCalledExactlyOnceWith('host2\n')
+    expect(t.session.rebuildAfterExact).toHaveBeenCalledWith('host2\n')
+  })
+
+  it('a refused history post with no replay active keeps today behaviour (DOM kept, no setValue)', () => {
+    const t = live()
+    const recoverReplay = vi.fn(() => 'none' as const)
+    ;(t.session as Record<string, unknown>).recoverReplay = recoverReplay
+    const setValue = vi.fn()
+    ;(window.vditor as unknown as { setValue: unknown }).setValue = setValue
+    const requestId = t.es.postExact('ALPHA\n', {
+      history: 'undo',
+      rollback: false,
+    })
+    t.es.receiveExactRefusal({ requestId, content: 'host\n' })
+    expect(recoverReplay).toHaveBeenCalledOnce()
+    expect(setValue).not.toHaveBeenCalled()
+    // A refused post that is no history post never reaches the recovery.
+    const plain = t.es.postExact('GAMMA\n', { rollback: false })
+    t.es.receiveExactRefusal({ requestId: plain, content: 'host\n' })
+    expect(recoverReplay).toHaveBeenCalledOnce()
+  })
+
   it('applyExactText applies by units and posts one delta, reading no full document', () => {
     const t = live()
     t.post.mockClear()
@@ -4163,6 +4215,46 @@ describe('022 whole-text posts while a history transition is held', () => {
     expect(onWholeTextPublished).not.toHaveBeenCalled()
   })
 
+  // H2 fix design rev2 (D6.3): while a replay is live, abandoned or recovering the session holds whole
+  // posts only (`publicationHeld(true)`); `publishWhole` then serializes nothing and posts nothing.
+  it('D6.3: publishWhole posts nothing and serializes nothing while the session holds whole posts', () => {
+    const port = {
+      prepareDelta: vi.fn(() => ({ kind: 'nothing' as const })),
+      epoch: () => 3,
+      awaiting: () => true,
+      hasDirty: () => false,
+      modelText: () => 'kept\n',
+      rebind: vi.fn(),
+      markPublishedWhole: vi.fn(),
+      clearForms: vi.fn(),
+    }
+    const getValue = vi.fn(() => 'HALF RENDERED')
+    const onWholeTextPublished = vi.fn()
+    const asked: Array<boolean | undefined> = []
+    const rig = boot({
+      getValue,
+      modelSession: {
+        beforeWholeTextPost: vi.fn(() => ({ rebind: true as const })),
+        onModeChange: vi.fn(),
+        turnOff: vi.fn(),
+        deltaPort: () => port,
+        canPublishDelta: () => true,
+        ownsText: () => false,
+        onWholeTextPublished,
+        recordFallback: vi.fn(),
+        publicationHeld: (whole?: boolean) => {
+          asked.push(whole)
+          return whole === true
+        },
+      } as any,
+    })
+    rig.es.deltaSync?.publishHistory('undo', 1)
+    expect(rig.edits()).toHaveLength(0)
+    expect(getValue).not.toHaveBeenCalled()
+    expect(onWholeTextPublished).not.toHaveBeenCalled()
+    expect(asked).toContain(true)
+  })
+
   it('reserveSequence takes the next whole-text sequence', () => {
     const held = { value: false }
     const t = heldBoot(held)
@@ -4170,5 +4262,169 @@ describe('022 whole-text posts while a history transition is held', () => {
     t.es.schedule()
     vi.advanceTimersByTime(250)
     expect(t.edits()[0][0].sequence).toBe(reserved + 1)
+  })
+})
+
+// ---- 036 core C6 (S1, S2, R33.3, R34.3): Save during a replay ----
+describe('036 core C6 Save', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  function saving() {
+    const results: PrepareResult[] = []
+    const port: DeltaSessionPort = {
+      prepareDelta: vi.fn(
+        (): PrepareResult => results.shift() ?? { kind: 'nothing' },
+      ),
+      epoch: () => 3,
+      awaiting: () => false,
+      hasDirty: () => false,
+      modelText: () => 'alpha\n',
+      rebind: vi.fn(),
+      markPublishedWhole: vi.fn(),
+      clearForms: vi.fn(),
+    }
+    const state = { owns: true, blocked: false, busy: false, mark: 0 }
+    const wakes = new Set<() => void>()
+    const session = {
+      beforeWholeTextPost: vi.fn(() => undefined),
+      onModeChange: vi.fn(),
+      turnOff: vi.fn(),
+      deltaPort: () => port,
+      canPublishDelta: () => true,
+      ownsText: () => true,
+      onWholeTextPublished: vi.fn(),
+      recordFallback: vi.fn(),
+      markExplicitAtCaret: vi.fn(),
+      ownsHostForSave: () => state.owns,
+      saveBlocked: () => state.blocked,
+      saveProofMark: () => state.mark,
+      countSaveUnproven: vi.fn(),
+      exactBusy: () => state.busy,
+      onSaveWake: (listener: () => void) => {
+        wakes.add(listener)
+        return () => wakes.delete(listener)
+      },
+    }
+    const getValue = vi.fn(() => 'FULL')
+    const rig = boot({ getValue, modelSession: session })
+    const replies: string[] = []
+    const save = () => rig.es.flushForSave((outcome) => replies.push(outcome))
+    const wake = () => {
+      for (const listener of [...wakes]) listener()
+    }
+    const deltas = () =>
+      rig.post.mock.calls.filter((c) => c[0]?.command === 'edit-delta')
+    return {
+      ...rig,
+      results,
+      state,
+      session,
+      getValue,
+      replies,
+      save,
+      wake,
+      deltas,
+    }
+  }
+  const typed = {
+    kind: 'changes' as const,
+    before: 'alpha\n',
+    changes: [{ from: 5, to: 5, insert: 'X' }],
+  }
+
+  it('S1 clean: under the token a clean model answers clean with zero getValue and no post', () => {
+    const t = saving()
+    t.save()
+    expect(t.replies).toEqual(['clean'])
+    expect(t.getValue).not.toHaveBeenCalled()
+    expect(t.post).not.toHaveBeenCalled()
+  })
+
+  it('S1 dirty: under the token the typing goes out as one delta, then the reply is published', () => {
+    const t = saving()
+    t.results.push(typed)
+    t.save()
+    expect(t.deltas()).toHaveLength(1)
+    expect(t.replies).toEqual(['published'])
+    expect(t.getValue).not.toHaveBeenCalled()
+  })
+
+  it('S2: a held Save waits, a wake while held settles nothing, the first free wake replies once', () => {
+    const t = saving()
+    t.state.blocked = true
+    t.save()
+    expect(t.replies).toEqual([])
+    t.wake()
+    expect(t.replies).toEqual([])
+    t.state.blocked = false
+    t.wake()
+    t.wake()
+    expect(t.replies).toEqual(['clean'])
+  })
+
+  it('S2 unproven: a failed absorb, an abandon or a resync after the request never counts clean', () => {
+    const t = saving()
+    t.state.blocked = true
+    t.save()
+    t.state.mark++
+    t.state.blocked = false
+    t.wake()
+    expect(t.replies).toEqual(['unproven'])
+    expect(t.session.countSaveUnproven).toHaveBeenCalledOnce()
+  })
+
+  it('S2 overlapping Saves settle independently and once each', () => {
+    const t = saving()
+    t.state.blocked = true
+    const first: string[] = []
+    const second: string[] = []
+    t.es.flushForSave((o) => first.push(o))
+    t.state.blocked = false
+    t.wake()
+    t.state.blocked = true
+    t.es.flushForSave((o) => second.push(o))
+    t.wake()
+    expect(first).toEqual(['clean'])
+    expect(second).toEqual([])
+    t.state.blocked = false
+    t.wake()
+    t.wake()
+    expect(first).toEqual(['clean'])
+    expect(second).toEqual(['clean'])
+  })
+
+  it('S2 action release: the end of the action window during a replay wakes and settles the waiter', async () => {
+    const t = saving()
+    t.state.busy = true
+    t.es.setActionApplying(true)
+    t.save()
+    expect(t.replies).toEqual([])
+    t.es.setActionApplying(false)
+    await Promise.resolve()
+    expect(t.replies).toEqual(['clean'])
+  })
+
+  it('S2 disposal: every waiting Save replies disposed, once', () => {
+    const t = saving()
+    t.state.blocked = true
+    t.save()
+    t.save()
+    t.es.dispose()
+    t.wake()
+    expect(t.replies).toEqual(['disposed', 'disposed'])
+  })
+
+  it('outside the token and with nothing held: today path, one reply at once', () => {
+    const t = saving()
+    t.state.owns = false
+    t.save()
+    expect(t.replies).toEqual(['clean'])
   })
 })

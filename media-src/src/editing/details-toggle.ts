@@ -454,7 +454,6 @@ export function installDetailsToggleControls(
   let settled = false
   let primaryPointerHeld = false
   const keysHeld = new Set<string>()
-  let fallback: { generation: number; status: DetailsStatus } | null = null
   let inputGeneration = 0
   let cancelSettledRead: (() => void) | null = null
   let focusDeferred = false
@@ -516,21 +515,21 @@ export function installDetailsToggleControls(
       ? range
       : null
   }
+  // Task 733 / 036 (F7b, Q8 (a)): an `unknown` expanded selection shows the enabled, unpressed `wrap` (or
+  // the still-current toggle result) and captures nothing. The passive capture used to insert markers (splitting the selection's text nodes,
+  // which dirtied a unit) and read exact source, which could publish whole text (row 7). The Details
+  // action still captures and validates exact source (`detailsActionTarget`).
   const exactFallbackState = (
     entry: SourceBlockIndex | null,
   ): DetailsStatus | null => {
-    // Passive markers split the live selection's text nodes and invalidate Turn Into's pending
-    // token (Task 604 N3). Keep the current button state until that choice is consumed/cancelled.
+    // Keep the current button state while Turn Into's choice is pending (Task 604 N3).
     if (choicePending) {
       fallbackDeferred = true
       return null
     }
-    if (fallback?.generation !== selectionGeneration)
-      fallback = {
-        generation: selectionGeneration,
-        status: statusOf(captureTarget(exactMarkdown) ?? retainedFor(entry)),
-      }
-    return fallback.status
+    // A still-current toggle result (compared by rendered bytes, no markers) keeps its pressed state.
+    const kept = retainedFor(entry)
+    return kept ? statusOf(kept) : 'wrap'
   }
   const view: DetailsControllerView = {
     get retained() {

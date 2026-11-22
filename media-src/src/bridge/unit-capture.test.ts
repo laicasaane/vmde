@@ -1775,3 +1775,290 @@ describe('021: a bare-URL decoration written after the Undo', () => {
     expect(r.sync()).toBe(edited)
   })
 })
+
+// Task 733 / 036 (F8 bounded restore). A tagged Replace All entry is restored by
+// `restoreSliced(capture, side, budgetMs = 8)`: prepared element chunks of at most 16 KB of HTML (a table
+// as its shell plus row chunks), one slice per animation frame, today's step order. The model session
+// joins the matching `history-exact` reply and the final slice in either order before it rebinds, and
+// clears the restore-generated dirty and structure flags after the final drain. A mid-slice anchor
+// mismatch abandons the sequence; a late reply after the 5 s watchdog is ignored. `restoreSliced` and the
+// session's `awaitExactHistory` do not exist before step 7 (their shape here is provisional where the
+// design leaves it open: `restoreSliced` resolves true after the final slice and false on a failure).
+describe('036 sliced restore', () => {
+  type SlicedPort = Port & {
+    restoreSliced(
+      capture: HistoryCapture,
+      side: 'before' | 'after',
+      budgetMs?: number,
+    ): Promise<boolean>
+  }
+  type ExactSession = ModelSession & {
+    awaitExactHistory(sequence: number): void
+    publicationHeld(): boolean
+  }
+  const CHUNK_LIMIT = 16 * 1024
+  const row = (index: number) =>
+    `| row ${index} ${'x'.repeat(60)} | cell ${index} ${'y'.repeat(60)} |`
+  const bigTable = (rows: number, tag: string) =>
+    [
+      `intro ${tag}`,
+      '',
+      '| head a | head b |',
+      '| --- | --- |',
+      ...Array.from({ length: rows }, (_, index) => row(index)),
+      '',
+      `outro ${tag}`,
+      '',
+    ].join('\n')
+  const ORIGINAL = bigTable(400, 'one')
+  const REPLACED = ORIGINAL.replaceAll('x', 'z')
+
+  /** Replace All: the root is rewritten and the model takes the posted exact bytes. */
+  const replaceAll = () => {
+    const r = open(ORIGINAL)
+    const first = r.state()
+    r.root.innerHTML = lute.Md2VditorIRDOM(REPLACED)
+    // The observer reports the rewrite before the host's answer arrives (as `a rebuilt root` above).
+    expect(r.port.pending()).toBe(true)
+    r.session.deltaPort().rebind(REPLACED)
+    const capture = r.port.capture() as HistoryCapture
+    expect(capture).toBeDefined()
+    return { r, first, capture, port: r.port as unknown as SlicedPort }
+  }
+  const tableHtml = (r: Rig) => r.root.querySelector('table')?.outerHTML ?? ''
+
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one frame loop with its per-slice checks
+  it('the table over 16 KB is written in row chunks, one slice per frame, and ends exact', async () => {
+    const { r, first, capture, port } = replaceAll()
+    expect(tableHtml(r).length).toBeGreaterThan(CHUNK_LIMIT)
+    const replacedHtml = r.root.innerHTML
+    const done = port.restoreSliced(capture, 'before', 8)
+    // Nothing is written before the first frame: the exact post goes out first (the post itself is
+    // proven in the harness block "036", which sees the messages).
+    expect(r.root.innerHTML).toBe(replacedHtml)
+    let slices = 0
+    let finished = false
+    void done.then(() => {
+      finished = true
+    })
+    while (frames.length > 0 && slices < 1000) {
+      const before = r.root.innerHTML
+      r.runFrames()
+      for (let tick = 0; tick < 5; tick++) await Promise.resolve()
+      if (r.root.innerHTML !== before) slices++
+      // Every intermediate slice leaves the DOM between the two states (other frames may still be queued
+      // after the final slice; edited after step 1).
+      if (!finished && r.root.innerHTML !== first.html)
+        expect(r.root.innerHTML).not.toBe(first.html)
+      else if (!finished) expect(frames.length).toBe(0)
+    }
+    await expect(done).resolves.toBe(true)
+    expect(slices).toBeGreaterThanOrEqual(
+      Math.ceil(tableHtml(r).length / CHUNK_LIMIT),
+    )
+    expect(r.root.innerHTML).toBe(first.html)
+    // No forms are handed over on this path: the model takes the host bytes at the answer (the join
+    // cases below), so no local sync is asserted (edited after step 1).
+  })
+
+  it('each slice stays within the 8 ms budget', async () => {
+    const { r, capture, port } = replaceAll()
+    const done = port.restoreSliced(capture, 'before', 8)
+    const durations: number[] = []
+    while (frames.length > 0 && durations.length < 1000) {
+      const started = performance.now()
+      r.runFrames()
+      durations.push(performance.now() - started)
+    }
+    await expect(done).resolves.toBe(true)
+    // jsdom is slower than a browser; the bound proves slicing, not the browser budget (harness gate).
+    expect(Math.max(...durations)).toBeLessThan(8 * 4)
+  })
+
+  it('a mid-slice anchor mismatch fails the restore and writes nothing more', async () => {
+    const { r, capture, port } = replaceAll()
+    const done = port.restoreSliced(capture, 'before', 8)
+    r.runFrames()
+    // A foreign change of a block the later slices anchor on.
+    const outro = Array.from(r.root.querySelectorAll('p')).at(-1) as HTMLElement
+    typeInto(outro, 'foreign outro')
+    const html = r.root.innerHTML
+    for (let index = 0; index < 1000 && frames.length > 0; index++)
+      r.runFrames()
+    await expect(done).resolves.toBe(false)
+    expect(r.root.innerHTML).toBe(html)
+  })
+
+  it.each(['reply first', 'final slice first'] as const)(
+    'the reply and the final slice join (%s): the rebind runs only after both, with the flags cleared',
+    async (order) => {
+      const { r, capture, port } = replaceAll()
+      const session = r.session as ExactSession
+      session.awaitExactHistory(5)
+      const done = port.restoreSliced(capture, 'before', 8)
+      const reply = () =>
+        session.onRebind({
+          command: 'rebind',
+          epoch: 1,
+          afterSequence: 0,
+          content: ORIGINAL,
+          editSequence: 5,
+        })
+      const finish = async () => {
+        for (let index = 0; index < 1000 && frames.length > 0; index++)
+          r.runFrames()
+        await done
+      }
+      if (order === 'reply first') {
+        reply()
+        expect(session.publicationHeld()).toBe(true)
+        await finish()
+      } else {
+        await finish()
+        expect(session.publicationHeld()).toBe(true)
+        reply()
+      }
+      expect(session.publicationHeld()).toBe(false)
+      r.runFrames()
+      const stats = (window as unknown as Record<string, any>)
+        .__vmdeModelShadowStats
+      expect(stats.dirtyNow).toBe(0)
+      expect(stats.structureDirty).toBe(0)
+      expect(session.confirmedSnapshot()).toEqual({ text: ORIGINAL, epoch: 1 })
+    },
+  )
+
+  it('a late reply after the 5 s watchdog is ignored', async () => {
+    vi.useFakeTimers()
+    try {
+      const { r, capture, port } = replaceAll()
+      const session = r.session as ExactSession
+      session.awaitExactHistory(5)
+      void port.restoreSliced(capture, 'before', 8)
+      vi.advanceTimersByTime(5000)
+      expect(session.publicationHeld()).toBe(false)
+      const snapshot = session.confirmedSnapshot()
+
+      session.onRebind({
+        command: 'rebind',
+        epoch: 1,
+        afterSequence: 0,
+        content: ORIGINAL,
+        editSequence: 5,
+      })
+
+      expect(session.confirmedSnapshot()).toEqual(snapshot)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+// 036 core C4 (restore fix, R1.3 and the review's cross-cell case): a sync inside the interval must not
+// move the restore's byte basis; a form recorded stale (an unsynced checkpoint) is never used. Real
+// capture and restore (`applyForms`); after Undo and one publication, host === model === restored DOM.
+describe('restore after a sync inside the interval (036 core C4)', () => {
+  /** The host: each delta the rig's publication prepares, applied to the host text. */
+  const hostOf = (r: Rig, start: string) => {
+    let host = start
+    let seq = 1000
+    return () => {
+      seq += 1
+      const result = r.session.deltaPort().prepareDelta(seq) as {
+        kind: string
+        changes?: Array<{ from: number; to: number; insert: string }>
+      }
+      if (result.kind === 'changes' && result.changes)
+        for (const c of [...result.changes].reverse())
+          host = host.slice(0, c.from) + c.insert + host.slice(c.to)
+      return { host, model: r.session.deltaPort().modelText() }
+    }
+  }
+  const undo = (r: Rig) => {
+    const capture = r.port.capture()
+    expect(capture).toBeDefined()
+    expect(r.port.restore(capture as HistoryCapture, 'before')).toBe(true)
+  }
+
+  it('restore-after-sync-paragraph', () => {
+    const start = 'alpha\n\nbeta\n'
+    const r = open(start)
+    const publish = hostOf(r, start)
+    r.port.capture()
+    typeInto(r.root.children[1] as HTMLElement, 'betak')
+    expect(publish().host).toBe('alpha\n\nbetak\n')
+    const block = r.root.children[1] as HTMLElement
+    block.replaceWith(block.cloneNode(true))
+    undo(r)
+    expect(publish()).toEqual({ host: start, model: start })
+    expect(r.root.children[1].textContent).toBe('beta')
+  })
+
+  it('restore-after-sync-table-whole', () => {
+    const r = open(DOC)
+    const publish = hostOf(r, DOC)
+    r.port.capture()
+    typeInto(r.root.querySelectorAll('td')[3] as HTMLElement, 'fX')
+    expect(publish().host).toContain('fX')
+    const table = r.root.querySelector('table') as HTMLElement
+    table.replaceWith(table.cloneNode(true))
+    undo(r)
+    expect(publish()).toEqual({ host: DOC, model: DOC })
+  })
+
+  it('restore-after-sync-table-row', () => {
+    const r = open(DOC)
+    const publish = hostOf(r, DOC)
+    r.port.capture()
+    typeInto(r.root.querySelectorAll('td')[3] as HTMLElement, 'fX')
+    expect(publish().host).toContain('fX')
+    r.root.querySelectorAll('tbody tr')[0].remove()
+    undo(r)
+    expect(publish()).toEqual({ host: DOC, model: DOC })
+  })
+
+  /** An unsynced checkpoint of `betaA`, then a split edit, a sync and (optionally) the block replaced. */
+  function staleForm(replace: boolean) {
+    const start = 'alpha\n\nbeta\n'
+    const r = open(start)
+    const publish = hostOf(r, start)
+    r.port.capture()
+    const p = r.root.children[1] as HTMLElement
+    typeInto(p, 'betaA')
+    expect(r.port.capture()).toBeDefined()
+    p.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    const tail = (p.firstChild as Text).splitText(2)
+    tail.data = `${tail.data}B`
+    publish()
+    if (replace) p.replaceWith(p.cloneNode(true))
+    undo(r)
+    const kept = 'alpha\n\nbetaA\n'
+    expect(publish()).toEqual({ host: kept, model: kept })
+    expect(r.root.children[1].textContent).toBe('betaA')
+  }
+
+  it('stale-form-after-unsynced-checkpoint', () => staleForm(true))
+
+  it('stale-form-leaf-window', () => staleForm(false))
+
+  it('stale-table-across-unsynced-checkpoint: cell A checkpointed unsynced, cell B split, sync, table replaced, Undo keeps A', () => {
+    const r = open(DOC)
+    const publish = hostOf(r, DOC)
+    r.port.capture()
+    const cells = () => r.root.querySelectorAll('td')
+    typeInto(cells()[0] as HTMLElement, 'cA')
+    expect(r.port.capture()).toBeDefined()
+    const b = cells()[3] as HTMLElement
+    b.dispatchEvent(new Event('beforeinput', { bubbles: true }))
+    const tail = (b.firstChild as Text).splitText(1)
+    tail.data = `${tail.data}B`
+    publish()
+    const table = r.root.querySelector('table') as HTMLElement
+    table.replaceWith(table.cloneNode(true))
+    undo(r)
+    const kept = DOC.replace('| c | d |', '| cA | d |')
+    expect(publish()).toEqual({ host: kept, model: kept })
+    expect(cells()[0].textContent).toBe('cA')
+    expect(cells()[3].textContent).toBe('f')
+  })
+})

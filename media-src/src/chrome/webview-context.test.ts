@@ -8,7 +8,10 @@ import {
   type Factor,
   irFixture,
 } from '../testing/budget-harness'
-import { installWebviewContext } from './webview-context'
+import {
+  installWebviewContext,
+  webviewContextDrainFor,
+} from './webview-context'
 
 const context = (element: Element | null) =>
   element?.getAttribute('data-vscode-context')
@@ -343,5 +346,39 @@ describe('scoped budgets (Task 733 / 031, F-7)', { timeout: 60_000 }, () => {
       root.querySelector('#out')?.getAttribute('data-vscode-context'),
     ).toBe('{"webviewSection":"image"}')
     expect(result.stamped).toEqual(result.full)
+  })
+})
+
+// Task 733 / 036 (fix design 2.7): a replay write drains the page-context observer inside the write
+// (`UnitDomControl.writeOwn`), so its new nodes are stamped before the write returns.
+describe('webviewContextDrainFor (036)', () => {
+  afterEach(() => document.body.replaceChildren())
+
+  it('stamps the records of a replay write inside the write and leaves nothing for the observer', async () => {
+    const app = document.createElement('div')
+    const editor = document.createElement('pre')
+    editor.innerHTML = '<p>prose</p>'
+    app.append(editor)
+    document.body.append(app)
+    const dispose = installWebviewContext(app)
+    try {
+      const drain = webviewContextDrainFor(editor)
+      expect(drain).toBeDefined()
+      if (!drain) return
+      // A genuine edit queued before the write is handed over first.
+      const genuine = document.createElement('img')
+      editor.firstElementChild?.append(genuine)
+      drain.genuine(drain.observer.takeRecords())
+      expect(context(genuine)).toBe('{"webviewSection":"image"}')
+      // The write, as `writeOwn` runs it: its own records are stamped before it returns.
+      const written = document.createElement('img')
+      editor.append(written)
+      drain.own(drain.observer.takeRecords())
+      expect(context(written)).toBe('{"webviewSection":"image"}')
+      expect(drain.observer.takeRecords()).toEqual([])
+    } finally {
+      dispose()
+    }
+    expect(webviewContextDrainFor(editor)).toBeUndefined()
   })
 })

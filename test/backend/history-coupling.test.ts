@@ -757,6 +757,40 @@ describe('HistoryCouplingController host proofs', () => {
 // bytes; native history is walked only to reach exactly those bytes. No other proof applies, a
 // refusal never posts an update, and the caller falls back to the forward exact write.
 describe('HistoryCouplingController.replayExact (Task 685)', () => {
+  // Task 733 / 036 (B0, second-opinion point 3): the epoch guard is checked before every native step of
+  // the walk and of the inverse rollback; a failed guard runs nothing more.
+  it('036 B0: an outside change between native steps stops the walk before the next command', async () => {
+    const m = model({ states: ['saved', 'mid', 'padded'] })
+    let open = true
+    m.execute.mockImplementationOnce(async () => {
+      m.write('mid')
+      open = false
+    })
+    await expect(
+      m.controller.replayExact('undo', 'padded', 'saved', () => open),
+    ).resolves.toBe('interrupted')
+    expect(m.execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('036 B0: an outside change during the rollback stops the inverse commands', async () => {
+    const m = model({ states: ['a', 'b', 'c'] })
+    let checks = 0
+    // Three walk commands (the third makes no progress) never reach `zzz`; the guard fails before the
+    // first inverse command, so no `redo` runs.
+    const guard = () => {
+      checks++
+      return checks <= 3
+    }
+    await expect(
+      m.controller.replayExact('undo', 'c', 'zzz', guard),
+    ).resolves.toBe('interrupted')
+    expect(m.execute.mock.calls.map(([kind]) => kind)).toEqual([
+      'undo',
+      'undo',
+      'undo',
+    ])
+  })
+
   it('walks one native undo to the exact bytes and marks them synced without an update', async () => {
     const m = model({ states: ['saved', 'padded'] })
 

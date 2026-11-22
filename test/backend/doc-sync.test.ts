@@ -287,6 +287,44 @@ describe('DocSyncController', () => {
       expect(postMessage).not.toHaveBeenCalled()
     })
 
+    // Task 733 / 036 (B0, fix design 3.2): `replayAfterOp` rides beside `afterSequence` when the ended epoch
+    // carried replay operations; `host-state` reports the same fields and starts no epoch.
+    it('036 B0: puts replayAfterOp beside afterSequence once, only when the ended epoch carried replay operations', async () => {
+      ctrl.noteEpochEnded(3, 2)
+      ctrl.noteEpochEnded(9, 5)
+      ctrl.syncState.startEpoch()
+      await ctrl.postUpdate()
+      expect(updates()[0]).toMatchObject({
+        epoch: 1,
+        afterSequence: 3,
+        replayAfterOp: 2,
+      })
+      ctrl.noteEpochEnded(4)
+      ctrl.syncState.startEpoch()
+      await ctrl.postUpdate()
+      expect(updates()[1]).toMatchObject({ epoch: 2, afterSequence: 4 })
+      expect('replayAfterOp' in updates()[1]).toBe(false)
+    })
+
+    it('036 B0: host-state carries the update fields and marks nothing posted', async () => {
+      ctrl.syncState.startEpoch()
+      ctrl.postHostState('q-1', { afterSequence: 3, replayAfterOp: 1 })
+      expect(updates()).toEqual([
+        {
+          command: 'host-state',
+          requestId: 'q-1',
+          epoch: 1,
+          revision: 0,
+          content: 'hello world\n',
+          afterSequence: 3,
+          replayAfterOp: 1,
+        },
+      ])
+      // The epoch is still untold: the next postUpdate posts it.
+      await ctrl.postUpdate()
+      expect(updates()[1]).toMatchObject({ command: 'update', epoch: 1 })
+    })
+
     it('puts afterSequence on the first update after the epoch ended, once', async () => {
       ctrl.noteEpochEnded(3)
       ctrl.noteEpochEnded(9) // a second start before the post: the webview applied the first epoch

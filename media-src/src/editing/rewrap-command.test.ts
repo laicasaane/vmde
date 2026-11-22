@@ -1134,3 +1134,197 @@ describe('Source-mode Rewrap Document after a direct open (Task 696)', () => {
     expect(deps.syncExact).not.toHaveBeenCalled()
   })
 })
+
+// Task 733 / 036 (F6 webview binding): the Find record carries the request ID of its exact post. The host
+// confirms an admitted pair by ID, and names the pair its FIFO of 8 dropped; the record keeps its identity
+// in both cases. `moveRewrapDocumentHistory` reports the moved record's ID and state, and hands out its
+// directional strings only when the pair was evicted (a token compare, no text read). The functions below
+// do not exist before step 4, so each test fails on the missing export.
+describe('036 exact records', () => {
+  interface ExactRecordApi {
+    confirmExactHistory(requestId: string): void
+    evictExactHistory(requestId: string): void
+    moveRewrapDocumentHistory(inner: unknown):
+      | {
+          requestId?: string
+          state?: 'posted' | 'replayable' | 'evicted'
+          exact?: string
+          before?: string
+        }
+      | undefined
+  }
+  const api = async (): Promise<ExactRecordApi> =>
+    (await import('./rewrap-command')) as unknown as ExactRecordApi
+
+  /** One IR editor whose native redo top is the Find entry, as after the Replace All checkpoint. */
+  const findEntry = (requestId: string) => {
+    const nativeState = {}
+    const native = {
+      undoStack: [nativeState] as unknown[],
+      redoStack: [] as unknown[],
+    }
+    const inner = { currentMode: 'ir', undo: { ir: native } } as any
+    const token = historyStoreOf(inner)?.top('ir') as HistoryEntryToken
+    recordRewrapDocumentHistory({
+      owner: inner,
+      mode: 'ir',
+      nativeState: token,
+      beforeRendered: 'before canonical',
+      beforeExact: `before exact ${requestId}\n`,
+      afterRendered: 'after canonical',
+      afterExact: `after exact ${requestId}\n`,
+      requestId,
+    } as Parameters<typeof recordRewrapDocumentHistory>[0])
+    /** Moves the Find entry from the undo stack to the redo stack, as the unit engine's Undo does. */
+    const undo = () => {
+      native.undoStack.pop()
+      native.redoStack.push(nativeState)
+    }
+    return { inner, undo }
+  }
+
+  it('confirms a record by its request ID: the moved record is replayable and carries no text', async () => {
+    const { confirmExactHistory, moveRewrapDocumentHistory } = await api()
+    const { inner, undo } = findEntry('036-confirm')
+    confirmExactHistory('036-confirm')
+    undo()
+
+    const moved = moveRewrapDocumentHistory(inner)
+
+    expect(moved).toEqual({ requestId: '036-confirm', state: 'replayable' })
+  })
+
+  it('an unconfirmed record moves as posted', async () => {
+    const { moveRewrapDocumentHistory } = await api()
+    const { inner, undo } = findEntry('036-posted')
+    undo()
+
+    expect(moveRewrapDocumentHistory(inner)).toEqual({
+      requestId: '036-posted',
+      state: 'posted',
+    })
+  })
+
+  it('the host FIFO of 8 evicts the oldest pair: that record is marked evicted, keeps its identity, and moves with its strings', async () => {
+    const {
+      confirmExactHistory,
+      evictExactHistory,
+      moveRewrapDocumentHistory,
+    } = await api()
+    const entries = Array.from({ length: 9 }, (_, index) => {
+      const entry = findEntry(`036-fifo-${index}`)
+      confirmExactHistory(`036-fifo-${index}`)
+      return entry
+    })
+    // The ninth admission drops the first pair; the host names it in `rebind.exactEvicted`.
+    evictExactHistory('036-fifo-0')
+
+    entries[0].undo()
+    expect(moveRewrapDocumentHistory(entries[0].inner)).toEqual({
+      requestId: '036-fifo-0',
+      state: 'evicted',
+      exact: 'before exact 036-fifo-0\n',
+      before: 'after exact 036-fifo-0\n',
+    })
+    entries[8].undo()
+    expect(moveRewrapDocumentHistory(entries[8].inner)).toEqual({
+      requestId: '036-fifo-8',
+      state: 'replayable',
+    })
+  })
+})
+
+// Task 733 / 036 (fix design 2.2, step A): the Find record keeps Replace's raw hunks by reference. The
+// normalized offsets and targets are computed once, on the first read (the idle check or the key), and
+// kept on the record. `exactHistoryHunks` does not exist before step A, so each case fails first.
+describe('036 exact record hunks', () => {
+  interface Hunks {
+    starts: Int32Array
+    ends: Int32Array
+    insert: string
+  }
+  interface HunksApi {
+    exactHistoryHunks(requestId: string):
+      | {
+          hunks: Hunks
+          beforeExact: string
+          afterExact: string
+          normalized: {
+            incremental: boolean
+            before: string
+            after: string
+            oldStarts: Int32Array
+            newStarts: Int32Array
+          }
+        }
+      | undefined
+  }
+  const api = async (): Promise<HunksApi> =>
+    (await import('./rewrap-command')) as unknown as HunksApi
+  const record = (
+    requestId: string,
+    beforeExact: string,
+    afterExact: string,
+    hunks?: Hunks,
+  ) => {
+    const inner = {
+      currentMode: 'ir',
+      undo: { ir: { undoStack: [{}], redoStack: [] } },
+    } as any
+    recordRewrapDocumentHistory({
+      owner: inner,
+      mode: 'ir',
+      nativeState: historyStoreOf(inner)?.top('ir') as HistoryEntryToken,
+      beforeRendered: beforeExact,
+      beforeExact,
+      afterRendered: afterExact,
+      afterExact,
+      requestId,
+      ...(hunks ? { hunks } : {}),
+    } as Parameters<typeof recordRewrapDocumentHistory>[0])
+  }
+  const hunksOf = (starts: number[], ends: number[], insert: string) => ({
+    starts: Int32Array.from(starts),
+    ends: Int32Array.from(ends),
+    insert,
+  })
+
+  it('keeps the raw hunks and the plan source by reference; targets without \\r stay by reference', async () => {
+    const { exactHistoryHunks } = await api()
+    const hunks = hunksOf([0, 11], [5, 16], 'omega')
+    record('036-hunks', 'alpha beta alpha', 'omega beta omega', hunks)
+    const read = exactHistoryHunks('036-hunks')!
+    expect(read.hunks).toBe(hunks)
+    expect(read.beforeExact).toBe('alpha beta alpha')
+    expect(read.normalized.incremental).toBe(true)
+    expect(read.normalized.before).toBe(read.beforeExact)
+    expect(read.normalized.after).toBe(read.afterExact)
+    expect(read.normalized.oldStarts).toBe(hunks.starts)
+    expect(Array.from(read.normalized.newStarts)).toEqual([0, 11])
+    // Computed once and kept on the record.
+    expect(exactHistoryHunks('036-hunks')!.normalized).toBe(read.normalized)
+  })
+
+  it('normalizes a CRLF record and marks a split \\r\\n not incremental', async () => {
+    const { exactHistoryHunks } = await api()
+    record(
+      '036-crlf',
+      'a\r\nb\r\na',
+      'q\r\nb\r\nq',
+      hunksOf([0, 6], [1, 7], 'q'),
+    )
+    const crlf = exactHistoryHunks('036-crlf')!.normalized
+    expect(crlf.incremental).toBe(true)
+    expect(crlf.before).toBe('a\nb\na')
+    expect(Array.from(crlf.oldStarts)).toEqual([0, 4])
+    record('036-split', 'x\r\ny', 'xQ\ny', hunksOf([1], [2], 'Q'))
+    expect(exactHistoryHunks('036-split')!.normalized.incremental).toBe(false)
+  })
+
+  it('a record without hunks or an unknown request reads nothing', async () => {
+    const { exactHistoryHunks } = await api()
+    record('036-no-hunks', 'a', 'b')
+    expect(exactHistoryHunks('036-no-hunks')).toBeUndefined()
+    expect(exactHistoryHunks('036-unknown')).toBeUndefined()
+  })
+})

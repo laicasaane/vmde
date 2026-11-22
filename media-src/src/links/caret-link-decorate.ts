@@ -33,9 +33,13 @@ export function observeCaretLink(
       /* no-op disposer */
     }
   const doc = root.ownerDocument
+  // H2 fix design rev2 (D5.5): the anchor the last pass read. Every selection move schedules a pass of
+  // its own (`selectionchange`), so between passes the caret is still here.
+  let lastAnchor: Node | null = null
   const run = coalescePerFrame(() => {
     const sel = doc.getSelection?.()
     const anchor = sel?.rangeCount ? sel.anchorNode : null
+    lastAnchor = anchor
     // Selectionchange is document-wide, but `applyCaretInside` trusts its `next` argument without
     // checking containment — so without this guard, a caret that lands in some OTHER editable
     // surface on the page (there is none today, but nothing enforces that invariant) could still
@@ -49,12 +53,17 @@ export function observeCaretLink(
   // then let the pass put the class back on the element under the caret.
   const offLive = onLiveChange(root, (change) => {
     if (change.whole) return
+    let meets = false
     forEachChangeScope(change, (element) => {
       element.classList.remove(CARET_INSIDE_CLASS)
       for (const stale of element.querySelectorAll(`.${CARET_INSIDE_CLASS}`))
         stale.classList.remove(CARET_INSIDE_CLASS)
+      if (lastAnchor && element.contains(lastAnchor)) meets = true
     })
-    run()
+    // D5.5: a scoped change away from the caret leaves its link as it was: no selection read, no pass
+    // (a replay frame's change measured 9.9 ms here at x16). A caret whose node the change detached, or
+    // a change with no scope list, still runs the pass.
+    if (meets || !lastAnchor?.isConnected || !change.scopes) run()
   })
   return () => {
     doc.removeEventListener('selectionchange', run)

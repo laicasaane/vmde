@@ -946,3 +946,34 @@ test('a revision inside the image selection settle window keeps the image popove
   expect(t.panel()!.hidden).toBe(false)
   expect(action('edit').disabled).toBe(false)
 })
+
+// 036 core C4 (M1, Q-269): `editor-command-refused-during-replay`, link popover family.
+test('Remove that the replay does not admit writes nothing and posts nothing; an admitted one posts once', async () => {
+  const hook = window as unknown as {
+    __vmdeReplayAdmit?: (prepare: boolean) => boolean
+  }
+  hook.__vmdeReplayAdmit = () => false
+  try {
+    const t = exactPopover({ normalizing: true })
+    const html = t.root.innerHTML
+    await unlink(t)
+    expect(t.exactPost).not.toHaveBeenCalled()
+    expect(t.root.innerHTML).toBe(html)
+  } finally {
+    delete hook.__vmdeReplayAdmit
+  }
+})
+
+test('an admitted Remove during a replay posts once', async () => {
+  const hook = window as unknown as {
+    __vmdeReplayAdmit?: (prepare: boolean) => boolean
+  }
+  hook.__vmdeReplayAdmit = () => true
+  try {
+    const t = exactPopover({ normalizing: true })
+    await unlink(t)
+    expect(t.exactPost).toHaveBeenCalledOnce()
+  } finally {
+    delete hook.__vmdeReplayAdmit
+  }
+})

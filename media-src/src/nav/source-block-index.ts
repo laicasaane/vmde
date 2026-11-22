@@ -45,6 +45,12 @@ export interface SourceBlockIndexDeps {
   projection(): { owner: object; mode: 'ir' | 'wysiwyg' } | null
   /** `exact` is `null` when EditSync owns no exact source (Task 607): no units, fail closed. */
   snapshotPair(): { exact: string | null; rendered: string } | null
+  /**
+   * Task 733 / 036 (Q9 (b)): the pair for a passive display read (`acquire: false`). It never publishes:
+   * `snapshotPair()` reads the live exact text, which can post a whole-text publication while a unit is
+   * dirty and unproven. Absent: passive reads take today's `snapshotPair()` path.
+   */
+  passivePair?(): { exact: string | null; rendered: string } | null
   snapshotRevision(): object | undefined
   /** Task 607: start one background exact-authority request; success advances the revision.
    * A returned promise settles with the reply (`null` when it was not adopted). */
@@ -192,6 +198,8 @@ export function createSourceBlockIndex(
     (reason: SourceBlockIndexInvalidation, root: HTMLElement | null) => void
   >()
   let entry: SourceBlockIndex | null = null
+  // Task 733 / 036 (Q9 (b)): entries built from the passive pair; never served to an exact read.
+  const passiveEntries = new WeakSet<SourceBlockIndex>()
   let lastKey: SourceBlockIndexKey | null = null
   let observedRoot: HTMLElement | null = null
   let observedOwner: object | null = null
@@ -311,7 +319,10 @@ export function createSourceBlockIndex(
     if (!(key && entry && sameSourceBlockIndexKey(entry.key, key))) return null
     // Task 700: a peek that needs exact units (block hover, find, selection proof) starts the
     // acquire a passive read skipped, exactly as an acquiring `read()` does.
-    if (opts?.acquire !== false) startSkippedAcquire(entry)
+    if (opts?.acquire !== false) {
+      if (passiveEntries.has(entry)) return null
+      startSkippedAcquire(entry)
+    }
     return entry
   }
   const acceptedByScope = (
@@ -532,16 +543,42 @@ export function createSourceBlockIndex(
     if (afterSnapshotKey) cacheEntry(built, skipped)
     return built
   }
+  // Task 733 / 036 (Q9 (b)): a passive miss builds from the non-publishing pair. Its entry is cached for
+  // passive reads only; an acquiring read on the same key builds the exact entry, so the shared cache
+  // keeps its exact-source check (`passiveEntries`).
+  const buildPassive = (key: SourceBlockIndexKey): SourceBlockIndex | null => {
+    countIndexBuild()
+    const pair = deps.passivePair?.() ?? null
+    const { units } = resolvePairUnits(key.root, pair, false)
+    const afterKey = currentKey()
+    const built = createEntry(
+      afterKey ?? key,
+      pair?.exact ?? '',
+      pair?.rendered ?? '',
+      units,
+    )
+    passiveEntries.add(built)
+    if (afterKey) {
+      entry = built
+      acquireSkippedEntry = null
+    }
+    return built
+  }
   const read = (
     opts?: SourceBlockIndexReadOptions,
   ): SourceBlockIndex | null => {
     const acquire = opts?.acquire !== false
     const key = currentKey()
     if (!key) return null
-    if (entry && sameSourceBlockIndexKey(entry.key, key)) {
+    if (
+      entry &&
+      sameSourceBlockIndexKey(entry.key, key) &&
+      !(acquire && passiveEntries.has(entry))
+    ) {
       if (acquire) startSkippedAcquire(entry)
       return entry
     }
+    if (!acquire && deps.passivePair) return buildPassive(key)
     return buildOnMiss(key, acquire, opts?.deferUnconfirmed === true)
   }
   const flushWaiters = (): void => {

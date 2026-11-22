@@ -29,6 +29,9 @@ import {
   createDeltaSync,
   type DeltaFallbackReason,
   type DeltaSync,
+  notePublicationTraceCause,
+  setPublicationTraceCause,
+  tracePublication,
 } from './delta-sync'
 
 // The debounced edit→host serialize subsystem (task 152 item 1, extracted from
@@ -43,6 +46,12 @@ import {
 // whole document (Lute, super-linear) on every idle — seconds on a large doc. For IR we
 // instead diff the top-level blocks and re-serialize only what changed, keeping a cached
 // full markdown. Proven byte-identical to getValue() (task-69 spike).
+
+/**
+ * 036 core C6 (S2, R1.2): the internal outcome of one Save request (waiters, counters, tests). `unproven`:
+ * a failed absorb, an abandon or a resync happened after the request, so a clean DOM proves nothing.
+ */
+type SaveOutcome = 'clean' | 'published' | 'disposed' | 'unproven'
 
 /** The live edit-sync controller for one editor instance. */
 export interface EditSync {
@@ -64,6 +73,12 @@ export interface EditSync {
   markUserInput(isTrusted?: boolean): void
   /** Flush the pending edit synchronously (the host's will-save `flush-for-save`). */
   flush(): void
+  /**
+   * 036 core C6 (S2): the host's will-save `flush-for-save`: flushes, then calls `reply` exactly once,
+   * when everything the editor shows is posted (at once outside a replay, a recovery and a composition
+   * queue), or at disposal. The outcome is internal; the wire reply carries none.
+   */
+  flushForSave(reply: (outcome: SaveOutcome) => void): void
   /** Task 601: before an Undo/Redo transition, post a still-scheduled edit now, with the same
    * exact-source rules as `flush`. Posts nothing when no edit is scheduled. Returns whether one was.
    * Task 677: `recordedEntry` marks Vditor's own delayed undo entry (not an Undo/Redo or Save); while
@@ -95,6 +110,11 @@ export interface EditSync {
    * `snapshotMarkdown()` returns, so a consumer that needs both pays one serialization. `exact`
    * follows the `snapshotExactMarkdown` rules. */
   snapshotPair(): { exact: string | null; rendered: string }
+  /**
+   * Task 733 / 036 (Q9 (b)): the pair for a passive display read. It never publishes and never changes
+   * the owned base: the model text when the model owns it with no dirty unit, else `exact: null`.
+   */
+  passiveSnapshotPair(): { exact: string | null; rendered: string }
   /** Task 700 (D14): `true` when the clean rendered memo alone proves an owned exact source; `false`
    * when unknown (no clean memo) or not owned. Never serializes; fall back to `snapshotPair()`. */
   ownsExact(): boolean
@@ -132,7 +152,8 @@ export interface EditSync {
   /** Cancel pending serialization and post known, already-formatted Markdown once. The edit names
    * the host bytes it replaces (`before`, default: the last owned base); without one the host
    * refuses it. A refusal rolls the DOM back unless `rollback` is `false`. */
-  postExact(content: string, opts?: PostExactOptions): void
+  /** Returns the post's request ID, or undefined when nothing was posted (held or suppressed). */
+  postExact(content: string, opts?: PostExactOptions): string | undefined
   /** Task 733 / 010 (shared rules 3.7): while the model owns the text, apply `after` by units and post
    * the change as one `edit-delta`. 'fallback': nothing was changed; the caller runs its setValue and
    * `postExact`. 'applied': the DOM holds `after` and the host was told (a delta, or the whole text). */
@@ -167,7 +188,25 @@ interface PostExactOptions {
   /** Task 685: this post replays the Undo or Redo of an exact action, so the host may reach the
    *  same bytes through VS Code's native history first (and fall back to writing them). */
   history?: 'undo' | 'redo'
+  /**
+   * Task 733 / 036: Find's plan source. The post carries `replayable: true` only when the model asks the
+   * host for `rebind` and the `before` it sends equals this (no rebased typing), so the host may admit
+   * the replay pair.
+   */
+  replayableBefore?: string
 }
+
+/** Task 733 / 036: `replayable` only with `rebind` and a `before` equal to Find's plan source. */
+const replayableField = (
+  rebind: boolean,
+  before: string | null,
+  opts: PostExactOptions | undefined,
+): { replayable?: true } =>
+  rebind &&
+  opts?.replayableBefore !== undefined &&
+  before === opts.replayableBefore
+    ? { replayable: true }
+    : {}
 
 const EXACT_AUTHORITY_TIMEOUT_MS = 1500
 
@@ -210,6 +249,13 @@ interface EditSyncDeps {
         | 'applyText'
         | 'rebuildAfterExact'
         | 'publicationHeld'
+        | 'recoverReplay'
+        | 'ownsHostForSave'
+        | 'saveBlocked'
+        | 'saveProofMark'
+        | 'countSaveUnproven'
+        | 'onSaveWake'
+        | 'exactBusy'
       >
     >
   /** An IME composition is running (the delta publisher publishes nothing then, except for a flush). */
@@ -391,6 +437,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     requestId: string
     rollback: ExactRollback | false | undefined
     plainAfter: boolean
+    /** Task 733 / 036 (E): the post replays an Undo or Redo. */
+    history?: 'undo' | 'redo'
   } | null = null
   // Background acquires waiting for pending typing to publish on its own debounce. Each one gives
   // up after the same 1.5 s as an authority request.
@@ -1001,6 +1049,19 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       return { exact: modelExact, rendered: snapshotMarkdown() }
     return snapshotPairFor(snapshotMarkdown())
   }
+  const passiveSnapshotPair = (): {
+    exact: string | null
+    rendered: string
+  } => {
+    const rendered = snapshotMarkdown()
+    if (
+      !liveSession?.ownsText?.() ||
+      composing() ||
+      deltaPort?.hasDirty() !== false
+    )
+      return { exact: null, rendered }
+    return { exact: deltaPort.modelText() ?? null, rendered }
+  }
   const snapshotPairFor = (
     rendered: string,
   ): { exact: string | null; rendered: string } => {
@@ -1326,6 +1387,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   /** Task 733 / 022 (Q-183): a held history transition owns the next publication. O(1). */
   const publicationHeld = (): boolean =>
     shadowCall(() => deps.modelSession?.publicationHeld?.()) === true
+  /** H2 fix design rev2 (D6.3): a whole-text post is also held while a replay is live, abandoned or recovering. */
+  const wholeHeld = (): boolean =>
+    shadowCall(() => deps.modelSession?.publicationHeld?.(true)) === true
   const shadowPost = (
     sequence: number,
     options?: { predict: boolean; requestId?: string },
@@ -1354,11 +1418,15 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   let fallbackRewrap = false
   let fallbackExplicit: string | undefined
   const publishWhole = (
-    _reason: DeltaFallbackReason,
+    reason: DeltaFallbackReason,
     perf?: RendererEditPerf,
   ): void => {
     // Task 733 / 022 (Q-191): the unit engine's Undo falls back here while the answer is awaited.
-    if (publicationHeld()) return
+    // H2 fix design rev2 (D6.3): and while a replay is live, abandoned or recovering (no `getValue()`).
+    if (wholeHeld()) {
+      tracePublication('whole-held', plainSequence, reason)
+      return
+    }
     const content = preserveAutomaticInput(serializeForHost())
     if (perf) perf.payloadBytes = new TextEncoder().encode(content).length
     const postStarted = performance.now()
@@ -1374,6 +1442,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       ...(perf ? { perf } : {}),
       rebind: true,
     })
+    tracePublication('whole', sequence, reason)
     notePlainPost(content, sequence)
     if (perf)
       vscode.postMessage({
@@ -1395,6 +1464,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
             vscode.postMessage(message)
           },
           publishWhole,
+          // Task 733 / 036: `history-exact` takes its sequence from the whole-edit counter.
+          reserveSequence: () => ++plainSequence,
           countFallback: (reason) =>
             shadowCall(() => liveSession.recordFallback?.(reason)),
           isComposing: () => deps.isComposing?.() ?? false,
@@ -1760,9 +1831,96 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     syncUndoDelay()
   }
 
+  // ---- 036 core C6 (S2, R33.3): Save waiters ----
+  // Each Save request that cannot reply at once waits here, in request order, with the session's proof
+  // mark and the post count at its request. Every wake reruns its flush and rechecks; `settled` is set
+  // before the reply, so each request replies once.
+  // Host deadline (no change here): the host's will-save timer (`SAVE_FLUSH_TIMEOUT_MS`, 1 s, in the
+  // editor session) finishes at once when no exact or replay turn is queued, else waits on the edit
+  // chain; VS Code's shared will-save budget (1.5 s) bounds it. Past it VS Code saves the document as it
+  // is: edits posted before the reply are in the chain and saved; a later reply is ignored by the host.
+  interface SaveWaiter {
+    mark: number
+    postsAt: number
+    settled: boolean
+    reply: (outcome: SaveOutcome) => void
+  }
+  let saveWaiters: SaveWaiter[] = []
+  let removeSaveWake: (() => void) | undefined
+  const postMark = (): number =>
+    plainSequence + (deltaSync?.lastPostedSequence() ?? 0)
+  /** The session holds the reply (S2), or a host write is in flight during a replay. */
+  const saveHeld = (): boolean => {
+    const session = liveSession
+    if (!session?.saveBlocked) return false
+    if (shadowCall(() => session.saveBlocked?.()) === true) return true
+    return actionApplying && shadowCall(() => session.exactBusy?.()) === true
+  }
+  function settleSave(waiter: SaveWaiter, forced?: 'disposed'): void {
+    if (waiter.settled) return
+    waiter.settled = true
+    let outcome: SaveOutcome =
+      forced ?? (postMark() !== waiter.postsAt ? 'published' : 'clean')
+    const mark = shadowCall(() => liveSession?.saveProofMark?.()) ?? 0
+    if (outcome !== 'disposed' && mark !== waiter.mark) {
+      outcome = 'unproven'
+      shadowCall(() => liveSession?.countSaveUnproven?.())
+    }
+    waiter.reply(outcome)
+  }
+  const runSaveFlush = (): void => {
+    try {
+      settleExactInput()
+    } catch (error) {
+      reportError(error, 'edit-sync: save flush')
+    }
+  }
+  function wakeSaveWaiters(): void {
+    if (saveWaiters.length === 0) return
+    for (const waiter of [...saveWaiters]) {
+      if (waiter.settled) continue
+      runSaveFlush()
+      if (!saveHeld()) settleSave(waiter)
+    }
+    saveWaiters = saveWaiters.filter((waiter) => !waiter.settled)
+  }
+  function flushForSave(reply: (outcome: SaveOutcome) => void): void {
+    const waiter: SaveWaiter = {
+      mark: shadowCall(() => liveSession?.saveProofMark?.()) ?? 0,
+      postsAt: postMark(),
+      settled: false,
+      reply,
+    }
+    runSaveFlush()
+    if (!saveHeld()) {
+      settleSave(waiter)
+      return
+    }
+    removeSaveWake ??= shadowCall(() =>
+      liveSession?.onSaveWake?.(wakeSaveWaiters),
+    )
+    saveWaiters.push(waiter)
+  }
+
+  // 036 core C6 (S1, R2.4): under the replay's ownership token the model answers: a clean check costs a
+  // drain, typing goes out through the replay publisher, and no whole serialization runs. A `'fallback'`
+  // is never published: today's path then runs. True when the model answered.
+  const settleOwnedReplay = (): boolean => {
+    if (shadowCall(() => liveSession?.ownsHostForSave?.()) !== true)
+      return false
+    const result = composing() ? undefined : publishLive('flush')
+    if (result !== 'delta' && result !== 'nothing') return false
+    pendingEdit.cancel()
+    deferredPlainPost = false
+    cancelRendererPerf()
+    userInputPending = false
+    return true
+  }
+
   // Flush pending typing, unless an exact transaction the host already holds still owns the
   // rendered document and nothing was typed since: then there is nothing newer to post.
   const settleExactInput = (): void => {
+    if (settleOwnedReplay()) return
     if (!userInputPending && exactTransactionMarkdown !== null) {
       const exact = snapshotExactMarkdown()
       if (
@@ -1956,6 +2114,9 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     remembered = null
     lastRebase = null
     ownedBase = null
+    // Task 733 / 036 (E, fix design 3.5): a refused history post ends an active replay, and the host text
+    // renders through the bounded writer instead of the DOM keeping bytes the host does not hold.
+    if (latest.history && recoverRefusedHistory(message.content)) return
     if (latest.plainAfter || latest.rollback === false) {
       exactTransactionMarkdown = null
       exactTransactionRendered = null
@@ -1987,6 +2148,35 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     replaceIncrementalSeed(seedFromExactMarkdown(message.content))
   }
 
+  /** Task 733 / 036 (E): the host text of a refused history post during a replay; false when none is active. */
+  const recoverRefusedHistory = (content: string): boolean => {
+    const whole = (): void => {
+      deps.setApplying?.(true)
+      try {
+        clearRenderedMemo()
+        window.vditor.setValue(content)
+      } finally {
+        deps.setApplying?.(false)
+      }
+      shadowCall(() => liveSession?.rebuildAfterExact?.(content))
+    }
+    const outcome = shadowCall(() =>
+      liveSession?.recoverReplay?.(content, undefined, undefined, whole),
+    )
+    if (outcome === undefined || outcome === 'none') return false
+    if (outcome === 'fallback') whole()
+    pendingEdit.cancel()
+    deferredPlainPost = false
+    userInputPending = false
+    exactTransactionMarkdown = null
+    exactTransactionRendered = null
+    hostBase = content
+    hostReference = hostBase
+    advanceSourceRevision()
+    replaceIncrementalSeed(seedFromExactMarkdown(content))
+    return true
+  }
+
   const receiveDeferredSeed = (
     seed: IncrementalSeedPayload,
     content: string,
@@ -2016,9 +2206,16 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   }
 
   /** Today's whole-text exact post (Task 607): the host writes it only while it holds `before`. */
-  const postWholeExact = (content: string, opts?: PostExactOptions): void => {
+  const postWholeExact = (
+    content: string,
+    opts?: PostExactOptions,
+  ): string | undefined => {
+    notePublicationTraceCause(opts?.history ? 'history' : 'exact')
     // Task 733 / 022: nothing is posted while a held transition waits for its answer.
-    if (publicationHeld()) return
+    if (publicationHeld()) {
+      tracePublication('exact-held', plainSequence)
+      return undefined
+    }
     // Task 607 rule 7: the host writes the edit only while it still holds `before`. Pending
     // typing is cancelled, not flushed, so a rebased action (D3) posts its typing with it.
     const before = opts?.before ?? ownedBase
@@ -2038,11 +2235,16 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     settleBackgroundWaiters(null)
     advanceSourceRevision()
     replaceIncrementalSeed(seedFromExactMarkdown(content))
-    if (isSuppressed()) return
+    if (isSuppressed()) return undefined
     hostBase = content
     hostReference = hostBase
     const requestId = newRequestId()
-    latestExact = { requestId, rollback: opts?.rollback, plainAfter: false }
+    latestExact = {
+      requestId,
+      rollback: opts?.rollback,
+      plainAfter: false,
+      ...(opts?.history ? { history: opts.history } : {}),
+    }
     // Task 733 (decision 1): the exact post changes the host bytes, so it is never predicted; it
     // takes a sequence only when the model asks the host for the bytes. The host ignores an exact
     // edit's sequence for plain ordering, and `lastPlainPost` stays the last plain post.
@@ -2056,8 +2258,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       ...(opts?.history ? { history: opts.history } : {}),
       requestId,
       ...(shadow ? { sequence, ...shadow } : {}),
+      ...replayableField(shadow !== undefined, before, opts),
     })
+    tracePublication('exact', sequence)
     syncUndoDelay()
+    return requestId
   }
   // Task 733 / 010 (shared rules 3.7): the exact post as one `edit-delta` while the model owns the
   // text. Whole-text instead for a history replay (Task 685) and while an answer is awaited.
@@ -2163,6 +2368,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     // Find, a block action or a rewrap) with normalized ones on every save; the same
     // exact-ownership check as a block action's settle keeps them.
     flush: () => settleExactInput(),
+    flushForSave,
     // Task 601: the host must hold the edit before the history transition that undoes it; both
     // messages share the host's edit chain, so posting the edit first orders them. Unlike `flush`,
     // nothing scheduled means nothing to post: a settled Undo publishes only its transition.
@@ -2269,6 +2475,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     snapshotMarkdown,
     snapshotExactMarkdown,
     snapshotPair,
+    passiveSnapshotPair,
     ownsExact,
     snapshotRevision: () => sourceRevision,
     prepareRewrap: () => {
@@ -2285,6 +2492,8 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       if (applying && ownedBase === null && hasPendingInputPost())
         pendingEdit.flush()
       actionApplying = applying
+      // 036 core C6 (R34.3): the end of the action window wakes the Save waiters.
+      if (!applying && saveWaiters.length > 0) queueMicrotask(wakeSaveWaiters)
     },
     // Task 733 / 010 (DR1): a caller that ran its own setValue keeps today's whole-text exact post. Its
     // `before` guard refuses an edit on a host the editor never saw (Task 607/630); a delta's epoch
@@ -2322,6 +2531,10 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     startIncrementalSeed,
     receiveDeferredSeed,
     dispose: () => {
+      // 036 core C6 (S2): every waiting Save replies once, `disposed`.
+      removeSaveWake?.()
+      removeSaveWake = undefined
+      for (const waiter of saveWaiters.splice(0)) settleSave(waiter, 'disposed')
       deferredSeedOpen = false
       advanceSourceRevision()
       pendingEdit.cancel()
@@ -2353,6 +2566,19 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       if (seedStats)
         delete (window as IncrementalSeedWindow).__vmdeE2EHistoryText
     },
+  }
+  // Task 733 / 036 (T0): the flush before an Undo or Redo (or before a host update) tags the
+  // publications it causes `prepare` in the end-to-end trace; a recorded entry's flush keeps its own
+  // cause. Wrapped here so the flush body stays as it is; the trace records nothing in a product page.
+  const flushHistoryInputBody = sync.flushHistoryInput
+  sync.flushHistoryInput = (options) => {
+    if (options?.recordedEntry) return flushHistoryInputBody(options)
+    setPublicationTraceCause('prepare')
+    try {
+      return flushHistoryInputBody(options)
+    } finally {
+      setPublicationTraceCause(undefined)
+    }
   }
   return sync
 }

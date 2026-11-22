@@ -11,6 +11,7 @@ import { serializeInitPayload } from '../webview-host/html-builder'
 import type {
   ReadingPositionState,
   RendererEditPerf,
+  ReplayOpStatus,
   SectionFoldState,
   WebviewMessage,
 } from '../shared/protocol'
@@ -78,7 +79,11 @@ import {
   pinnedEmojiSequences,
   promoteEmojiRecent,
 } from './emoji-recents-store'
-import { firstWebviewMessageShapeViolation } from '../webview-host/webview-message-shape'
+import {
+  firstWebviewMessageShapeViolation,
+  validReplayChanges,
+} from '../webview-host/webview-message-shape'
+import { EXACT_HISTORY_PAIRS } from '../shared/protocol'
 import { ConfigurationRoot } from '../shared/product-identity'
 import {
   activeEditPerf,
@@ -92,6 +97,11 @@ import {
 } from '../platform/edit-perf'
 import { canonicalizeIrMarkdown } from '../lute/lute-host'
 import { planPreviewTaskCheckboxEdit } from './preview-task-checkbox-edit'
+import {
+  formatRecoveredEdits,
+  insertRecoveredEdits,
+  presentRecoveredEdits,
+} from './recovered-edits'
 import {
   buildIncrementalSeedPayload,
   type IncrementalSeedPayload,
@@ -167,16 +177,189 @@ function rebindSequence(
   return typeof message.sequence === 'number' ? message.sequence : undefined
 }
 
-// Task 733 (SR-5): a delta carries document text, so its trace line holds counts only.
-function loggableMessage(message: WebviewMessage): unknown {
-  if (message.command !== 'edit-delta' && message.command !== 'history-delta')
-    return message
+// Task 733 / 036: a replay sequence is a positive safe integer.
+const validExactSequence = (value: unknown): value is number =>
+  Number.isSafeInteger(value) && (value as number) > 0
+
+// Task 733 / 036 (review point 6): an error is logged by a fixed category, never its message (a thrown
+// replay or handler error can carry document text).
+const errorCategory = (error: unknown): string =>
+  error instanceof Error ? error.name : typeof error
+
+// Task 733 / 036 (B0): a replay operation number (and an epoch) is a non-negative safe integer; an
+// operation number is positive.
+const validEpoch = (value: unknown): value is number =>
+  Number.isSafeInteger(value) && (value as number) >= 0
+
+// Task 733 / 036 (B0, 3.3): a reserved Undo or Redo gives up after this long without its content.
+const RESERVATION_TIMEOUT_MS = 5000
+// Task 733 / 036 (B0, review point 2): how many ended epochs keep their replay outcome for
+// `replay-status`; an older epoch answers `ended` with zero watermarks.
+const ENDED_REPLAY_EPOCHS = 256
+
+type DeltaPost = Extract<
+  WebviewMessage,
+  { command: 'edit-delta' | 'history-delta' }
+>
+type HistoryDeltaPost = Extract<WebviewMessage, { command: 'history-delta' }>
+
+// Task 733 / 036 (B0, 3.3): the outcome of the run step of one replay operation. `stopped`: the epoch
+// moved during the run, or the operation decided nothing itself (the writer's own refusal limit).
+type ReplayRun = 'proven' | 'refused' | 'stopped'
+
+/** Task 733 / 036 (B0): the replay operations of the current epoch (3.1, 3.3). */
+interface ReplayEpochState {
+  epoch: number
+  /** The highest operation of the contiguous applied prefix. */
+  applied: number
+  /** Received or reserved operations above `applied` whose turn has not finished. */
+  ops: Map<number, 'queued' | 'running' | 'reserved'>
+  /** The latest history move received (a late `replay-abandon` of an older one is ignored). */
+  lastHistoryOp: number
+  /** The operation whose refusal ended the epoch. */
+  refused?: number
+  /** The epoch received at least one replay operation (its `update` then carries `replayAfterOp`). */
+  carried: boolean
+}
+
+/** Task 733 / 036 (B0, 3.6): a received replay operation kept until it applies; once its epoch ends
+ * unapplied it is a recovery entry. The changes and content are the received references, not copies. */
+interface RecoveryEntry {
+  epoch: number
+  replayOp: number
+  changes?: unknown[]
+  content?: string
+  written: boolean
+  /** 036 core C7 (R33.4): an insertion of this entry is in flight; a concurrent write skips it. */
+  writing?: boolean
+}
+
+/** 036 core C7 (R33.4): the wait before the one retry of a Recovered-edits insertion or presentation. */
+const RECOVERED_EDITS_RETRY_MS = 500
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms))
+
+const replayKey = (epoch: number, replayOp: number): string =>
+  `${epoch}:${replayOp}`
+
+// Task 733 / 036 (B0): the `recoveryOf` of an unchecked message, or undefined.
+const recoveryOfMessage = (
+  value: unknown,
+): { epoch: number; replayOp: number } | undefined => {
+  if (typeof value !== 'object' || value === null) return undefined
+  const { epoch, replayOp } = value as Record<string, unknown>
+  return validEpoch(epoch) && validExactSequence(replayOp)
+    ? { epoch, replayOp }
+    : undefined
+}
+
+// Task 733 (SR-5): a safe integer of an unchecked message, or null.
+const loggableInteger = (value: unknown): number | null =>
+  Number.isSafeInteger(value) ? (value as number) : null
+
+// Task 733 (SR-5): a delta carries document text, so its trace line holds counts only. Task 733 / 036
+// (Q6): `edit` and `history-exact` log allowlisted fields only (kinds, flags, numbers, the content
+// length). The dispatcher logs before the payload is validated, so any field may be malformed or
+// missing, and the message itself may be no object.
+// Task 733 / 036 (Q6, review point 6): history messages log kinds, numbers and lengths only.
+function loggableHistory(raw: Record<string, unknown>): unknown {
+  const kind = raw.kind === 'undo' || raw.kind === 'redo' ? raw.kind : null
+  const sequence = loggableInteger(raw.sequence)
+  if (raw.command === 'history-exact')
+    return {
+      command: 'history-exact',
+      kind,
+      requestId: typeof raw.requestId === 'string',
+      sequence,
+      epoch: loggableInteger(raw.epoch),
+      replayOp: loggableInteger(raw.replayOp),
+    }
+  // A held transition carries both endpoints; their lengths only.
   return {
-    command: message.command,
-    epoch: Number.isSafeInteger(message.epoch) ? message.epoch : null,
-    sequence: Number.isSafeInteger(message.sequence) ? message.sequence : null,
-    changeCount: Array.isArray(message.changes) ? message.changes.length : null,
+    command: 'history-transition',
+    kind,
+    sequence,
+    beforeLength: typeof raw.before === 'string' ? raw.before.length : null,
+    afterLength: typeof raw.after === 'string' ? raw.after.length : null,
   }
+}
+
+function loggableMessage(message: WebviewMessage): unknown {
+  if (typeof message !== 'object' || message === null)
+    return { type: message === null ? 'null' : typeof message }
+  const raw = message as unknown as Record<string, unknown>
+  switch (raw.command) {
+    case 'edit-delta':
+    case 'history-delta':
+      return {
+        command: raw.command,
+        epoch: loggableInteger(raw.epoch),
+        sequence: loggableInteger(raw.sequence),
+        changeCount: Array.isArray(raw.changes) ? raw.changes.length : null,
+        replayOp: loggableInteger(raw.replayOp),
+        recoveryOf: raw.recoveryOf !== undefined,
+      }
+    case 'edit':
+      return {
+        command: 'edit',
+        exact: raw.exact === true,
+        rebind: raw.rebind === true,
+        sequence: loggableInteger(raw.sequence),
+        history:
+          raw.history === 'undo' || raw.history === 'redo' ? raw.history : null,
+        requestId: typeof raw.requestId === 'string',
+        contentLength:
+          typeof raw.content === 'string' ? raw.content.length : null,
+        epoch: loggableInteger(raw.epoch),
+        replayOp: loggableInteger(raw.replayOp),
+      }
+    case 'history-exact':
+    case 'history-transition':
+      return loggableHistory(raw)
+    // Task 733 / 036 (B0, 3.8): the replay commands log their numbers only.
+    case 'replay-reserve':
+    case 'replay-query':
+    case 'replay-abandon':
+    case 'recovery-done':
+      return {
+        command: raw.command,
+        epoch: loggableInteger(raw.epoch),
+        replayOp: loggableInteger(raw.replayOp),
+        kind: raw.kind === 'undo' || raw.kind === 'redo' ? raw.kind : null,
+      }
+    case 'host-state-query':
+      return {
+        command: 'host-state-query',
+        requestId: typeof raw.requestId === 'string',
+      }
+    default:
+      return message
+  }
+}
+
+// The map type guarantees each entry matches its command; bridge the runtime-string index the same way
+// the webview dispatcher does. Task 733 / 036: own keys only.
+function webviewHandler(
+  handlers: object,
+  command: unknown,
+): ((message: WebviewMessage) => unknown) | undefined {
+  if (typeof command !== 'string') return undefined
+  // An own property only: an inherited name (`toString`) is no handler.
+  const value: unknown = Object.getOwnPropertyDescriptor(
+    handlers,
+    command,
+  )?.value
+  return typeof value === 'function'
+    ? (value as (message: WebviewMessage) => unknown)
+    : undefined
+}
+
+// Task 733 / 036 (review point 6): the review line of a received message; an unknown command logs a
+// fixed category instead of its fields.
+function reviewEntry(message: WebviewMessage, handled: boolean): unknown {
+  return handled || typeof message !== 'object' || message === null
+    ? loggableMessage(message)
+    : { command: 'unknown' }
 }
 
 // Task 733: what started the current epoch. A dropped or refused delta warns only after an external
@@ -674,13 +857,21 @@ export class EditorSession {
         typeof message.before === 'string' ? message.before : undefined
       const requestId =
         typeof message.requestId === 'string' ? message.requestId : undefined
-      outcome = await this.writeback.syncToEditor(
-        message.content,
-        message.explicitBlock,
-        message.exact,
-        perfId,
-        before,
-      )
+      this.admittedPair = undefined
+      outcome = this.replayableCandidate(message, before, requestId)
+        ? await this.writeReplayable(
+            message.content,
+            before as string,
+            requestId as string,
+            perfId,
+          )
+        : await this.writeback.syncToEditor(
+            message.content,
+            message.explicitBlock,
+            message.exact,
+            perfId,
+            before,
+          )
       // Task 607 INV-B: tell the webview its exact edit was not written, with the host text, so
       // it can roll the action back.
       if (outcome === 'refused')
@@ -700,6 +891,560 @@ export class EditorSession {
       throw error
     }
     return outcome
+  }
+
+  // Task 733 / 036: Find's exact post that asks for a replay pair (shape checked here; unchecked input).
+  private replayableCandidate(
+    message: Extract<WebviewMessage, { command: 'edit' }>,
+    before: string | undefined,
+    requestId: string | undefined,
+  ): boolean {
+    return (
+      message.exact === true &&
+      message.rebind === true &&
+      message.replayable === true &&
+      typeof message.content === 'string' &&
+      before !== undefined &&
+      requestId !== undefined &&
+      requestId.length > 0 &&
+      requestId.length <= 64
+    )
+  }
+
+  // Task 733 / 036 (F6 admission): write through the guarded path that reports `applyEdit`'s own result.
+  // A pair is admitted only on an actual apply whose re-read bytes equal the content and with no outside
+  // change during the write; `before` is proven held by the guard.
+  private async writeReplayable(
+    content: string,
+    before: string,
+    requestId: string,
+    perfId: string | undefined,
+  ): Promise<'written' | 'unchanged' | 'refused'> {
+    const revision = this.docSync.syncState.getExternalRevision()
+    const { result, heldBefore } = await this.writeback.syncExactHeld(
+      content,
+      before,
+      perfId,
+    )
+    if (result === 'unchanged' || result === 'refused') return result
+    // Task 733 / 036 (B0, 3.4): the pair admits the raw text the guard held, not the message's `before`
+    // (equal only up to line endings), so the raw proof of the Undo compares like with like.
+    if (
+      result === 'applied' &&
+      heldBefore !== undefined &&
+      revision === this.docSync.syncState.getExternalRevision()
+    )
+      this.admitPair({
+        requestId,
+        before: heldBefore,
+        after: this.document.getText(),
+        version: this.document.version,
+      })
+    // A failed apply answers as today's `syncToEditor` does (written; the error was shown).
+    return 'written'
+  }
+
+  // Task 733 / 036: the host's replay pairs, oldest first; a FIFO of `EXACT_HISTORY_PAIRS`.
+  private exactPairs: Array<{
+    requestId: string
+    before: string
+    after: string
+    version: number
+  }> = []
+  // The pair the current edit admitted (and the one it evicted), for that edit's `rebind`.
+  private admittedPair:
+    | { exactRequestId: string; exactEvicted?: string }
+    | undefined
+  // `history-exact` turns queued or running on the edit chain (Save waits for them).
+  private exactTurns = 0
+
+  private admitPair(pair: {
+    requestId: string
+    before: string
+    after: string
+    version: number
+  }): void {
+    this.exactPairs = this.exactPairs.filter(
+      (kept) => kept.requestId !== pair.requestId,
+    )
+    this.exactPairs.push(pair)
+    const evicted =
+      this.exactPairs.length > EXACT_HISTORY_PAIRS
+        ? this.exactPairs.shift()?.requestId
+        : undefined
+    this.admittedPair =
+      evicted === undefined
+        ? { exactRequestId: pair.requestId }
+        : { exactRequestId: pair.requestId, exactEvicted: evicted }
+  }
+
+  // Task 733 / 036 (B0): the replay operations of the current epoch; ended epochs keep their outcome
+  // (review point 2); received operations journaled until they apply (3.6); reserved turns (3.3).
+  private replay: ReplayEpochState = {
+    epoch: 0,
+    applied: 0,
+    ops: new Map(),
+    lastHistoryOp: 0,
+    carried: false,
+  }
+  private readonly endedReplays = new Map<
+    number,
+    { applied: number; acceptedSequence: number; refused?: number }
+  >()
+  // The watermarks of the epoch the current one ended, for `host-state`.
+  private endedForHostState: {
+    afterSequence?: number
+    replayAfterOp?: number
+  } = {}
+  private readonly recoveryJournal = new Map<string, RecoveryEntry>()
+  private readonly reservations = new Map<
+    string,
+    (payload: HistoryDeltaPost | undefined) => void
+  >()
+  // Replay turns queued, running or reserved on the edit chain (Save waits for them).
+  private replayTurns = 0
+  private panelDisposed = false
+  // 036 core C7 (R34.4, R33.4): numbers only, never document text.
+  private replayRejected = 0
+  private recoveredEditsLost = 0
+
+  /** Task 733 / 036 (B0): the replay state of the current epoch (follows the delta writer's epoch). */
+  private replayState(): ReplayEpochState {
+    const epoch = this.deltaWriter.epoch
+    if (this.replay.epoch !== epoch)
+      this.replay = {
+        epoch,
+        applied: 0,
+        ops: new Map(),
+        lastHistoryOp: 0,
+        carried: false,
+      }
+    return this.replay
+  }
+
+  /** Task 733 / 036 (B0): the current epoch ends: keep its outcome, give its reservations up, and return
+   * its replay watermark for the `update` (undefined when it carried no replay operation). */
+  private endReplayEpoch(): number | undefined {
+    const state = this.replayState()
+    this.endedReplays.set(state.epoch, {
+      applied: state.applied,
+      acceptedSequence: this.deltaWriter.acceptedSequence,
+      ...(state.refused === undefined ? {} : { refused: state.refused }),
+    })
+    if (this.endedReplays.size > ENDED_REPLAY_EPOCHS)
+      this.endedReplays.delete(this.endedReplays.keys().next().value as number)
+    const replayAfterOp = state.carried ? state.applied : undefined
+    this.endedForHostState = {
+      afterSequence: this.deltaWriter.acceptedSequence,
+      ...(replayAfterOp === undefined ? {} : { replayAfterOp }),
+    }
+    for (const [key, release] of [...this.reservations])
+      if (key.startsWith(`${state.epoch}:`)) release(undefined)
+    return replayAfterOp
+  }
+
+  /** Task 733 / 036 (B0, review point 4): at receipt, before queuing. A current-epoch operation is
+   * marked queued; one that carries text is journaled once, unless an applied prefix already covers it
+   * or it reapplies another operation (the original entry stays the only one). */
+  private noteReplayReceived(
+    epoch: number,
+    replayOp: number,
+    data: { changes?: unknown[]; content?: string } | undefined,
+    options: { history?: boolean; recoveryOf?: unknown } = {},
+  ): void {
+    const state = this.replayState()
+    if (epoch === state.epoch) {
+      state.carried = true
+      if (replayOp > state.applied && !state.ops.has(replayOp))
+        state.ops.set(replayOp, 'queued')
+      if (options.history && replayOp > state.lastHistoryOp)
+        state.lastHistoryOp = replayOp
+    }
+    if (!data || options.recoveryOf !== undefined || epoch > state.epoch) return
+    const key = replayKey(epoch, replayOp)
+    if (this.recoveryJournal.has(key)) return
+    const applied =
+      epoch === state.epoch
+        ? state.applied
+        : (this.endedReplays.get(epoch)?.applied ?? 0)
+    if (replayOp <= applied) return
+    this.recoveryJournal.set(key, { epoch, replayOp, ...data, written: false })
+  }
+
+  private postReplayAck(): void {
+    if (this.panelDisposed) return
+    const state = this.replayState()
+    void this.webviewPanel.webview.postMessage({
+      command: 'replay-ack',
+      epoch: state.epoch,
+      replayOp: state.applied,
+      acceptedSequence: this.deltaWriter.acceptedSequence,
+    })
+  }
+
+  /** Task 733 / 036 (B0): a refusal ends the epoch; its `update` carries `replayAfterOp`. After the panel
+   * closed the epoch still ends (the operation stays a recovery entry) but nothing is posted. */
+  private async refuseReplay(replayOp: number): Promise<void> {
+    this.replayState().refused = replayOp
+    if (this.panelDisposed) {
+      this.startEpoch('refusal')
+      return
+    }
+    await this.resync()
+  }
+
+  /** Task 733 / 036 (B0, 3.3): one replay operation's chain turn: epoch, duplicate and gap checks
+   * before `run` mutates anything; then the proof decides the acknowledgement. `wait` is a
+   * reservation's content (false: it gave up). */
+  private queueReplayTurn(
+    epoch: number,
+    replayOp: number,
+    run: () => Promise<ReplayRun>,
+    options: { wait?: Promise<boolean>; recoveryOf?: unknown } = {},
+  ): Promise<void> {
+    this.replayTurns++
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          if (options.wait && !(await options.wait)) {
+            this.replayState().ops.delete(replayOp)
+            if (!this.panelDisposed && this.deltaWriter.epoch === epoch)
+              await this.refuseReplay(replayOp)
+            return
+          }
+          await this.runReplayOp(epoch, replayOp, run, options.recoveryOf)
+        } finally {
+          this.replayTurns--
+        }
+      })
+    this.editMessageChain = turn
+    return turn
+  }
+
+  private async runReplayOp(
+    epoch: number,
+    replayOp: number,
+    run: () => Promise<ReplayRun>,
+    recoveryOf: unknown,
+  ): Promise<void> {
+    const state = this.replayState()
+    // 1. A stale epoch: nothing is written and nothing is acknowledged (the journal keeps it).
+    if (epoch !== state.epoch) return
+    // 2. An applied duplicate is acknowledged again and not run.
+    if (replayOp <= state.applied) {
+      this.postReplayAck()
+      return
+    }
+    // 3. A gap is refused before any mutation.
+    if (replayOp > state.applied + 1) {
+      state.ops.delete(replayOp)
+      await this.refuseReplay(replayOp)
+      return
+    }
+    state.ops.set(replayOp, 'running')
+    const outcome = await run()
+    // 4. The epoch moved during the run: no acknowledgement; the operation stays a recovery entry.
+    if (this.deltaWriter.epoch !== epoch || this.replay !== state) return
+    state.ops.delete(replayOp)
+    if (outcome === 'proven') {
+      state.applied = replayOp
+      this.recoveryJournal.delete(replayKey(epoch, replayOp))
+      const original = recoveryOfMessage(recoveryOf)
+      if (original)
+        this.recoveryJournal.delete(
+          replayKey(original.epoch, original.replayOp),
+        )
+      this.postReplayAck()
+    } else if (outcome === 'refused') await this.refuseReplay(replayOp)
+  }
+
+  // Task 733 / 036: replay an admitted pair natively, or write its target bytes through the guarded
+  // writer. B0: replay operation `replayOp`, answered by `replay-ack` after the raw proof, or one `update`.
+  private queueHistoryExact(
+    message: Extract<WebviewMessage, { command: 'history-exact' }>,
+  ) {
+    const { epoch, replayOp } = message
+    this.noteReplayReceived(epoch, replayOp, undefined, { history: true })
+    this.exactTurns++
+    const turn = this.queueReplayTurn(epoch, replayOp, async () => {
+      this.sequencedTransition = true
+      try {
+        return await this.runHistoryExact(message, epoch)
+      } catch (error) {
+        debug('history-exact replay failed', errorCategory(error))
+        return 'refused'
+      } finally {
+        this.sequencedTransition = false
+      }
+    })
+    const counted = turn.finally(() => {
+      this.exactTurns--
+    })
+    return counted
+  }
+
+  private async runHistoryExact(
+    message: Extract<WebviewMessage, { command: 'history-exact' }>,
+    epoch: number,
+  ): Promise<ReplayRun> {
+    const kind = message.kind
+    const pair = this.exactPairs.find((p) => p.requestId === message.requestId)
+    if ((kind !== 'undo' && kind !== 'redo') || !pair) return 'refused'
+    const start = kind === 'undo' ? pair.after : pair.before
+    const exact = kind === 'undo' ? pair.before : pair.after
+    const revision = this.docSync.syncState.getExternalRevision()
+    const current = () => this.deltaWriter.epoch === epoch
+    await this.writeback.settleOwnWrites()
+    if (!current()) return 'stopped'
+    const outcome = await this.historyCoupling.replayExact(
+      kind,
+      start,
+      exact,
+      current,
+    )
+    if (!current() || outcome === 'interrupted') return 'stopped'
+    if (outcome === 'diverged') return 'refused'
+    if (outcome === 'replayed')
+      this.writeback.noteExactReplay(this.document.getText())
+    if (outcome === 'declined') {
+      // This path posts no `exact-edit-refused`: a refusal ends in exactly one `update`.
+      await this.writeback.syncToEditor(
+        exact,
+        undefined,
+        true,
+        undefined,
+        start,
+      )
+      if (!current()) return 'stopped'
+    }
+    // 3.4: acknowledged only when the document holds the pair's raw target; an outside change during
+    // the replay is a refusal.
+    return this.document.getText() === exact &&
+      revision === this.docSync.syncState.getExternalRevision()
+      ? 'proven'
+      : 'refused'
+  }
+
+  // Task 733 / 036: pre-checked before the shape table, which checks primitive types only. A bad sequence
+  // or replay number is dropped; a valid one with a bad direction or request ID gets one `update`.
+  private receiveHistoryExact(message: unknown): Promise<void> | undefined {
+    const raw = message as Record<string, unknown>
+    if (
+      !validExactSequence(raw.sequence) ||
+      !validEpoch(raw.epoch) ||
+      !validExactSequence(raw.replayOp)
+    )
+      return undefined
+    const requestId = raw.requestId
+    if (
+      (raw.kind !== 'undo' && raw.kind !== 'redo') ||
+      typeof requestId !== 'string' ||
+      requestId.length === 0 ||
+      requestId.length > 64
+    ) {
+      const epoch = raw.epoch
+      const replayOp = raw.replayOp
+      this.noteReplayReceived(epoch, replayOp, undefined, { history: true })
+      return this.queueReplayTurn(epoch, replayOp, async () => 'refused')
+    }
+    return this.queueHistoryExact(
+      message as Extract<WebviewMessage, { command: 'history-exact' }>,
+    )
+  }
+
+  // Task 733 / 036 (B0, 3.3, review point 1): an untagged Undo or Redo keeps its place on the chain. Its
+  // `history-delta` goes straight to the waiting turn; a duplicate reserve is ignored.
+  private receiveReplayReserve(
+    message: Extract<WebviewMessage, { command: 'replay-reserve' }>,
+  ): undefined {
+    const { epoch, replayOp } = message
+    if (
+      !validEpoch(epoch) ||
+      !validExactSequence(replayOp) ||
+      (message.kind !== 'undo' && message.kind !== 'redo')
+    )
+      return undefined
+    const state = this.replayState()
+    if (
+      epoch !== state.epoch ||
+      replayOp <= state.applied ||
+      state.ops.has(replayOp)
+    )
+      return undefined
+    state.carried = true
+    state.ops.set(replayOp, 'reserved')
+    if (replayOp > state.lastHistoryOp) state.lastHistoryOp = replayOp
+    const key = replayKey(epoch, replayOp)
+    let payload: HistoryDeltaPost | undefined
+    const wait = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => release(undefined), RESERVATION_TIMEOUT_MS)
+      const release = (content: HistoryDeltaPost | undefined) => {
+        clearTimeout(timer)
+        this.reservations.delete(key)
+        payload = content
+        if (content && state.ops.get(replayOp) === 'reserved')
+          state.ops.set(replayOp, 'queued')
+        resolve(content !== undefined)
+      }
+      this.reservations.set(key, release)
+    })
+    // The turn waits for the payload; the receipt itself is not held by it.
+    void this.queueReplayTurn(
+      epoch,
+      replayOp,
+      () => this.runDeltaOp(payload as HistoryDeltaPost),
+      { wait },
+    )
+    return undefined
+  }
+
+  // Task 733 / 036 (B0, 3.2): answered at once with the state of the requested operation of the named
+  // epoch; an ended epoch answers with its own watermarks (review point 2).
+  private answerReplayQuery(
+    message: Extract<WebviewMessage, { command: 'replay-query' }>,
+  ): void {
+    const { epoch, replayOp } = message
+    if (!validEpoch(epoch) || !validExactSequence(replayOp)) return
+    const state = this.replayState()
+    let status: ReplayOpStatus = 'unknown'
+    let applied = 0
+    let acceptedSequence = 0
+    if (epoch === state.epoch) {
+      applied = state.applied
+      acceptedSequence = this.deltaWriter.acceptedSequence
+      status =
+        replayOp <= state.applied
+          ? 'applied'
+          : (state.ops.get(replayOp) ?? 'unknown')
+    } else if (epoch < state.epoch) {
+      const ended = this.endedReplays.get(epoch)
+      applied = ended?.applied ?? 0
+      acceptedSequence = ended?.acceptedSequence ?? 0
+      status =
+        replayOp <= applied
+          ? 'applied'
+          : ended?.refused === replayOp
+            ? 'refused'
+            : 'ended'
+    }
+    if (this.panelDisposed) return
+    void this.webviewPanel.webview.postMessage({
+      command: 'replay-status',
+      epoch,
+      replayOp,
+      state: status,
+      applied,
+      acceptedSequence,
+    })
+  }
+
+  // Task 733 / 036 (B0): the current host state, at once; starts no epoch.
+  private answerHostStateQuery(
+    message: Extract<WebviewMessage, { command: 'host-state-query' }>,
+  ): void {
+    if (this.panelDisposed) return
+    this.docSync.postHostState(message.requestId, this.endedForHostState)
+  }
+
+  // Task 733 / 036 (B0, review point 2): one resync for the active history move of the current epoch,
+  // queued after the operations already received; an abandon older than the latest move is ignored.
+  private queueReplayAbandon(
+    message: Extract<WebviewMessage, { command: 'replay-abandon' }>,
+  ): Promise<void> | undefined {
+    const { epoch, replayOp } = message
+    if (!validEpoch(epoch) || !validExactSequence(replayOp)) return undefined
+    const active = () => {
+      const state = this.replayState()
+      return state.epoch === epoch && replayOp >= state.lastHistoryOp
+    }
+    if (!active()) return undefined
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(async () => {
+        if (active()) await this.resync()
+      })
+    this.editMessageChain = turn
+    return turn
+  }
+
+  // Task 733 / 036 (B0, 3.6): recovery of `epoch` is finished; once every reapplication before it was
+  // processed, the still unresolved entries of that epoch and older ones are written, each once.
+  private queueRecoveryDone(
+    message: Extract<WebviewMessage, { command: 'recovery-done' }>,
+  ): Promise<void> | undefined {
+    if (!validEpoch(message.epoch)) return undefined
+    const turn = this.editMessageChain
+      .catch(() => undefined)
+      .then(() =>
+        this.writeRecoveredEdits(
+          (entry) =>
+            entry.epoch <= message.epoch &&
+            entry.epoch !== this.deltaWriter.epoch,
+        ),
+      )
+    this.editMessageChain = turn
+    return turn
+  }
+
+  // Task 733 / 036 (B0, 3.6): writes the unwritten recovery entries `select` names into one untitled
+  // document that stays open after the source closes. The document text goes nowhere else.
+  // 036 core C7 (R33.4): the entries are marked written right after the insertion succeeds; a failed
+  // insertion is retried once after 500 ms and leaves them unwritten; a presentation failure is retried
+  // once, presentation only. Two insertion failures during the final disposal lose the entries: one
+  // count-only notification and `recoveredEditsLost` (Q-252).
+  private async writeRecoveredEdits(
+    select: (entry: RecoveryEntry) => boolean,
+  ): Promise<void> {
+    const entries: RecoveryEntry[] = []
+    for (const entry of this.recoveryJournal.values())
+      if (!entry.written && !entry.writing && select(entry)) entries.push(entry)
+    if (entries.length === 0) return
+    for (const entry of entries) entry.writing = true
+    const text = formatRecoveredEdits(
+      NodePath.basename(this.activeFsPath),
+      entries,
+    )
+    const inserted = await this.retryOnce(() => insertRecoveredEdits(text))
+    for (const entry of entries) {
+      entry.writing = false
+      if (inserted) entry.written = true
+    }
+    if (!inserted) {
+      if (this.panelDisposed) {
+        this.recoveredEditsLost += entries.length
+        debug('recovered edits lost', this.recoveredEditsLost)
+        void vscode.window.showErrorMessage(
+          `VMDE could not save ${entries.length} recovered edits`,
+        )
+      }
+      return
+    }
+    await this.retryOnce(() => presentRecoveredEdits())
+  }
+
+  /** 036 core C7 (R33.4): runs `step`, and once more after 500 ms when it fails; true when one run succeeded. */
+  private async retryOnce(step: () => Promise<void>): Promise<boolean> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await step()
+        return true
+      } catch (error) {
+        debug('recovered edits step failed', errorCategory(error))
+        if (attempt === 0) await delay(RECOVERED_EDITS_RETRY_MS)
+      }
+    }
+    return false
+  }
+
+  // Task 733 / 036 (B0, review point 4): on panel disposal, reservations give up, the operations already
+  // received settle on the chain, and then every unresolved entry is written once.
+  private disposeReplay(): Promise<void> {
+    this.panelDisposed = true
+    for (const release of [...this.reservations.values()]) release(undefined)
+    return this.editMessageChain
+      .catch(() => undefined)
+      .then(() => this.writeRecoveredEdits(() => true))
   }
 
   private async postRewrapDocument() {
@@ -772,7 +1517,10 @@ export class EditorSession {
   }
 
   private startEpoch(kind: EpochStart): number {
-    this.docSync.noteEpochEnded(this.deltaWriter.acceptedSequence)
+    this.docSync.noteEpochEnded(
+      this.deltaWriter.acceptedSequence,
+      this.endReplayEpoch(),
+    )
     this.epochStart = kind
     return this.deltaWriter.startEpoch()
   }
@@ -787,7 +1535,10 @@ export class EditorSession {
   private answerRebind(
     message: Extract<WebviewMessage, { command: 'edit' }>,
   ): void {
-    if (message.rebind === true) this.postRebind(rebindSequence(message))
+    const admitted = this.admittedPair
+    this.admittedPair = undefined
+    if (message.rebind === true)
+      this.postRebind(rebindSequence(message), admitted)
   }
 
   // Q-11: while the delta writer refuses everything, the first refused delta of each epoch is answered
@@ -800,8 +1551,15 @@ export class EditorSession {
     this.limitAnsweredEpoch = this.deltaWriter.epoch
   }
 
-  private postRebind(editSequence?: number): void {
-    this.docSync.postRebind(this.deltaWriter.acceptedSequence, editSequence)
+  private postRebind(
+    editSequence?: number,
+    exact?: { exactRequestId: string; exactEvicted?: string },
+  ): void {
+    this.docSync.postRebind(
+      this.deltaWriter.acceptedSequence,
+      editSequence,
+      exact,
+    )
   }
 
   // Task 733: a dropped or refused delta that carried text is not applied. Warn once per epoch, and
@@ -843,51 +1601,155 @@ export class EditorSession {
     )
   }
 
-  private queueDeltaMessage<
-    M extends Extract<
-      WebviewMessage,
-      { command: 'edit-delta' | 'history-delta' }
-    >,
-  >(
+  private queueDeltaMessage<M extends DeltaPost>(
     message: M,
     perf: RendererEditPerf | undefined,
     write: (message: M) => Promise<DeltaOutcome>,
   ) {
-    const perfId = beginEditPerf(perf)
+    // Task 733 / 036 (B0): a delta with `replayOp` is a replay operation (3.3); a history delta for a
+    // waiting reservation goes straight to that turn (review point 1).
+    const replayOp = (message as { replayOp?: unknown }).replayOp
+    if (replayOp !== undefined) {
+      if (!validEpoch(message.epoch) || !validExactSequence(replayOp))
+        return undefined
+      const recoveryOf = (message as { recoveryOf?: unknown }).recoveryOf
+      // 036 core C7 (R34.4): a malformed change list is rejected before use and journaling, and answered
+      // as a refusal (a waiting reservation gives up; otherwise the operation's turn refuses it).
+      if (!validReplayChanges(message.changes)) {
+        this.replayRejected++
+        debug('replay rejected', this.replayRejected)
+        const reserved = this.reservations.get(
+          replayKey(message.epoch, replayOp),
+        )
+        if (reserved) {
+          reserved(undefined)
+          return undefined
+        }
+        return this.queueReplayTurn(
+          message.epoch,
+          replayOp,
+          async () => 'refused',
+          { recoveryOf },
+        )
+      }
+      this.noteReplayReceived(
+        message.epoch,
+        replayOp,
+        Array.isArray(message.changes) ? { changes: message.changes } : {},
+        { history: message.command === 'history-delta', recoveryOf },
+      )
+      const reserved = this.reservations.get(replayKey(message.epoch, replayOp))
+      if (reserved && message.command === 'history-delta') {
+        reserved(message as HistoryDeltaPost)
+        return undefined
+      }
+      return this.queueReplayTurn(
+        message.epoch,
+        replayOp,
+        () => this.runDeltaOp(message, perf, write),
+        { recoveryOf },
+      )
+    }
     const turn = this.editMessageChain
       .catch(() => undefined)
       .then(async () => {
-        // A plain edit older than this delta must not be named by `exact-authority`.
-        this.lastEditSequence = undefined
-        // A deferred no-op restore armed before this delta would read the pre-delta text.
-        const cancelledNoop = this.writeback.cancelNoopCheckForDelta()
-        const hostEpochBefore = this.deltaWriter.epoch
-        const outcome = await write(message)
-        if (outcome.kind === 'applied') {
-          // When the epoch moved during the write, E1 already scheduled the `update`.
-          if (this.deltaWriter.epoch === message.epoch) {
-            const text = this.document.getText()
-            this.docSync.syncState.markSynced(text)
-            this.writeback.armNoopCheckAfterDelta(text)
-          }
-        } else {
-          if (outcome.kind === 'resync') await this.resync()
-          else if (outcome.why === 'refusal-limit') await this.answerLimit()
-          this.warnDroppedDelta(message, hostEpochBefore)
-          // The delta changed nothing: the restore it cancelled still applies.
-          if (cancelledNoop !== undefined)
-            this.writeback.rearmNoopCheck(cancelledNoop)
-        }
-        finishEditPerf(perfId, 'complete')
+        await this.writeDeltaTurn(message, perf, write)
       })
     this.editMessageChain = turn
     return turn
+  }
+
+  // Task 733 / 036 (B0): the run step of a delta replay operation; the writer's checks are its proof.
+  // An empty history delta is a reserved Undo whose restore changed no text: it consumes its sequence.
+  private async runDeltaOp<M extends DeltaPost>(
+    message: M,
+    perf?: RendererEditPerf,
+    write?: (message: M) => Promise<DeltaOutcome>,
+  ): Promise<ReplayRun> {
+    const writer =
+      write ??
+      ((m: M) =>
+        this.deltaWriter.applyHistory(
+          m as HistoryDeltaPost,
+          this.historyCoupling,
+        ))
+    const outcome = await this.writeDeltaTurn(message, perf, (m) =>
+      m.command === 'history-delta' &&
+      Array.isArray(m.changes) &&
+      m.changes.length === 0
+        ? Promise.resolve(this.deltaWriter.consumeEmpty(m))
+        : writer(m),
+    )
+    if (outcome.kind === 'applied') return 'proven'
+    return outcome.kind === 'resync' ? 'refused' : 'stopped'
+  }
+
+  // One delta write with its bookkeeping. A replay operation's refusal is answered by its turn
+  // (`replay` true), so the resync is not made here.
+  private async writeDeltaTurn<M extends DeltaPost>(
+    message: M,
+    perf: RendererEditPerf | undefined,
+    write: (message: M) => Promise<DeltaOutcome>,
+  ): Promise<DeltaOutcome> {
+    const perfId = beginEditPerf(perf)
+    const replay = (message as { replayOp?: unknown }).replayOp !== undefined
+    // A plain edit older than this delta must not be named by `exact-authority`.
+    this.lastEditSequence = undefined
+    // A deferred no-op restore armed before this delta would read the pre-delta text.
+    const cancelledNoop = this.writeback.cancelNoopCheckForDelta()
+    const hostEpochBefore = this.deltaWriter.epoch
+    const outcome = await write(message)
+    if (outcome.kind === 'applied') {
+      // When the epoch moved during the write, E1 already scheduled the `update`.
+      if (this.deltaWriter.epoch === message.epoch) {
+        const text = this.document.getText()
+        this.docSync.syncState.markSynced(text)
+        this.writeback.armNoopCheckAfterDelta(text)
+      }
+    } else {
+      if (outcome.kind === 'resync' && !replay) await this.resync()
+      else if (outcome.kind === 'dropped' && outcome.why === 'refusal-limit')
+        await this.answerLimit()
+      this.warnDroppedDelta(message, hostEpochBefore)
+      // The delta changed nothing: the restore it cancelled still applies.
+      if (cancelledNoop !== undefined)
+        this.writeback.rearmNoopCheck(cancelledNoop)
+    }
+    finishEditPerf(perfId, 'complete')
+    return outcome
   }
 
   // Task 712: the `sequence` of the plain edit this host processed last, for `exact-authority`.
   private lastEditSequence: number | undefined
 
   private queueEdit(message: Extract<WebviewMessage, { command: 'edit' }>) {
+    // Task 733 / 036 (B0): the evicted exact edit and the whole post of the logical text carry both
+    // replay numbers; such an edit is a replay operation (3.3) proven by the written bytes (3.4). Only
+    // line endings are normalized: the webview's record of an evicted pair holds `\n` text while the
+    // host admitted the raw CRLF bytes.
+    const { epoch, replayOp } = message
+    if (epoch !== undefined || replayOp !== undefined) {
+      if (!validEpoch(epoch) || !validExactSequence(replayOp)) return undefined
+      this.noteReplayReceived(
+        epoch,
+        replayOp,
+        typeof message.content === 'string' ? { content: message.content } : {},
+        { history: message.history !== undefined },
+      )
+      return this.queueReplayTurn(epoch, replayOp, async () => {
+        const perfId = beginEditPerf(message.perf)
+        try {
+          await this.processEdit(message, perfId)
+        } catch (error) {
+          debug('replay edit failed', errorCategory(error))
+          return 'refused'
+        }
+        return normalizeContent(this.document.getText()) ===
+          normalizeContent(message.content)
+          ? 'proven'
+          : 'refused'
+      })
+    }
     const perfId = beginEditPerf(message.perf)
     const turn = this.editMessageChain
       .catch(() => undefined)
@@ -1004,7 +1866,7 @@ export class EditorSession {
       this.writeback.noteExactReplay(this.document.getText())
       return 'replayed'
     } catch (error) {
-      debug('native exact replay failed', error)
+      debug('native exact replay failed', errorCategory(error))
       return false
     }
   }
@@ -1078,7 +1940,14 @@ export class EditorSession {
   // flushed from that stale DOM would overwrite the newer text (for example, typing in a text editor
   // inside the 75 ms update debounce).
   private flushWebviewForSave(document: vscode.TextDocument): Promise<void> {
-    if (!this.docSync.syncState.isAlreadySynced(document.getText()))
+    // Task 733 / 036: a queued replay is checked first; mid-replay the document holds an intermediate
+    // native step that the webview never received, which is no reason to stop waiting.
+    // Task 733 / 036 (B0): any replay turn (queued, running or reserved) counts as a queued replay.
+    if (
+      this.exactTurns === 0 &&
+      this.replayTurns === 0 &&
+      !this.docSync.syncState.isAlreadySynced(document.getText())
+    )
       return Promise.resolve()
     this.saveFlushSeq += 1
     const requestId = `save-flush-${this.saveFlushSeq}`
@@ -1098,7 +1967,15 @@ export class EditorSession {
         this.editMessageChain.then(finish, finish)
       }
       this.saveFlushes.set(requestId, { replied, finish })
-      const timer = setTimeout(finish, SAVE_FLUSH_TIMEOUT_MS)
+      // Task 733 / 036 (Q-220): while a replay is queued the save waits for the chain; VS Code's shared
+      // will-save budget (1.5 s) bounds the wait, so no private timer cuts the replay short. B0 (3.9):
+      // the guarantee ends at that deadline; VS Code then saves the document as it is, and nothing here
+      // promises a second save or a dirty state afterwards.
+      const timer = setTimeout(() => {
+        if (this.exactTurns > 0 || this.replayTurns > 0)
+          this.editMessageChain.then(finish, finish)
+        else finish()
+      }, SAVE_FLUSH_TIMEOUT_MS)
       Promise.resolve(
         this.webviewPanel.webview.postMessage({
           command: 'flush-for-save',
@@ -2003,6 +2880,14 @@ export class EditorSession {
       'edit-delta': (message) => this.queueDelta(message),
       'history-delta': (message) => this.queueHistoryDelta(message),
       'history-transition': (message) => this.queueHistoryTransition(message),
+      // Task 733 / 036: pre-checked in the dispatcher (`receiveHistoryExact`); never reached by shape.
+      'history-exact': (message) => this.receiveHistoryExact(message),
+      // Task 733 / 036 (B0): the replay contract of the fix design, section 3.2.
+      'replay-reserve': (message) => this.receiveReplayReserve(message),
+      'replay-query': (message) => this.answerReplayQuery(message),
+      'host-state-query': (message) => this.answerHostStateQuery(message),
+      'replay-abandon': (message) => this.queueReplayAbandon(message),
+      'recovery-done': (message) => this.queueRecoveryDone(message),
       'history-base': (message) => this.queueHistoryBase(message),
       'edit-perf-renderer': (message) =>
         rendererPostPerf(message.id, message.postMessageMs, message.state),
@@ -2146,8 +3031,11 @@ export class EditorSession {
         if (this.skipDuringOwnWrite(event)) return
         // Task 602: pairs recorded before a change VMDE did not make no longer prove history. A
         // dirty-state event (after a save or a revert to the saved text) changes no text.
-        if (event.contentChanges.length)
+        if (event.contentChanges.length) {
           this.historyCoupling.forgetHostMappings()
+          // Task 733 / 036: an outside change also invalidates every replay pair.
+          this.exactPairs = []
+        }
         // applyPreviewTaskCheckboxToggle posts the verified tagged update before
         // the outcome. An ordinary debounce for that one event would clear history.
         if (
@@ -2265,21 +3153,21 @@ export class EditorSession {
       }),
       webviewPanel.webview.onDidReceiveMessage(
         async (message: WebviewMessage) => {
+          const command = (message as { command?: unknown } | null)?.command
+          const handler = webviewHandler(messageHandlers, command)
+          // Task 733 / 036 (review point 6): an unknown command logs a fixed category, not its fields.
           debug(
             'msg from webview review',
-            loggableMessage(message),
+            reviewEntry(message, handler !== undefined),
             webviewPanel.active,
           )
-          // The map type guarantees each entry matches its command; bridge the
-          // runtime-string index the same way the webview dispatcher does.
-          const handler = (
-            messageHandlers as Record<
-              string,
-              ((m: WebviewMessage) => unknown) | undefined
-            >
-          )[message?.command]
           if (!handler) {
-            debug('unhandled webview message', message?.command)
+            debug('unhandled webview message')
+            return
+          }
+          // Task 733 / 036: `history-exact` is pre-checked before the shape check (enum, ID, sequence).
+          if (command === 'history-exact') {
+            await handler(message)
             return
           }
           // Task 148 item 3 (payload-shape validation, host half): the webview-side twin of this
@@ -2307,7 +3195,11 @@ export class EditorSession {
           try {
             await handler(message)
           } catch (error) {
-            debug('webview message handler failed', message?.command, error)
+            debug(
+              'webview message handler failed',
+              message?.command,
+              errorCategory(error),
+            )
             showError(
               `VMDE: handling "${message?.command}" failed — ${
                 error instanceof Error ? error.message : String(error)
@@ -2331,6 +3223,8 @@ export class EditorSession {
         this.outlineMoves.clear()
         // A closed webview never answers; release any save still waiting for its flush.
         for (const flush of [...this.saveFlushes.values()]) flush.finish()
+        // Task 733 / 036 (B0, 3.6): reservations give up; unresolved recovery entries are written.
+        void this.disposeReplay()
         docLargeMode.delete(this.activeUri.toString())
         webviewEditorMode.delete(this.activeUri.toString())
         // Task 184 — tab closed: release this doc's pins. Its renders stay in the host cache

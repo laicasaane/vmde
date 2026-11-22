@@ -68,7 +68,13 @@ async function openEditor(page: Page, mode: Mode, content = DOC) {
     type: 'init',
     content,
     cdn: '/vditor',
-    options: { showToolbar: true, defaultMode: mode },
+    options: {
+      showToolbar: true,
+      defaultMode: mode,
+      // Task 733 / 036 D-18: this sweep proves the VS Code keybinding path for every key, so the
+      // IR-owned Undo/Redo keys are off here (undo-owned-keys covers them on).
+      undoRedoKeys: { inEditor: false },
+    },
     theme: 'light',
     wiki: { enabled: false },
     e2e: true,

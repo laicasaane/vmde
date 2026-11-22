@@ -27,6 +27,8 @@ export type BackgroundJobName =
   // Task 733 / 015: the whole Split pane render and the Source model build (task 015 section 6.2 D-8).
   | 'split-preview'
   | 'source-build'
+  // Task 733 / 036 (fix design 2.2): the idle normalized hunk check and plan dry run of a Find record.
+  | 'find-hunks'
 export interface SliceBudget {
   /** True when the slice is spent (clock at or past the deadline) or input is pending. O(1), no allocation.
    *  A job calls it before each unit of work in every loop, collection loops included. */

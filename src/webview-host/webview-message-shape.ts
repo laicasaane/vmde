@@ -117,6 +117,30 @@ const REQUIRED_WEBVIEW_MESSAGE_FIELDS: Partial<
     ['steps', 'number'],
     ['changes', 'array'],
   ],
+  // Task 733 / 036: the handler pre-checks the enum, the ID length and the sequence before this table.
+  'history-exact': [
+    ['kind', 'string'],
+    ['requestId', 'string'],
+    ['sequence', 'number'],
+    ['epoch', 'number'],
+    ['replayOp', 'number'],
+  ],
+  // Task 733 / 036 (B0): the handlers check that the numbers are safe integers.
+  'replay-reserve': [
+    ['epoch', 'number'],
+    ['replayOp', 'number'],
+    ['kind', 'string'],
+  ],
+  'replay-query': [
+    ['epoch', 'number'],
+    ['replayOp', 'number'],
+  ],
+  'host-state-query': [['requestId', 'string']],
+  'replay-abandon': [
+    ['epoch', 'number'],
+    ['replayOp', 'number'],
+  ],
+  'recovery-done': [['epoch', 'number']],
   save: [['content', 'string']],
   'flush-for-save-done': [['requestId', 'string']],
   'save-options': [],
@@ -171,4 +195,53 @@ export function firstWebviewMessageShapeViolation(
   command: string,
 ): string | null {
   return firstShapeViolation(REQUIRED_WEBVIEW_MESSAGE_FIELDS, msg, command)
+}
+
+// 036 core C7 (R34.4): the wire contract of one replay change, checked before the host uses or journals
+// it: `{ start: { line, character }, end: { line, character }, oldText, text }` with safe integers of at
+// least 0 and `end` not before `start`, at most 256 changes and 4,000,000 characters (the delta writer's
+// bounds). `changes: []` stays valid: the empty reserved-history publication. No allocation.
+const MAX_REPLAY_CHANGES = 256
+const MAX_REPLAY_TEXT = 4_000_000
+
+const replayPosition = (
+  value: unknown,
+): value is {
+  line: number
+  character: number
+} => {
+  if (typeof value !== 'object' || value === null) return false
+  const { line, character } = value as Record<string, unknown>
+  return (
+    Number.isSafeInteger(line) &&
+    Number.isSafeInteger(character) &&
+    (line as number) >= 0 &&
+    (character as number) >= 0
+  )
+}
+
+/** The text length of one well-formed replay change, or -1. */
+function replayChangeLength(raw: unknown): number {
+  if (typeof raw !== 'object' || raw === null) return -1
+  const { start, end, oldText, text } = raw as Record<string, unknown>
+  if (!replayPosition(start) || !replayPosition(end)) return -1
+  if (typeof oldText !== 'string' || typeof text !== 'string') return -1
+  const backwards =
+    end.line < start.line ||
+    (end.line === start.line && end.character < start.character)
+  return backwards ? -1 : oldText.length + text.length
+}
+
+/** True when `changes` is an array of well-formed replay changes within the bounds. */
+export function validReplayChanges(changes: unknown): boolean {
+  if (!Array.isArray(changes) || changes.length > MAX_REPLAY_CHANGES)
+    return false
+  let total = 0
+  for (const raw of changes) {
+    const length = replayChangeLength(raw)
+    if (length < 0) return false
+    total += length
+    if (total > MAX_REPLAY_TEXT) return false
+  }
+  return true
 }

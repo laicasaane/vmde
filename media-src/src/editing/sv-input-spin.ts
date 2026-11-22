@@ -46,6 +46,11 @@ declare global {
 export interface SourceInputHookDeps {
   /** The model text when the model owns it and no typing is unpublished (`ModelSession.modeSwitchText`). */
   modeSwitchText?(): string | undefined
+  /**
+   * 036 core C2 (R5.2): the logical replay text `L` while a replay is live in IR
+   * (`ModelSession.replayLogicalText`), else undefined.
+   */
+  replayText?(): string | undefined
 }
 
 const BLANK_LINE_END = '\n\n'
@@ -142,6 +147,13 @@ export function installSourceInputHooks(
   ): boolean => placeCaret(vditor, before, after, range)
   const switchText = (vditor: unknown, mode: string): string | undefined => {
     const current = (vditor as VditorLike | undefined)?.currentMode
+    // 036 core C2 (R5.2): a switch out of IR during a live replay opens with the logical replay text, read
+    // first: Vditor's `getMarkdown` of the partly rendered IR still shows pending Find groups, and the new
+    // surface's next publication would send the undone replacement back.
+    if (current === 'ir' && mode !== 'ir') {
+      const logical = deps.replayText?.()
+      if (logical !== undefined) return logical
+    }
     // Task 733 / 020 (Q-164): a switch between the unit modes (IR and WYSIWYG units) also keeps the text.
     const source = SOURCE_UNITS && (mode === 'sv' || current === 'sv')
     const units =

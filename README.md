@@ -436,6 +436,22 @@ Code. On macOS, write `cmd` where the example says `ctrl`.
 ]
 ```
 
+#### Undo and Redo in the Instant Rendering editor
+
+In the Instant Rendering (IR) editor, VMDE handles the Undo and Redo keys
+itself, as soon as you press them. A key you type right after Undo is then never
+undone by it. For this reason, the **VMDE: Undo** and **VMDE: Redo** rows in
+Keyboard Shortcuts do not change these keys in IR. Set them in Settings instead:
+
+- `vmde.editor.undoRedoKeys.undo`: default `["mod+z"]`.
+- `vmde.editor.undoRedoKeys.redo`: default `["mod+shift+z", "!mac:ctrl+y"]`.
+
+`mod` is `Cmd` on macOS and `Ctrl` elsewhere. A `mac:`, `win:` or `linux:`
+prefix limits an entry to one platform, and `!mac:` excludes macOS. To let the
+Keyboard Shortcuts rows control Undo and Redo in IR too, turn off
+`vmde.editor.undoRedoKeys.inEditor`. The WYSIWYG and Source modes always use
+the Keyboard Shortcuts rows.
+
 ### Remapped VS Code keys
 
 VS Code does not let an extension read your keybindings. So VMDE cannot follow

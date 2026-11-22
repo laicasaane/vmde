@@ -19,6 +19,7 @@ const pkg = JSON.parse(
   contributes: {
     commands: { command: string }[]
     customEditors: { viewType: string }[]
+    configuration: { properties: Record<string, unknown> }[]
     keybindings: {
       key: string
       command: string
@@ -224,10 +225,15 @@ describe('README keyboard shortcuts equal the shared shortcut table', () => {
     for (const id of listed) expect(contributed.has(id), id).toBe(true)
   })
 
-  it('names only real VMDE commands and the VMDE editor ID in the section', () => {
+  // Task 733 / 036 D-18: the section also documents the Undo/Redo key settings
+  // (`vmde.editor.undoRedoKeys.*`), so a contributed setting key is a real VMDE name too.
+  it('names only real VMDE commands, settings and the VMDE editor ID in the section', () => {
     const known = new Set([
       ...pkg.contributes.commands.map((c) => c.command),
       ...pkg.contributes.customEditors.map((c) => c.viewType),
+      ...pkg.contributes.configuration.flatMap((c) =>
+        Object.keys(c.properties),
+      ),
     ])
     for (const id of shortcuts.match(/\bvmde\.[\w.]*\w/g) ?? [])
       expect(known.has(id), id).toBe(true)

@@ -567,17 +567,23 @@ function mutateLinkDom(
   record: LinkPopoverOwner,
   action: LinkPopoverAction,
   replacement: string,
-): void {
+): boolean {
   record.editor.focus({ preventScroll: true })
   const selection = window.getSelection()
   if (!selection) throw new Error('link editor selection unavailable')
+  // 036 core C4 (M1, Q-269): during a replay the write is admitted first (`installReplayAdmission`); a
+  // refused edit writes nothing.
+  if (window.__vmdeReplayAdmit?.(true) === false) return false
   if (action.kind === 'edit') {
     // Deliberate: select the destination so the insertion replaces it.
     writeSelection(record.destinationRange)
+    // Rechecked immediately before the write.
+    if (window.__vmdeReplayAdmit?.(false) === false) return false
     if (!document.execCommand('insertText', false, replacement))
       throw new Error('link destination insertion was rejected')
-    return
+    return true
   }
+  if (window.__vmdeReplayAdmit?.(false) === false) return false
   const range = document.createRange()
   range.selectNode(record.target)
   range.deleteContents()
@@ -594,6 +600,7 @@ function mutateLinkDom(
       data: replacement,
     }),
   )
+  return true
 }
 
 function recordLinkHistory(
@@ -914,7 +921,11 @@ export function installLinkPopover(deps: LinkPopoverDeps): () => void {
     deps.setApplying(true)
     try {
       checkpointEditorUndo(record.inner)
-      mutateLinkDom(record, action, prepared.plan.sourceReplacement)
+      // 036 core C4 (Q-269): refused during a replay: nothing was written, nothing is posted.
+      if (!mutateLinkDom(record, action, prepared.plan.sourceReplacement)) {
+        hide()
+        return
+      }
       const afterRendered = record.outer.getValue()
       if (afterRendered !== prepared.projectedAfter)
         throw new Error(

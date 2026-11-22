@@ -44,6 +44,12 @@ interface Window {
   readonly after: string
   /** Task 733 / 034: a table window for an `align` change, which the source projection does not see. */
   readonly alignment?: true
+  /**
+   * Task 733 / 036 (F8): a root window's sides by part (`before`: one per unit entry; `after`: one per
+   * element), kept by reference from the strings the sides are joined from, for the sliced restore.
+   */
+  readonly beforeParts?: readonly string[]
+  readonly afterParts?: readonly string[]
 }
 
 interface Step {
@@ -54,6 +60,49 @@ interface Capture {
   readonly generation: number
   readonly steps: readonly Step[]
 }
+
+/**
+ * Task 733 / 036 (F8): sliced-restore counters for the end-to-end harness (`__vmdeE2EReadiness` only; a
+ * product page creates no global). Kinds and counts only.
+ */
+interface SlicedRestoreStats {
+  sliced: number
+  whole: number
+  slices: number
+  /**
+   * 036 S5.2 (S5 design rev 2 section 3): why a sliced restore failed, by kind. `parts`: a window has no
+   * parts; `anchor`: the window's elements are not the captured ones; `foreign`: a model batch outside a
+   * slice; `aborted`: the session stopped the restore; `generation`: the capture is stale (or no root).
+   */
+  failed: Record<SlicedFailure, number>
+}
+type SlicedFailure = 'parts' | 'anchor' | 'foreign' | 'aborted' | 'generation'
+const slicedFailed = (kind: SlicedFailure): void => {
+  const stats = slicedRestoreStats()
+  if (stats) stats.failed[kind]++
+}
+function slicedRestoreStats(): SlicedRestoreStats | undefined {
+  const slot = globalThis as unknown as {
+    __vmdeE2EReadiness?: unknown
+    __vmdeSlicedRestore?: SlicedRestoreStats
+  }
+  if (!slot.__vmdeE2EReadiness) return undefined
+  slot.__vmdeSlicedRestore ??= {
+    sliced: 0,
+    whole: 0,
+    slices: 0,
+    failed: { parts: 0, anchor: 0, foreign: 0, aborted: 0, generation: 0 },
+  }
+  return slot.__vmdeSlicedRestore
+}
+
+/** Task 733 / 036 (F8): the most HTML one chunk of a sliced restore parses and writes. */
+const SLICE_CHUNK_CHARS = 16 * 1024
+
+/** Task 733 / 036 (F8): one write of a sliced restore. */
+type SliceChunk =
+  | { readonly kind: 'blocks' | 'rows' | 'table-end'; readonly html: string }
+  | { readonly kind: 'shell'; readonly html: string; readonly full: string }
 
 /** The bytes that carried a unit, with its kind (the model finds the canon of the restored element itself). */
 interface Form {
@@ -84,6 +133,11 @@ interface SnapUnit {
    * model up since): the model's text does not hold the bytes of `was`.
    */
   readonly ahead: boolean
+  /**
+   * 036 core C4 (restore fix): the unit's form before the interval's first change, read before any sync
+   * (its leaf form, or its table's first-notice bytes); null when that form was stale (no usable bytes).
+   */
+  readonly earlier?: Form | null
 }
 
 /** A table whose rows or columns changed, as it was when the change was first seen. */
@@ -122,6 +176,10 @@ export interface UnitCaptureDeps {
   vditor(): unknown
   /** Task 733 / 013: the mode the model serves; absent means 'ir'. Selects the spin of a restored ECharts block. */
   mode?(): UnitMode
+  /** Task 733 / 036 (F8): a sliced restore stops before its next slice when true (host update, abandon). */
+  sliceAborted?(): boolean
+  /** Task 733 / 036 (F8): the frame a slice runs in (the session's animation frames); absent: the window's. */
+  requestFrame?(callback: () => void): void
 }
 
 export interface UnitCapture {
@@ -563,6 +621,17 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   let rootText = ''
   /** The canon and bytes of each dirtied leaf unit, read before any sync. */
   const leafForms = new Map<U, Form>()
+  /**
+   * 036 core C4 (restore fix R1.1): each table changed in this interval, its exact bytes at its first cell
+   * or structure notice, read before any sync; null when its bytes were stale then (no usable bytes).
+   */
+  const tableBase = new Map<U, Form | null>()
+  /**
+   * 036 core C4 (restore fix, review change): a table with a cell checkpointed or noticed before a sync,
+   * with the model text (a reference) of that moment; until a sync replaces the text, its bytes are stale
+   * on every snapshot route.
+   */
+  const staleTables = new Map<U, string>()
   /** The bytes of the elements a restore replaced, read before the write: the forms a Redo hands back. */
   const afterForms = new WeakMap<Window, Forms>()
   /** Lists whose items changed in place: the list element stays, so element identity cannot show it. */
@@ -605,6 +674,82 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
    */
   let successors = new WeakMap<HTMLElement, string>()
 
+  /** The table unit of the top-level element at block index `a`, or undefined. */
+  function tableUnitAt(
+    root: HTMLElement,
+    model: TextModel<HTMLElement>,
+    a: number,
+  ): U | undefined {
+    const top = elementsFrom(root, a, 1)[0]
+    if (!top) return undefined
+    const tableEl =
+      top.localName === 'table' ? top : top.querySelector<HTMLElement>('table')
+    const table = tableEl ? model.unitOf(tableEl) : undefined
+    return table?.kind === 'table' ? table : undefined
+  }
+
+  /** 036 core C4 (restore fix, review change): the tables of a step's cell windows, marked stale. */
+  function markStaleTables(
+    root: HTMLElement | null,
+    model: TextModel<HTMLElement>,
+    text: string,
+    stepWindows: readonly Window[],
+  ): void {
+    if (!root) return
+    for (const window of stepWindows) {
+      if (window.kind !== 'cell') continue
+      const table = tableUnitAt(root, model, window.a)
+      if (table) staleTables.set(table, text)
+    }
+  }
+
+  /** The table's form from the model text now; null while a stale mark holds (no sync since). */
+  const tableFormNow = (
+    model: TextModel<HTMLElement>,
+    table: U,
+    bytes: () => string,
+  ): Form | null => {
+    const marked = staleTables.get(table)
+    if (marked === model.text) return null
+    if (marked !== undefined) staleTables.delete(table)
+    return { kind: 'table', bytes: bytes() }
+  }
+
+  /**
+   * 036 core C4 (restore fix R1.1 and review change): at a cell's first notice, its table's bytes before
+   * any sync; a stale cell form marks the table stale until a sync replaces the model text.
+   */
+  const seedTableBase = (
+    model: TextModel<HTMLElement>,
+    cell: U,
+    stale: boolean,
+  ): void => {
+    const tableEl = cell.el?.closest('table') as HTMLElement | null
+    const owner = tableEl ? model.unitOf(tableEl) : undefined
+    if (owner?.kind !== 'table') return
+    if (stale) staleTables.set(owner, model.text)
+    if (tableBase.has(owner)) return
+    tableBase.set(
+      owner,
+      tableFormNow(model, owner, () =>
+        bytesOf(
+          owner.proof === 'proven' ? owner.canon : undefined,
+          owner.forms,
+          model.text,
+          owner.start,
+          owner.end,
+        ),
+      ),
+    )
+  }
+
+  /** 036 core C4 (restore fix): the form read before any sync for a unit of the root snapshot. */
+  const earlierOf = (unit: U): Form | null | undefined => {
+    if (leaves.has(unit)) return leafForms.get(unit) ?? null
+    if (tableBase.has(unit)) return tableBase.get(unit) ?? null
+    return undefined
+  }
+
   const hasPending = (): boolean =>
     leaves.size > 0 ||
     rootSnap !== undefined ||
@@ -614,6 +759,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   const clearPending = (): void => {
     leaves.clear()
     leafForms.clear()
+    tableBase.clear()
     rootSnap = undefined
     changedLists.clear()
     tableSnaps.clear()
@@ -682,6 +828,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
           behind &&
           typeof was === 'string' &&
           was !== unit.html?.replaceAll('\u0000', ''),
+        earlier: earlierOf(unit),
       }
     })
     snapTablesWithEditedCells(snapshot)
@@ -846,12 +993,17 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
   /** The bytes of the units an entry stood for; a multi-member block has none. */
   function entryForms(entry: Entry): Form | readonly Form[] | undefined {
     const first = entry.items[0]
-    const formOf = (su: SnapUnit): Form => ({
-      kind: su.kind,
-      bytes: bytesOf(su.canon, su.forms, rootText, su.start, su.end),
-    })
+    // 036 core C4 (restore fix): the form before the interval's first change when one was read.
+    const formOf = (su: SnapUnit): Form =>
+      su.earlier ?? {
+        kind: su.kind,
+        bytes: bytesOf(su.canon, su.forms, rootText, su.start, su.end),
+      }
     // The model's text holds no bytes for a state it never synced: the model reads them from the DOM.
-    if (entry.items.some((su) => su.ahead) || successors.has(entry.el))
+    if (
+      entry.items.some((su) => su.ahead || su.earlier === null) ||
+      successors.has(entry.el)
+    )
       return undefined
     if (isItemKind(first.kind)) return entry.items.map(formOf)
     return first.members.length === 1 ? formOf(first) : undefined
@@ -1006,20 +1158,22 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     const seen = new Set<Entry>()
     const forms: Array<Form | readonly Form[] | undefined> = []
     let before: string | undefined = ''
+    const beforeParts: string[] = []
     for (let i = start; i < oldEnd && before !== undefined; i += 1) {
       const { entry } = flat[i]
       if (seen.has(entry)) continue
       seen.add(entry)
       const part = thenOfEntry(entry)
       before = part === undefined ? undefined : before + part
+      if (part !== undefined) beforeParts.push(part)
     }
     for (let i = start; i < oldEnd; i += 1) {
       forms.push(entryForms(flat[i].entry))
     }
-    const after = live
+    const afterParts = live
       .slice(start, liveEnd)
       .map((el) => normalized(el, 'outer'))
-      .join('')
+    const after = afterParts.join('')
     if (oldEnd - start === liveEnd - start) {
       for (let i = start; i < oldEnd; i += 1) succeed(flat[i].el, live[i])
     }
@@ -1033,6 +1187,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
       before,
       after,
       forms,
+      ...(before === undefined ? {} : { beforeParts, afterParts }),
     }
   }
 
@@ -1219,6 +1374,10 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     for (const window of windows) remember(root, window)
     const model = deps.model()
     behindText = model?.hasDirty() ? model.text : undefined
+    // 036 core C4 (restore fix, review change): a cell checkpointed before a sync leaves its table's
+    // bytes in the model stale until the next sync, for every later snapshot route.
+    if (behindText !== undefined && model)
+      markStaleTables(root, model, behindText, windows)
     // A window whose two sides have the same source (view-only classes, caret markers, rendered
     // previews, an empty paragraph a click appended below the last block) is no change: it makes no
     // entry, and its Undo would be a visible no-op step.
@@ -1580,7 +1739,281 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     deps.drain()
   }
 
+  // Task 733 / 036 (F8): a slice is writing; a model batch arrived outside one.
+  let slicing = false
+  let sliceForeign = false
+
+  /**
+   * Task 733 / 036 (F8): the chunks of one side of a root window: top-level parts of at most
+   * `SLICE_CHUNK_CHARS`; a larger table is its shell plus row chunks; any other larger leaf is one chunk.
+   */
+  function sliceChunks(parts: readonly string[]): SliceChunk[] {
+    const chunks: SliceChunk[] = []
+    let run = ''
+    const flush = () => {
+      if (run) chunks.push({ kind: 'blocks', html: run })
+      run = ''
+    }
+    for (const part of parts) {
+      if (part.length > SLICE_CHUNK_CHARS && part.startsWith('<table')) {
+        const open = part.indexOf('<tbody>')
+        const close = part.lastIndexOf('</tbody>')
+        if (open >= 0 && close > open) {
+          flush()
+          const bodyStart = open + '<tbody>'.length
+          chunks.push({
+            kind: 'shell',
+            html: part.slice(0, bodyStart) + part.slice(close),
+            full: part,
+          })
+          splitRows(part.slice(bodyStart, close), chunks)
+          chunks.push({ kind: 'table-end', html: '' })
+          continue
+        }
+      }
+      if (run.length + part.length > SLICE_CHUNK_CHARS) flush()
+      run += part
+    }
+    flush()
+    return chunks
+  }
+
+  /** Rows of a table body by their `<tr` boundaries (Lute writes no nested table in a cell). */
+  function splitRows(body: string, chunks: SliceChunk[]): void {
+    let from = 0
+    let at = 0
+    while (from < body.length) {
+      let end = body.indexOf('</tr>', at)
+      if (end < 0) end = body.length
+      else end += '</tr>'.length
+      if (end - from > SLICE_CHUNK_CHARS || end >= body.length) {
+        const cut = end - from > SLICE_CHUNK_CHARS && at > from ? at : end
+        chunks.push({ kind: 'rows', html: body.slice(from, cut) })
+        from = cut
+      }
+      at = end
+    }
+  }
+
+  /** Parses table rows in a table context (a bare `<tr>` is dropped by the HTML parser elsewhere). */
+  function parseRows(html: string): HTMLElement[] {
+    const template = document.createElement('template')
+    template.innerHTML = `<table><tbody>${html}</tbody></table>`
+    const body = template.content.querySelector('tbody')
+    return body ? (Array.from(body.children) as HTMLElement[]) : []
+  }
+
+  /** Task 733 / 036 (F8): the window's elements are there, and its first and last still read as captured. */
+  function sliceAnchored(
+    old: HTMLElement[],
+    count: number,
+    check: readonly string[] | undefined,
+  ): boolean {
+    if (old.length !== count) return false
+    if (!check || count === 0) return true
+    return (
+      normalized(old[0], 'outer') === check[0] &&
+      normalized(old[count - 1], 'outer') === check[count - 1]
+    )
+  }
+
+  /**
+   * Task 733 / 036 (F8): the writer of one sliced window. New chunks go before the first old element still
+   * there (or the window's original next sibling); old elements are removed in step with the chunks.
+   * Restored elements are remembered from their parts, with no serialization.
+   */
+  function sliceWriter(
+    root: HTMLElement,
+    old: HTMLElement[],
+    chunks: SliceChunk[],
+    tail: Node | null,
+  ) {
+    let removed = 0
+    let next = 0
+    let table: { el: HTMLElement; body: HTMLElement; full: string } | undefined
+    const share = Math.ceil(old.length / Math.max(1, chunks.length))
+    const insert = (html: string): HTMLElement[] => {
+      const fragment = document.createDocumentFragment()
+      for (const node of parseRestored(html)) fragment.appendChild(node)
+      const inserted = Array.from(fragment.children) as HTMLElement[]
+      root.insertBefore(fragment, removed < old.length ? old[removed] : tail)
+      return inserted
+    }
+    const shell = (chunk: SliceChunk & { kind: 'shell' }): void => {
+      const el = insert(chunk.html)[0]
+      const body = el?.querySelector('tbody')
+      table =
+        el && body
+          ? { el, body: body as HTMLElement, full: chunk.full }
+          : undefined
+    }
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one branch per chunk kind (rows, table end, shell, blocks)
+    const write = (chunk: SliceChunk): HTMLElement[] => {
+      if (chunk.kind === 'rows') {
+        for (const row of parseRows(chunk.html)) table?.body.appendChild(row)
+        return []
+      }
+      if (chunk.kind === 'table-end') {
+        if (table) known.set(table.el, table.full)
+        table = undefined
+        return []
+      }
+      if (chunk.kind === 'shell') {
+        shell(chunk)
+        return []
+      }
+      const inserted = insert(chunk.html)
+      if (inserted.length === 1) known.set(inserted[0], chunk.html)
+      else for (const el of inserted) known.set(el, normalized(el, 'outer'))
+      return inserted
+    }
+    return {
+      done: () => next >= chunks.length && removed >= old.length,
+      /** One unit of work: some old elements out, one chunk in. */
+      step(inserted: HTMLElement[]): void {
+        for (let k = 0; k < share && removed < old.length; k += 1) {
+          old[removed].remove()
+          removed += 1
+        }
+        if (next < chunks.length) inserted.push(...write(chunks[next++]))
+      },
+    }
+  }
+
+  /**
+   * Task 733 / 036 (F8): one root window written in chunks, one slice per animation frame within
+   * `budgetMs`. A foreign change of the root between slices (a model observer batch outside a slice)
+   * fails the restore and nothing more is written. The model takes the host bytes at the answer, so no
+   * forms are handed over.
+   */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: anchor check, writer setup and the per-frame slice loop are one restore
+  function sliceWindow(
+    root: HTMLElement,
+    window: Window,
+    index: number,
+    side: 'before' | 'after',
+    budgetMs: number,
+  ): Promise<boolean> | undefined {
+    const toBefore = side === 'before'
+    const whole = toBefore ? window.before : window.after
+    // A window without parts (a table snapshot) is one part; a large table still splits into rows.
+    const parts =
+      (toBefore ? window.beforeParts : window.afterParts) ??
+      (whole === undefined ? undefined : [whole])
+    if (!parts) {
+      slicedFailed('parts')
+      return undefined
+    }
+    const count = toBefore ? window.afterCount : window.beforeCount
+    const old = elementsFrom(root, index, count)
+    if (!sliceAnchored(old, count, toBefore ? window.afterParts : undefined)) {
+      slicedFailed('anchor')
+      return Promise.resolve(false)
+    }
+    const tail =
+      count > 0
+        ? old[count - 1].nextSibling
+        : (elementsFrom(root, index, 1)[0] ?? null)
+    const writer = sliceWriter(root, old, sliceChunks(parts), tail)
+    const view = root.ownerDocument.defaultView ?? globalThis
+    const frame = (callback: () => void): void => {
+      if (deps.requestFrame) deps.requestFrame(callback)
+      else view.requestAnimationFrame(callback)
+    }
+    // A foreign change reaches the model's own observer as a batch outside a slice (`onBatch`).
+    deps.drain()
+    sliceForeign = false
+    return new Promise<boolean>((resolve) => {
+      // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one frame: the foreign-change gate, the budgeted writes and the hand-over
+      const slice = () => {
+        // The model's observer delivers any record queued since the last slice now.
+        deps.drain()
+        if (sliceForeign || deps.sliceAborted?.()) {
+          slicedFailed(sliceForeign ? 'foreign' : 'aborted')
+          resolve(false)
+          return
+        }
+        const started = performance.now()
+        const inserted: HTMLElement[] = []
+        const stats = slicedRestoreStats()
+        if (stats) stats.slices++
+        restoring = true
+        slicing = true
+        try {
+          do writer.step(inserted)
+          while (!writer.done() && performance.now() - started < budgetMs / 2)
+          renderRestored(deps.vditor(), inserted, deps.mode?.() ?? 'ir')
+          // This slice's own records reach the model inside the slice, so they are not foreign.
+          deps.drain()
+        } finally {
+          restoring = false
+          slicing = false
+        }
+        if (writer.done()) resolve(true)
+        else frame(slice)
+      }
+      frame(slice)
+    })
+  }
+
+  /**
+   * Task 733 / 036 (F8): today's step order (reverse for Undo), each root window sliced; a capture with any
+   * other window shape takes the whole restore at once.
+   */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the shape gate, then each step sliced in order with its generation re-read
+  async function restoreSliced(
+    raw: HistoryCapture,
+    side: 'before' | 'after',
+    budgetMs = 8,
+  ): Promise<boolean> {
+    const capture = raw as unknown as Capture
+    const root = deps.root()
+    if (!root || capture.generation !== generation) {
+      slicedFailed('generation')
+      return false
+    }
+    const order =
+      side === 'before' ? [...capture.steps].reverse() : capture.steps
+    // Block windows only (a root rewrite, table snapshots); a cell, item or alignment window takes today's
+    // restore at once.
+    const sliceable = order.every((step) =>
+      step.windows.every(
+        (w) =>
+          w.kind === 'blocks' &&
+          !w.alignment &&
+          w.before !== undefined &&
+          w.after !== undefined,
+      ),
+    )
+    const stats = slicedRestoreStats()
+    if (!sliceable) {
+      if (stats) stats.whole++
+      return port.restore(raw, side)
+    }
+    if (stats) stats.sliced++
+    for (const step of order) {
+      // Highest window first, as `restoreStep` writes its plan, so the lower indices stay valid; for Redo
+      // a window's index is its index in the `before` state.
+      const at = step.windows.map((w, i) =>
+        side === 'before' ? w.a : beforeIndex(step.windows, i),
+      )
+      const ordered = step.windows
+        .map((w, i) => ({ w, index: at[i] }))
+        .sort((x, y) => y.index - x.index)
+      for (const { w, index } of ordered) {
+        const done = sliceWindow(root, w, index, side, budgetMs)
+        if (!done || !(await done)) return false
+        if (capture.generation !== generation) {
+          slicedFailed('generation')
+          return false
+        }
+      }
+    }
+    return true
+  }
+
   const port: HistoryModelPort = {
+    restoreSliced,
     ready: () => deps.ready(),
     claimable: () => deps.claimable(),
     pending() {
@@ -1676,6 +2109,8 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     watch,
     // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one branch per scope kind of the batch (root, list run, table) beside the leaf units
     onBatch(changed, structure) {
+      // Task 733 / 036 (F8): a batch outside a slice while a sliced restore runs is a foreign change.
+      if (!slicing) sliceForeign = true
       if (restoring) return
       const model = deps.model()
       if (!model) return
@@ -1689,7 +2124,15 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
               ? multiThen(unit)
               : (remembered ?? unit.html?.replaceAll('\u0000', '')),
           )
-          if (unit.kind !== 'row' && unit.members.length === 1) {
+          // 036 core C4 (restore fix R1.2): the remembered HTML is ahead of the model's text (an
+          // unsynced checkpoint): no form is recorded; the restore reads the bytes from the page.
+          const stale =
+            remembered !== undefined &&
+            behindText !== undefined &&
+            model.text === behindText &&
+            remembered !== unit.html?.replaceAll('\u0000', '')
+          if (unit.kind === 'cell') seedTableBase(model, unit, stale)
+          if (!stale && unit.kind !== 'row' && unit.members.length === 1) {
             leafForms.set(unit, {
               kind: unit.kind,
               bytes: bytesOf(
@@ -1713,7 +2156,15 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
           }
         } else if (scope.kind === 'table' && !tableSnaps.has(scope)) {
           const snap = snapTable(scope)
-          snap.bytes = model.text.slice(scope.start, scope.end)
+          // 036 core C4 (restore fix R1.1): the table's bytes at its first notice in this interval.
+          if (!tableBase.has(scope))
+            tableBase.set(
+              scope,
+              tableFormNow(model, scope, () =>
+                model.text.slice(scope.start, scope.end),
+              ),
+            )
+          snap.bytes = tableBase.get(scope)?.bytes
           tableSnaps.set(scope, snap)
         }
       }
@@ -1725,6 +2176,7 @@ export function createUnitCapture(deps: UnitCaptureDeps): UnitCapture {
     invalidate() {
       generation += 1
       clearPending()
+      staleTables.clear()
       held = []
       known = new WeakMap()
       successors = new WeakMap()

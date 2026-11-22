@@ -19,6 +19,27 @@ import type { SyncResult } from './text-model'
 
 type EditDeltaMessage = Extract<WebviewMessage, { command: 'edit-delta' }>
 type HistoryDeltaMessage = Extract<WebviewMessage, { command: 'history-delta' }>
+type HistoryExactMessage = Extract<WebviewMessage, { command: 'history-exact' }>
+type ReplayReserveMessage = Extract<
+  WebviewMessage,
+  { command: 'replay-reserve' }
+>
+/** Task 733 / 036 (B0): a posted replay operation, kept until the host acknowledges it (3.5). */
+type ReplayPost =
+  | EditDeltaMessage
+  | HistoryDeltaMessage
+  | HistoryExactMessage
+  | ReplayReserveMessage
+/** Task 733 / 036 (B0): the place of a reserved Undo or Redo (its operation and delta sequence). */
+interface ReplayReservation {
+  epoch: number
+  replayOp: number
+  sequence: number
+}
+/** Task 733 / 036 (B0): the publisher every publication goes through while a replay is active. */
+export interface LogicalPublisher {
+  publish(cause: DeltaCause, perf?: RendererEditPerf): DeltaResult
+}
 type ModelFallbackReason = Extract<SyncResult, { kind: 'fallback' }>['reason']
 
 /**
@@ -70,11 +91,21 @@ export interface DeltaSessionPort {
   rebind(text: string): void
   markPublishedWhole(): void
   clearForms(keep: (unit: DeltaFormState) => boolean): void
+  /**
+   * Task 733 / 036: a `history-exact` with this sequence was posted; publication waits for its answer. B0:
+   * `replay` names its replay operation and the Find record, so the `replay-ack` can complete the wait.
+   */
+  awaitExactHistory?(
+    sequence: number,
+    replay?: { epoch: number; replayOp: number; requestId: string },
+  ): void
 }
 
 export interface DeltaSyncDeps {
   session: DeltaSessionPort
-  postMessage(message: EditDeltaMessage | HistoryDeltaMessage): void
+  postMessage(message: ReplayPost): void
+  /** Task 733 / 036: a sequence from the whole-edit counter (`edit.sequence`), for `history-exact`. */
+  reserveSequence?(): number
   /** The whole-text path with `rebind: true`; the caller records the awaited sequence only. */
   publishWhole(reason: DeltaFallbackReason, perf?: RendererEditPerf): void
   countFallback(reason: DeltaFallbackReason): void
@@ -103,7 +134,11 @@ export interface DeltaSync {
    * `publish` when the model cannot publish a delta; `'nothing'` when the restore changed no text.
    * The caller refuses Undo during a composition, so none is checked here.
    */
-  publishHistory(kind: 'undo' | 'redo', steps: number): DeltaResult
+  publishHistory(
+    kind: 'undo' | 'redo',
+    steps: number,
+    exactId?: string,
+  ): DeltaResult
   /** The sequence of the last posted delta of the current epoch; 0 when none. */
   lastPostedSequence(): number
   /**
@@ -136,6 +171,63 @@ export interface DeltaSync {
     afterSequence: number
     content: string
   }): void
+  /**
+   * Task 733 / 036 (B0, 3.5): the host applied the replay operations of `epoch` up to `replayOp`; they leave
+   * the ledger, and `acceptedSequence` acknowledges deltas as an `afterSequence` does.
+   */
+  onReplayAck(message: {
+    epoch: number
+    replayOp: number
+    acceptedSequence: number
+  }): void
+  /**
+   * Task 733 / 036 (B0, 3.5): the answer to `replay-query`. `applied` counts as the acknowledgement;
+   * `unknown` re-posts every ledger operation from the queried one, unchanged.
+   */
+  onReplayStatus(message: {
+    epoch: number
+    replayOp: number
+    state: string
+    applied: number
+    acceptedSequence: number
+  }): void
+  /** Task 733 / 036 (B0): the replay operations posted and not acknowledged, ascending. */
+  replayLedger(): number[]
+  /** Task 733 / 036 (B0): the oldest unacknowledged replay operation, for `replay-query`. */
+  oldestReplay(): { epoch: number; replayOp: number } | undefined
+  /**
+   * Task 733 / 036 (B0, 3.5): a replay delta (typing during a replay) with the shared `sequence` and the next
+   * `replayOp`, independent of `awaiting()`. Undefined while no epoch is known.
+   */
+  postReplayDelta(
+    changes: EditDeltaMessage['changes'],
+    perf?: RendererEditPerf,
+    recoveryOf?: { epoch: number; replayOp: number },
+  ): { sequence: number; replayOp: number } | undefined
+  /**
+   * 036 core C2 (R2.2, R4.2): one ordinary `edit-delta` of `epoch`, posted with the next sequence and no
+   * publication gate, for a change the caller proved against the host's bytes of that epoch (each
+   * `oldText` read from them, so the host's own `oldText` guard proves it again). False, with nothing
+   * posted and nothing cleared, when `epoch` is not the tracked epoch or a change is not well formed.
+   */
+  postAgainstHost(changes: EditDeltaMessage['changes'], epoch: number): boolean
+  /**
+   * Task 733 / 036 (B0, review point 1): an untagged Undo or Redo during a replay takes its `replayOp` and
+   * its delta sequence at the key and posts `replay-reserve`; later typing follows it in execution order.
+   */
+  reserveReplayHistory(kind: 'undo' | 'redo'): ReplayReservation | undefined
+  /** Task 733 / 036 (B0): the reserved Undo's `history-delta` (`changes` empty when nothing changed). */
+  postReservedHistory(
+    reservation: ReplayReservation,
+    kind: 'undo' | 'redo',
+    steps: number,
+    changes: EditDeltaMessage['changes'],
+  ): void
+  /** Task 733 / 036 (B0, 3.5): set while a replay is active; `publish` delegates to it. */
+  setLogicalPublisher(publisher: LogicalPublisher | undefined): void
+  replayActive(): boolean
+  /** Task 733 / 036 (B0): whether `epoch` is newer than the tracked epoch (`host-state`). */
+  isNewerEpoch(epoch: number): boolean
 }
 
 /** Restores what an exact action changed besides the text when the host refuses it (edit-sync.ts). */
@@ -158,6 +250,122 @@ const REFUSAL_WINDOW_MS = 10_000
 
 const normalizeEol = (text: string): string => text.replace(/\r\n?/gu, '\n')
 
+/**
+ * Task 733 / 036 (T0): what started a publication. `history` is an Undo or Redo publication; `prepare`
+ * is the outstanding-input flush that runs before a history transition (and before a host update).
+ */
+export type PublicationTraceCause = DeltaCause | 'history' | 'prepare'
+
+/** One publication of the end-to-end trace: kinds and numbers only, never document text (SR-5). */
+export interface PublicationTraceEntry {
+  kind:
+    | 'delta'
+    | 'history-delta'
+    | 'fallback'
+    | 'whole'
+    | 'whole-held'
+    | 'exact'
+    | 'exact-held'
+  cause: PublicationTraceCause
+  reason?: DeltaFallbackReason
+  /** The outcome of the last pre-touch proof of the touched range (from the model session). */
+  touched?: TouchedProof
+  /** Pending structure windows of the model when the entry was recorded (from the model session). */
+  structureDirty?: number
+  sequence: number
+  t: number
+}
+
+/**
+ * Task 733 / 036 (T0): the last pre-touch proof of the range an edit touched. `opaque` means the proof
+ * passed and a boundary unit of the range is opaque; `none` means no pre-touch proof ran yet.
+ */
+export type TouchedProof = 'proven' | 'unproven' | 'opaque' | 'none'
+
+/** Task 733 / 036 (T0): the model state each trace entry records, read when the entry is made. */
+export interface PublicationTraceContext {
+  touched: TouchedProof
+  structureDirty: number
+}
+
+interface PublicationTraceGlobal {
+  __vmdeE2EReadiness?: unknown
+  __vmdePublicationTrace?: PublicationTraceEntry[]
+}
+
+/** The trace keeps the latest entries only. */
+const PUBLICATION_TRACE_LIMIT = 32
+
+// Task 733 / 036 (T0): set by edit-sync while the pre-transition input flush runs, so every
+// publication it causes is tagged `prepare` instead of its own cause.
+let traceCauseOverride: PublicationTraceCause | undefined
+// Task 733 / 036 (T0): the cause of the publication in progress (set by each publisher entry point).
+// The whole-text post that a fallback makes runs synchronously inside it and reads the same cause.
+let traceCause: PublicationTraceCause = 'idle'
+// Task 733 / 036 (T0): registered by the model session in end-to-end runs only.
+let traceContext: (() => PublicationTraceContext) | undefined
+
+/** Task 733 / 036 (T0): the reader of the model state for each trace entry (undefined removes it). */
+export function setPublicationTraceContext(
+  provider: (() => PublicationTraceContext) | undefined,
+): void {
+  traceContext = provider
+}
+
+/** Task 733 / 036 (T0): the registered reader, so its owner removes only its own. */
+export function publicationTraceContext():
+  | (() => PublicationTraceContext)
+  | undefined {
+  return traceContext
+}
+
+/**
+ * Task 733 / 036 (T0): the cause of a publication that starts outside the delta publisher (the
+ * whole-text exact post).
+ */
+export function notePublicationTraceCause(cause: PublicationTraceCause): void {
+  traceCause = cause
+}
+
+/** Task 733 / 036 (T0): tags the publications until the next call (undefined ends the override). */
+export function setPublicationTraceCause(
+  cause: PublicationTraceCause | undefined,
+): void {
+  traceCauseOverride = cause
+}
+
+/**
+ * Task 733 / 036 (T0): appends one entry to `window.__vmdePublicationTrace`. End-to-end runs only
+ * (`__vmdeE2EReadiness` exists): a product page creates no global and allocates nothing here.
+ */
+export function tracePublication(
+  kind: PublicationTraceEntry['kind'],
+  sequence: number,
+  reason?: DeltaFallbackReason,
+): void {
+  const slot = globalThis as unknown as PublicationTraceGlobal
+  if (!slot.__vmdeE2EReadiness) return
+  let trace = slot.__vmdePublicationTrace
+  if (!trace) {
+    trace = []
+    slot.__vmdePublicationTrace = trace
+  }
+  const entry: PublicationTraceEntry = {
+    kind,
+    cause: traceCauseOverride ?? traceCause,
+    sequence,
+    t: Math.round(performance.now()),
+  }
+  if (reason !== undefined) entry.reason = reason
+  if (traceContext) {
+    const context = traceContext()
+    entry.touched = context.touched
+    entry.structureDirty = context.structureDirty
+  }
+  trace.push(entry)
+  if (trace.length > PUBLICATION_TRACE_LIMIT) trace.shift()
+}
+
 export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
   const { session } = deps
   let trackedEpoch: number | undefined
@@ -176,6 +384,11 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
   // The text before each posted delta the host has not answered yet (references, no copy).
   let unanswered: Array<{ sequence: number; before: string }> = []
   let refusedBase: string | undefined
+  // Task 733 / 036 (B0): the last `replayOp` of the tracked epoch, the unacknowledged replay operations
+  // (the posted messages, by reference, for a re-post after `unknown`), and the logical publisher.
+  let lastReplayOp = 0
+  let replayLedger: Array<{ replayOp: number; message: ReplayPost }> = []
+  let logical: LogicalPublisher | undefined
 
   function noteUnanswered(before: string): void {
     unanswered.push({ sequence: lastPosted, before })
@@ -190,6 +403,27 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     acknowledged = 0
     pendingRollbacks = []
     unanswered = []
+    resetReplay()
+  }
+
+  /** Task 733 / 036 (B0): a new epoch restarts `replayOp` at 1; its unacknowledged operations are refused. */
+  function resetReplay(): void {
+    lastReplayOp = 0
+    if (replayLedger.length > 0) replayLedger = []
+  }
+
+  /** Task 733 / 036 (B0): records one posted replay operation of the tracked epoch. */
+  function postReplay(message: ReplayPost & { replayOp: number }): void {
+    deps.postMessage(message)
+    replayLedger.push({ replayOp: message.replayOp, message })
+  }
+
+  /** Task 733 / 036 (B0): the host applied the prefix up to `replayOp` and accepted `acceptedSequence`. */
+  function acknowledgeReplay(replayOp: number, acceptedSequence: number): void {
+    if (replayLedger.length > 0 && replayLedger[0].replayOp <= replayOp)
+      replayLedger = replayLedger.filter((entry) => entry.replayOp > replayOp)
+    if (acceptedSequence > acknowledged) acknowledged = acceptedSequence
+    acknowledgeRollback(acceptedSequence)
   }
 
   /** The host answered up to `afterSequence` in the tracked epoch: an exact delta it covers stays. */
@@ -224,6 +458,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     perf?: RendererEditPerf,
   ): 'fallback' {
     deps.countFallback(reason)
+    tracePublication('fallback', lastPosted, reason)
     // A plain whole-text post carries the DOM, the action included: a refusal no longer rolls it back,
     // and no delta before it needs posting again.
     pendingRollbacks = []
@@ -284,6 +519,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     }
     if (perf) message.perf = perf
     deps.postMessage(message)
+    tracePublication('delta', lastPosted)
   }
 
   /** The gates before any draining: a result when the publication is decided without the model. */
@@ -342,10 +578,42 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       steps,
       changes,
     })
+    tracePublication('history-delta', lastPosted)
   }
 
-  function publishHistory(kind: 'undo' | 'redo', steps: number): DeltaResult {
+  function publishHistory(
+    kind: 'undo' | 'redo',
+    steps: number,
+    exactId?: string,
+  ): DeltaResult {
+    traceCause = 'history'
     followEpoch()
+    // Task 733 / 036 (F6): a replayable Find entry is replayed by the host from its admitted pair. This
+    // runs before the awaiting, latch and `forceWhole` fallbacks, so no earlier post turns it into whole
+    // text; it skips `prepareDelta` and keeps the rollback records and unanswered deltas.
+    // B0: the move is the next replay operation of the tracked epoch (3.1); without an epoch it cannot be
+    // addressed and goes whole-text as the model-off Undo does.
+    if (exactId !== undefined && deps.reserveSequence) {
+      const epoch = trackedEpoch
+      if (epoch === undefined) return fallback('history-transition')
+      const sequence = deps.reserveSequence()
+      lastReplayOp += 1
+      const replayOp = lastReplayOp
+      postReplay({
+        command: 'history-exact',
+        kind,
+        requestId: exactId,
+        sequence,
+        epoch,
+        replayOp,
+      })
+      session.awaitExactHistory?.(sequence, {
+        epoch,
+        replayOp,
+        requestId: exactId,
+      })
+      return 'delta'
+    }
     const epoch = session.epoch()
     // Whole-text, as `publish` would, but the model-off case is the Undo's own reason.
     if (epoch === undefined) return fallback('history-transition')
@@ -368,6 +636,9 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
   }
 
   function publish(cause: DeltaCause, perf?: RendererEditPerf): DeltaResult {
+    traceCause = cause
+    // Task 733 / 036 (B0, 3.5): while a replay is active every publication goes through its publisher.
+    if (logical) return logical.publish(cause, perf)
     const decided = gate(cause, perf)
     if (decided) return decided
     const epoch = session.epoch()
@@ -406,6 +677,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
   ):
     | { kind: 'delta'; sequence: number }
     | { kind: 'fallback'; reason: DeltaFallbackReason } {
+    traceCause = 'exact'
     followEpoch()
     const gated = appliedGate()
     const built = gated === undefined ? buildChanges(before, changes) : 'gated'
@@ -417,6 +689,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
           ? BUILD_REASON[built]
           : 'model-off')
       deps.countFallback(why)
+      tracePublication('fallback', lastPosted, why)
       return { kind: 'fallback', reason: why }
     }
     if (built.length === 0) return { kind: 'delta', sequence: lastPosted }
@@ -427,10 +700,148 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     return { kind: 'delta', sequence: lastPosted }
   }
 
+  function postReplayDelta(
+    changes: EditDeltaMessage['changes'],
+    perf?: RendererEditPerf,
+    recoveryOf?: { epoch: number; replayOp: number },
+  ): { sequence: number; replayOp: number } | undefined {
+    followEpoch()
+    const epoch = trackedEpoch
+    if (epoch === undefined) return undefined
+    lastPosted += 1
+    lastReplayOp += 1
+    const message: EditDeltaMessage & { replayOp: number } = {
+      command: 'edit-delta',
+      epoch,
+      sequence: lastPosted,
+      changes,
+      replayOp: lastReplayOp,
+    }
+    if (perf) message.perf = perf
+    if (recoveryOf) message.recoveryOf = recoveryOf
+    postReplay(message)
+    tracePublication('delta', lastPosted)
+    return { sequence: lastPosted, replayOp: lastReplayOp }
+  }
+
+  function postAgainstHost(
+    changes: EditDeltaMessage['changes'],
+    epoch: number,
+  ): boolean {
+    followEpoch()
+    if (epoch !== trackedEpoch || changes.length === 0) return false
+    for (const change of changes) if (!wellFormed(change)) return false
+    post(epoch, changes)
+    deps.afterDelta?.()
+    return true
+  }
+
+  function reserveReplayHistory(
+    kind: 'undo' | 'redo',
+  ): ReplayReservation | undefined {
+    followEpoch()
+    const epoch = trackedEpoch
+    if (epoch === undefined) return undefined
+    lastPosted += 1
+    lastReplayOp += 1
+    const reservation = { epoch, replayOp: lastReplayOp, sequence: lastPosted }
+    postReplay({
+      command: 'replay-reserve',
+      epoch,
+      replayOp: reservation.replayOp,
+      kind,
+    })
+    return reservation
+  }
+
+  function postReservedHistory(
+    reservation: ReplayReservation,
+    kind: 'undo' | 'redo',
+    steps: number,
+    changes: EditDeltaMessage['changes'],
+  ): void {
+    followEpoch()
+    // A reservation of an ended epoch was refused with it; its content is not posted.
+    if (reservation.epoch !== trackedEpoch) return
+    const message: HistoryDeltaMessage & { replayOp: number } = {
+      command: 'history-delta',
+      kind,
+      epoch: reservation.epoch,
+      sequence: reservation.sequence,
+      steps,
+      changes,
+      replayOp: reservation.replayOp,
+    }
+    deps.postMessage(message)
+    // The ledger keeps the content in place of the reservation, for a re-post after `unknown`.
+    const entry = replayLedger.find(
+      (record) => record.replayOp === reservation.replayOp,
+    )
+    if (entry) entry.message = message
+    tracePublication('history-delta', reservation.sequence)
+  }
+
+  function restoreBaseline(message: {
+    epoch: number
+    afterSequence: number
+    content: string
+  }): void {
+    if (session.epoch() !== message.epoch) return
+    if (message.afterSequence !== lastPosted) return
+    if (session.hasDirty() || session.awaiting() || isLatched()) return
+    const text = session.modelText()
+    if (text === undefined) return
+    const content = normalizeEol(message.content)
+    const diff = singleSpanDiff(text, content)
+    if (!diff) return
+    const changes = buildChanges(text, [diff])
+    if (typeof changes === 'string' || changes.length === 0) return
+    post(message.epoch, changes)
+    noteUnanswered(text)
+    session.rebind(content)
+    deps.afterDelta?.()
+  }
+
   return {
     publish,
     publishHistory,
     publishApplied,
+    postReplayDelta,
+    postAgainstHost,
+    reserveReplayHistory,
+    postReservedHistory,
+    onReplayAck(message) {
+      followEpoch()
+      if (message.epoch !== trackedEpoch) return
+      acknowledgeReplay(message.replayOp, message.acceptedSequence)
+    },
+    onReplayStatus(message) {
+      followEpoch()
+      // Authoritative for its named epoch only (second-opinion point 2).
+      if (message.epoch !== trackedEpoch) return
+      if (message.state === 'applied') {
+        acknowledgeReplay(message.applied, message.acceptedSequence)
+        return
+      }
+      if (message.state !== 'unknown') return
+      for (const entry of replayLedger)
+        if (entry.replayOp >= message.replayOp) deps.postMessage(entry.message)
+    },
+    replayLedger: () => replayLedger.map((entry) => entry.replayOp),
+    oldestReplay() {
+      const oldest = replayLedger[0]
+      return oldest === undefined || trackedEpoch === undefined
+        ? undefined
+        : { epoch: trackedEpoch, replayOp: oldest.replayOp }
+    },
+    setLogicalPublisher(publisher) {
+      logical = publisher
+    },
+    replayActive: () => logical !== undefined,
+    isNewerEpoch(epoch) {
+      followEpoch()
+      return trackedEpoch === undefined || epoch > trackedEpoch
+    },
     takeRefusedBase() {
       const base = refusedBase
       refusedBase = undefined
@@ -484,6 +895,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       lastPosted = 0
       acknowledged = 0
       forceWhole = false
+      resetReplay()
     },
     onRebind(message) {
       followEpoch()
@@ -503,6 +915,7 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
       trackedEpoch = message.epoch
       lastPosted = 0
       acknowledged = 0
+      resetReplay()
       // A host-own rebind keeps the DOM, which still shows the action: no record survives the epoch
       // (the forced whole publication below carries the action), 010-R N4.
       pendingRollbacks = []
@@ -514,6 +927,8 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     },
     onBaseline(message) {
       followEpoch()
+      // Task 733 / 036 (B0, 3.5): the forms belong to the replay until it ends.
+      if (logical) return
       if (session.epoch() !== message.epoch) return
       const exact =
         message.afterSequence === lastPosted &&
@@ -527,22 +942,27 @@ export function createDeltaSync(deps: DeltaSyncDeps): DeltaSync {
     },
     onRestoreBaseline(message) {
       followEpoch()
-      if (session.epoch() !== message.epoch) return
-      if (message.afterSequence !== lastPosted) return
-      if (session.hasDirty() || session.awaiting() || isLatched()) return
-      const text = session.modelText()
-      if (text === undefined) return
-      const content = normalizeEol(message.content)
-      const diff = singleSpanDiff(text, content)
-      if (!diff) return
-      const changes = buildChanges(text, [diff])
-      if (typeof changes === 'string' || changes.length === 0) return
-      post(message.epoch, changes)
-      noteUnanswered(text)
-      session.rebind(content)
-      deps.afterDelta?.()
+      // Task 733 / 036 (B0, 3.5): the replay owns the text until it ends.
+      if (!logical) restoreBaseline(message)
     },
   }
+}
+
+/** 036 core C2: a change of the `edit-delta` shape with whole, ordered, non-negative positions. */
+function wellFormed(change: EditDeltaMessage['changes'][number]): boolean {
+  const { start, end } = change
+  return (
+    typeof change.oldText === 'string' &&
+    typeof change.text === 'string' &&
+    Number.isInteger(start.line) &&
+    Number.isInteger(start.character) &&
+    Number.isInteger(end.line) &&
+    Number.isInteger(end.character) &&
+    start.line >= 0 &&
+    start.character >= 0 &&
+    (end.line > start.line ||
+      (end.line === start.line && end.character >= start.character))
+  )
 }
 
 /**

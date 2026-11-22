@@ -149,6 +149,33 @@ describe('table cell rectangle selection', () => {
     selection.dispose()
   })
 
+  // Task 733 / 036 (step C, fix design 2.6): the table's pending replay groups render before the
+  // rectangle Copy reads its cells, so the TSV holds the target text; both formats stay.
+  test('renders the table before a rectangle Copy reads it, keeping TSV and Markdown', () => {
+    const root = editor()
+    const selection = installTableCellSelection(root, {
+      markdownForRectangle: () => '| a | b |\n|---|---|',
+      beforeRectangleCopy: (table) => {
+        const cell = table.querySelectorAll('td')[0]
+        cell.textContent = 'target'
+      },
+    })
+    const cells = root.querySelectorAll<HTMLTableCellElement>('th,td')
+    selection.select(cells[2], cells[3])
+    const values = new Map<string, string>()
+    const event = new Event('copy', { bubbles: true }) as ClipboardEvent
+    Object.defineProperty(event, 'clipboardData', {
+      value: {
+        setData: (type: string, value: string) => values.set(type, value),
+      },
+    })
+    root.dispatchEvent(event)
+
+    expect(values.get('text/plain')).toBe('target\t2')
+    expect(values.get('text/markdown')).toBe('| a | b |\n|---|---|')
+    selection.dispose()
+  })
+
   test('retires a rectangle on an ordinary different-cell pointerdown or cancellation', () => {
     const root = editor()
     const selection = installTableCellSelection(root)

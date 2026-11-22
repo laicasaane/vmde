@@ -11,7 +11,14 @@ describe('answerFlushForSave (Task 580 CP2-12 will-save flush)', () => {
   it('runs the flush, then replies with the same request id', () => {
     const order: string[] = []
     const post = vi.fn(() => order.push('reply'))
-    answerFlushForSave('save-flush-7', () => order.push('flush'), post)
+    answerFlushForSave(
+      'save-flush-7',
+      (done) => {
+        order.push('flush')
+        done()
+      },
+      post,
+    )
     expect(order).toEqual(['flush', 'reply'])
     expect(post).toHaveBeenCalledWith({
       command: 'flush-for-save-done',
@@ -23,10 +30,33 @@ describe('answerFlushForSave (Task 580 CP2-12 will-save flush)', () => {
     const posted: string[] = []
     answerFlushForSave(
       'r1',
-      () => posted.push('edit'),
+      (done) => {
+        posted.push('edit')
+        done()
+      },
       (reply) => posted.push(reply.command),
     )
     expect(posted).toEqual(['edit', 'flush-for-save-done'])
+  })
+
+  // 036 core C6 (S2): a Save held during a replay replies later, exactly once.
+  it('replies once, when the flush calls done later; a second done is a no-op', () => {
+    const post = vi.fn()
+    let done: (() => void) | undefined
+    answerFlushForSave(
+      'r4',
+      (d) => {
+        done = d
+      },
+      post,
+    )
+    expect(post).not.toHaveBeenCalled()
+    done?.()
+    done?.()
+    expect(post).toHaveBeenCalledExactlyOnceWith({
+      command: 'flush-for-save-done',
+      requestId: 'r4',
+    })
   })
 
   it('replies when there is no editor yet (nothing to flush)', () => {

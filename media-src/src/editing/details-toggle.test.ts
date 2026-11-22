@@ -346,3 +346,149 @@ describe('Details passive settled read with unconfirmed units', () => {
     expect(view.button.disabled).toBe(false)
   })
 })
+
+// Task 733 / 036 (F7b and Q9 (b)): a passive Details read never publishes. With a cold index, and with a
+// cached model entry whose lazy `rendered` getter takes `snapshotPair()` first, the settled selection
+// reads no publishing snapshot: `snapshotPair` here stands for the production pair, which reads
+// `liveExactText()` and can post a whole-text `exact` publication while a unit is dirty and unproven.
+// The display is the enabled, unpressed `wrap` (Q8 (a)); a later acquiring read still takes the exact
+// pair, so the shared cache keeps its exact-source check.
+describe('036 passive state', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 16),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+    calloutCapture.calls = 0
+  })
+  const disposers: Array<() => void> = []
+  afterEach(() => {
+    for (const dispose of disposers.splice(0)) dispose()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+    delete (window as any).vditor
+  })
+
+  const SOURCE = 'Alpha paragraph one\n\nBeta paragraph two\n'
+
+  function mountPassive(entry: 'cold' | 'model') {
+    const toolbar = document.createElement('div')
+    toolbar.className = 'vditor-toolbar'
+    const button = document.createElement('button')
+    button.dataset.type = 'details'
+    toolbar.append(button)
+    const root = document.createElement('div')
+    root.className = 'vditor-reset'
+    root.innerHTML =
+      '<p data-block="0">Alpha paragraph one</p><p data-block="0">Beta paragraph two</p>'
+    document.body.append(toolbar, root)
+    ;(window as any).vditor = {
+      vditor: { currentMode: 'ir', ir: { element: root }, toolbar: {} },
+      getValue: vi.fn(() => SOURCE),
+    }
+    const [alpha, beta] = Array.from(root.querySelectorAll('p'))
+    const units = [
+      {
+        element: alpha,
+        start: 0,
+        end: 19,
+        kind: 'paragraph',
+        movable: true,
+        members: [alpha],
+      },
+      {
+        element: beta,
+        start: 21,
+        end: 39,
+        kind: 'paragraph',
+        movable: true,
+        members: [beta],
+      },
+    ] as never
+    const snapshotPair = vi.fn(() => ({ exact: SOURCE, rendered: SOURCE }))
+    // Q9 (b) contract (step 4): the production wiring gives passive reads a non-publishing pair (a dirty
+    // unproven unit: no exact text). Edited after step 1, which assumed no such dependency.
+    const passivePair = vi.fn(() => ({ exact: null, rendered: SOURCE }))
+    const revision = {}
+    const index = createSourceBlockIndex({
+      getActiveRoot: () => root,
+      projection: () => ({ owner: {}, mode: 'ir' as const }),
+      snapshotPair,
+      passivePair,
+      snapshotRevision: () => revision,
+      // The exact key is rejected, so the passive state is `unknown` and today's fallback would run.
+      resolveUnits: () => null,
+      ...(entry === 'model'
+        ? { modelUnits: () => ({ exact: SOURCE, units }) }
+        : {}),
+    })
+    const dispose = installDetailsToggleControls(index)
+    disposers.push(() => {
+      dispose()
+      index.dispose()
+    })
+    vi.advanceTimersByTime(16)
+    const text = alpha.firstChild as Text
+    const selectExpanded = () => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'ShiftLeft' }),
+      )
+      const range = document.createRange()
+      range.setStart(text, 0)
+      range.setEnd(text, 5)
+      const selection = document.getSelection() as Selection
+      selection.removeAllRanges()
+      selection.addRange(range)
+      document.dispatchEvent(new Event('selectionchange'))
+      vi.advanceTimersByTime(16)
+      document.dispatchEvent(new KeyboardEvent('keyup', { code: 'ShiftLeft' }))
+      vi.advanceTimersByTime(60)
+    }
+    const textNodes = () => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      let count = 0
+      while (walker.nextNode()) count++
+      return count
+    }
+    return {
+      index,
+      snapshotPair,
+      passivePair,
+      selectExpanded,
+      button,
+      textNodes,
+    }
+  }
+
+  it.each(['cold', 'model'] as const)(
+    'the %s-index passive read publishes nothing and displays the enabled wrap state',
+    (entry) => {
+      const view = mountPassive(entry)
+      const before = view.textNodes()
+      view.selectExpanded()
+
+      expect(view.snapshotPair).not.toHaveBeenCalled()
+      expect(view.passivePair).toHaveBeenCalledTimes(1)
+      expect(calloutCapture.calls).toBe(0)
+      expect(view.textNodes()).toBe(before)
+      expect(view.button.disabled).toBe(false)
+      expect(view.button.getAttribute('aria-pressed')).toBe('false')
+    },
+  )
+
+  it.each(['cold', 'model'] as const)(
+    'a later acquiring read after the %s passive read takes the exact pair',
+    (entry) => {
+      const view = mountPassive(entry)
+      view.selectExpanded()
+      expect(view.snapshotPair).not.toHaveBeenCalled()
+
+      const exact = view.index.read()
+
+      expect(exact?.exact).toBe(SOURCE)
+      expect(view.snapshotPair).toHaveBeenCalledTimes(1)
+    },
+  )
+})

@@ -675,3 +675,34 @@ describe('DeltaWriter.applyHistory (task 004)', () => {
     })
   })
 })
+
+// Task 733 / 036 (B0, second-opinion point 1): a reserved Undo takes its delta sequence at the key; when
+// its restore changed no text the payload is empty and consumes that sequence in execution order.
+describe('DeltaWriter.consumeEmpty (036 B0)', () => {
+  it('consumes the next sequence without a write; later typing then applies', async () => {
+    const { writer, document, msg } = setup()
+    expect(writer.consumeEmpty(msg([], { kind: 'undo', steps: 1 }))).toEqual({
+      kind: 'applied',
+    })
+    expect(writer.acceptedSequence).toBe(1)
+    expect(vi.mocked(workspace.applyEdit)).not.toHaveBeenCalled()
+    const out = await writer.apply(
+      msg([change(0, 0, 0, 1, 'a', 'X')], { sequence: 2 }),
+    )
+    expect(out).toEqual({ kind: 'applied' })
+    expect(document.getText()).toBe('X\nb\nc')
+  })
+
+  it('refuses a wrong sequence and drops a stale epoch', () => {
+    const { writer, msg } = setup()
+    expect(writer.consumeEmpty(msg([], { sequence: 2 }))).toEqual({
+      kind: 'resync',
+      why: 'sequence',
+    })
+    expect(writer.consumeEmpty(msg([], { epoch: 4 }))).toEqual({
+      kind: 'dropped',
+      why: 'epoch',
+    })
+    expect(writer.acceptedSequence).toBe(0)
+  })
+})
