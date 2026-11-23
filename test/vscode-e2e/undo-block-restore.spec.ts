@@ -180,6 +180,13 @@ function arm(_body: Element, mode: Mode) {
     changeAt: null,
     marked: children,
     reads: [] as number[][],
+    keyFrom: null,
+    // Owned Undo/Redo counters (format-hotkey-guard.ts countOwned) at arm time, so each step's own
+    // increment can be checked.
+    ownedAtArm: {
+      undo: w.__vmdeOwnedHistory?.ownedUndo ?? 0,
+      redo: w.__vmdeOwnedHistory?.ownedRedo ?? 0,
+    },
   }
   // The history coupling reads the whole document before and after the step (readText, the outer
   // getValue); their duration is recorded so the restore's own share can be told apart.
@@ -195,8 +202,10 @@ function arm(_body: Element, mode: Mode) {
     }
   }
   const onKey = (event: KeyboardEvent) => {
-    if (event.ctrlKey && /^[zy]$/i.test(event.key) && state.keyAt === null)
+    if (event.ctrlKey && /^[zy]$/i.test(event.key) && state.keyAt === null) {
       state.keyAt = performance.now()
+      state.keyFrom = 'listener'
+    }
   }
   window.addEventListener('keydown', onKey, true)
   const observer = new MutationObserver(() => {
@@ -221,6 +230,21 @@ function arm(_body: Element, mode: Mode) {
   for (const kind of ['undo', 'redo'] as const)
     history[kind] = function (...args: unknown[]) {
       const start = performance.now()
+      // In IR the editor owns the chord at keydown and stops its propagation, so the listener above
+      // never sees it; the time comes from the matching trusted keydown that is running this call.
+      if (mode === 'ir' && state.keyAt === null) {
+        const event = window.event
+        if (
+          event instanceof KeyboardEvent &&
+          event.type === 'keydown' &&
+          event.isTrusted &&
+          event.ctrlKey &&
+          event.key.toLowerCase() === (kind === 'undo' ? 'z' : 'y')
+        ) {
+          state.keyAt = event.timeStamp
+          state.keyFrom = 'owned-keydown'
+        }
+      }
       try {
         return coupled[kind].apply(this, args)
       } finally {
@@ -275,6 +299,20 @@ function inspect(_body: Element, mode: Mode) {
         .map(([, e]) => e)
       return ends.length ? Math.round(Math.max(...ends) - state.keyAt) : null
     })(),
+    keyFrom: state.keyFrom as string | null,
+    ownedUndoDelta:
+      (w.__vmdeOwnedHistory?.ownedUndo ?? 0) - state.ownedAtArm.undo,
+    ownedRedoDelta:
+      (w.__vmdeOwnedHistory?.ownedRedo ?? 0) - state.ownedAtArm.redo,
+    changeAfterKey: timed && state.changeAt >= state.keyAt,
+    callEndAfterKey: (() => {
+      const calls = state.calls as number[][]
+      return (
+        state.keyAt !== null &&
+        calls.length > 0 &&
+        calls[calls.length - 1][1] >= state.keyAt
+      )
+    })(),
   }
 }
 
@@ -295,6 +333,11 @@ interface StepResult {
   keyToChangeMs: number | null
   readTextMs: number
   keyToTaskEndMs: number | null
+  keyFrom: string | null
+  ownedUndoDelta: number
+  ownedRedoDelta: number
+  changeAfterKey: boolean
+  callEndAfterKey: boolean
 }
 
 async function historyStep(
@@ -403,6 +446,21 @@ async function typeThenUndoRedo(
   return { undo, redo }
 }
 
+// The IR timing starts at the trusted keydown that ran exactly one owned step of the expected kind.
+function expectOwnedKeyTiming(step: StepResult, label: 'Undo' | 'Redo') {
+  const own = label === 'Undo' ? step.ownedUndoDelta : step.ownedRedoDelta
+  const other = label === 'Undo' ? step.ownedRedoDelta : step.ownedUndoDelta
+  expect(step.keyFrom, `IR large ${label}: owned keydown timed`).toBe(
+    'owned-keydown',
+  )
+  expect(own, `IR large ${label}: one owned ${label}`).toBe(1)
+  expect(other, `IR large ${label}: no opposite owned step`).toBe(0)
+  expect(step.changeAfterKey, `IR large ${label}: change after key`).toBe(true)
+  expect(step.callEndAfterKey, `IR large ${label}: call end after key`).toBe(
+    true,
+  )
+}
+
 // Every top-level block is the same node except the edited paragraph and, when the restored
 // snapshot recorded its caret in another block, that block: Vditor restores the caret through the
 // snapshot's marker, so the marker block is swapped on its own (measured in WYSIWYG: the opening
@@ -469,6 +527,7 @@ test.describe('Undo/Redo restore only the changed blocks (Task 720)', () => {
       ['Undo', undo],
       ['Redo', redo],
     ] as const) {
+      expectOwnedKeyTiming(step, label)
       expect(
         step.keyToChangeMs,
         `IR large ${label}: key seen and DOM changed`,

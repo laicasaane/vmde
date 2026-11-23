@@ -368,6 +368,14 @@ test('XTEST narrow More menu activates Subscript by OS keyboard', async ({
     .toBe('2')
   await expect(subscript).toBeEnabled()
   await xtest.key('Escape')
+  // Escape widens the selection to its Markdown block (selection-scope.ts
+  // handleEscape); the toolbar acts on the origin it captured before the
+  // widening (escape-toolbar.ts).
+  await expect
+    .poll(() =>
+      frame.locator('body').evaluate(() => getSelection()?.toString()),
+    )
+    .toBe('Keyboard H2O.')
   await xtest.key('Tab')
   await expect
     .poll(() =>
@@ -459,11 +467,14 @@ test('XTEST narrow More menu activates Subscript by OS keyboard', async ({
     )
     .toBe('2')
   await xtest.key('Escape')
+  // Escape widens the selection to its Markdown block (selection-scope.ts
+  // handleEscape); the toolbar acts on the origin it captured before the
+  // widening (escape-toolbar.ts).
   await expect
     .poll(() =>
       frame.locator('body').evaluate(() => getSelection()?.toString()),
     )
-    .toBe('Keyboard H2')
+    .toBe('Keyboard H2O.')
   await xtest.key('Tab')
   const repeatArrowsToMore = await frame.locator('body').evaluate(() => {
     const toolbar = document.querySelector('.vditor-toolbar')!
