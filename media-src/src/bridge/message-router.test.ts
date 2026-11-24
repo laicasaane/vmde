@@ -1118,6 +1118,41 @@ describe('handleUpdate — external update (non-init)', () => {
     expect(h.cancelAutoWrap).not.toHaveBeenCalled()
   })
 
+  // Task 733 / 045 (rev 10 review binding 4): the return-to-IR probe route. A host update with a newer
+  // revision publishes pending typing through `flushHistoryInput` while the auto-wrap is still pending,
+  // and only then cancels the wrap (the editor-owned Undo chord cancels it first, D-18).
+  it('flushes pending typing with the auto-wrap still pending, before it cancels the wrap', () => {
+    vi.useFakeTimers()
+    const atFlush: unknown[] = []
+    h.cancelAutoWrap.mockClear()
+    sessionState.autoWrapPending = true
+    sessionState.hostRevision = 1
+    sessionState.editSync = {
+      reseed: vi.fn(),
+      reportDocMode: vi.fn(),
+      flushHistoryInput: vi.fn(() => {
+        atFlush.push([
+          sessionState.autoWrapPending,
+          h.cancelAutoWrap.mock.calls.length,
+        ])
+        return true
+      }),
+    } as any
+    ;(window as any).vditor = {
+      getValue: () => 'OLD',
+      setValue: vi.fn(),
+      clearStack: vi.fn(),
+    }
+    try {
+      handleUpdate({ command: 'update', content: 'NEW', revision: 2 } as any)
+      expect(atFlush).toEqual([[true, 0]])
+      expect(h.cancelAutoWrap).toHaveBeenCalledTimes(1)
+    } finally {
+      sessionState.autoWrapPending = false
+      sessionState.editSync = null
+    }
+  })
+
   it('an external update rewrites the doc and atomically reseeds the cache', () => {
     vi.useFakeTimers()
     const setValue = vi.fn()

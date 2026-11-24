@@ -1940,6 +1940,38 @@ const SV_COPY_ANCHOR = `    private copy(event: ClipboardEvent, vditor: IVditor)
         event.stopPropagation();
         event.preventDefault();
         event.clipboardData.setData("text/plain", getSelectText(vditor[vditor.currentMode].element));`
+// Task 733 / 045 (F2): Vditor's Source `compositionend` handler (`sv/index.ts`) rebuilds the caret block
+// (or the whole root, for a caret on the root) through `inputEvent` after every composition, so a
+// composition that changed nothing still re-spins the Source, renders, publishes (`options.input`) and
+// replaces the pending Task 601 checkpoint of an earlier edit with its own. The handler now asks
+// `window.__vmdeSourceCompositionEnd(event)` (boot/finish-init.ts `installSourceEditSignals`) first; `false`
+// (nothing changed) skips that rebuild. The composing lock is still released. Without the hook, or for
+// any other answer, the handler runs as upstream. Chained after `patchSvCopyGuard`.
+const SV_COMPOSITION_END_ANCHOR =
+  '        this.element.addEventListener("compositionend", (event: InputEvent) => {\n' +
+  '            if (!isFirefox()) {\n' +
+  '                inputEvent(vditor, event);\n'
+export function patchSvCompositionEndRebuild(code) {
+  if (code.includes('__vmdeSourceCompositionEnd')) {
+    throw new Error(
+      'patchSvCompositionEndRebuild: vditor sv/index.ts is already patched (applied twice?)',
+    )
+  }
+  assertOneAnchor(
+    code,
+    SV_COMPOSITION_END_ANCHOR,
+    'patchSvCompositionEndRebuild',
+    'sv/index.ts',
+  )
+  return code.replace(
+    SV_COMPOSITION_END_ANCHOR,
+    '        this.element.addEventListener("compositionend", (event: InputEvent) => {\n' +
+      '            // Task 733 / 045 (VMDE patch): a composition that changed nothing is not rebuilt.\n' +
+      '            if (!isFirefox() && (window as any).__vmdeSourceCompositionEnd?.(event) !== false) {\n' +
+      '                inputEvent(vditor, event);\n',
+  )
+}
+
 export function patchSvCopyGuard(code) {
   if (!code.includes(SV_COPY_ANCHOR)) {
     throw new Error(
@@ -2889,6 +2921,36 @@ export function patchBeforeEditMode(code) {
     `${BEFORE_EDIT_MODE_ANCHOR}\n` +
       '    // 036 core C2 (VMDE patch R4.3): the user edits are posted before the surface changes.\n' +
       '    (window as any).__vmdeBeforeEditMode?.(vditor, type, typeof event !== "string");',
+  )
+}
+
+// Task 733 / 045 (F2): Source `processAfterRender` renders the preview synchronously, before VMDE's
+// document `input` bubble listener and before `options.input`. Every edit-driven Source render (DOM input,
+// toolbar list/check/quote `inputEvent`, Enter, Paste Plain `insertValue`, `compositionend`, Undo) passes
+// `enableInput: true`; mode entry, Source `setValue` and the streamed build pass `enableInput: false` and
+// stay render-only. The patch calls `window.__vmdeSourceRenderEdit` (boot/finish-init.ts) for the first
+// kind only, just before `preview.render`, so edit-sync hears of the edit before the preview reads the
+// exact source. Chained after `patchSvSplitAnyBreak` in the same registry entry.
+const SV_RENDER_EDIT_ANCHOR = '    vditor.preview.render(vditor);'
+export function patchSvRenderEditSignal(code) {
+  if (code.includes('__vmdeSourceRenderEdit')) {
+    throw new Error(
+      'patchSvRenderEditSignal: vditor sv/process.ts is already patched (applied twice?)',
+    )
+  }
+  assertOneAnchor(
+    code,
+    SV_RENDER_EDIT_ANCHOR,
+    'patchSvRenderEditSignal',
+    'sv/process.ts',
+  )
+  return code.replace(
+    SV_RENDER_EDIT_ANCHOR,
+    '    // Task 733 / 045 (VMDE patch): an edit-driven render tells edit-sync before the preview reads it.\n' +
+      '    if (options.enableInput) {\n' +
+      '        (window as any).__vmdeSourceRenderEdit?.();\n' +
+      '    }\n' +
+      SV_RENDER_EDIT_ANCHOR,
   )
 }
 
@@ -4706,7 +4768,8 @@ export const VDITOR_TS_PATCHES = [
   },
   {
     file: /vditor[/\\]src[/\\]ts[/\\]sv[/\\]index\.ts$/,
-    transform: patchSvCopyGuard,
+    // Task 733 / 045: then the composition-end rebuild gate.
+    transform: (code) => patchSvCompositionEndRebuild(patchSvCopyGuard(code)),
   },
   {
     // Task 733 / 015: V-S1, the Source input spins only the caret block.
@@ -4855,11 +4918,14 @@ export const VDITOR_TS_PATCHES = [
   {
     file: /vditor[/\\]src[/\\]ts[/\\]sv[/\\]process\.ts$/,
     // Task 733 / 015 (R-1): then V-S3b, the Source split that also matches a re-serialized `<br>`.
+    // Task 733 / 045: then the edit-render signal before the preview.
     transform: (code) =>
-      patchSvSplitAnyBreak(
-        patchModeAfterRender(
-          patchDeferGetMarkdown(code, 'sv/process.ts'),
-          'sv',
+      patchSvRenderEditSignal(
+        patchSvSplitAnyBreak(
+          patchModeAfterRender(
+            patchDeferGetMarkdown(code, 'sv/process.ts'),
+            'sv',
+          ),
         ),
       ),
   },

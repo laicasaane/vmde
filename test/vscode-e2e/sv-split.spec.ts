@@ -260,14 +260,45 @@ test('sv split: renders the battery, morph keeps diagram DOM, scroll + mode repo
     const sel = getSelection()!
     sel.removeAllRanges()
     sel.addRange(r)
+    // Task 733 / 045: the first preview read after the edit must already see it. Vditor's Source
+    // handler renders the preview synchronously, before VMDE's bubble listener; the read used to pair
+    // the edited rendering with the pre-edit bytes. Only the returned string is recorded (an exact
+    // read here could publish a delta). The input marks are read from the e2e seed stats.
+    const w = window as unknown as {
+      __vmdePreviewSnapshot?: () => string
+      __vmdeIncrementalSeedStats?: {
+        userInputMarks: number
+        trustedInputMarks: number
+      }
+    }
+    const marks = () => ({
+      all: w.__vmdeIncrementalSeedStats?.userInputMarks ?? -1,
+      trusted: w.__vmdeIncrementalSeedStats?.trustedInputMarks ?? -1,
+    })
+    const marksBefore = marks()
+    const snapshot = w.__vmdePreviewSnapshot
+    let firstRead: string | null = null
+    if (snapshot)
+      w.__vmdePreviewSnapshot = () => {
+        const text = snapshot()
+        firstRead ??= text
+        return text
+      }
     document.execCommand('insertText', false, 'Z')
+    const marksAfter = marks()
     // preview delay 500 + morph + engine pass
     // task 512: leave — rule 2 outright. `markSurvived` exists to prove a DELAYED teardown (morph
     // runs, THEN a later engine pass tears the unchanged mark off) does NOT happen. A poll on
     // `typedVisible` would resolve the instant the edit lands, before the delayed engine pass had
     // any chance to run — deleting exactly the regression coverage this settle provides.
     await new Promise((res) => setTimeout(res, 3000))
+    if (snapshot && w.__vmdePreviewSnapshot !== snapshot)
+      w.__vmdePreviewSnapshot = snapshot
     return {
+      wrapped: snapshot !== undefined,
+      firstReadHasEdit: (firstRead as string | null)?.includes('Z#') ?? false,
+      marksDelta: marksAfter.all - marksBefore.all,
+      trustedDelta: marksAfter.trusted - marksBefore.trusted,
       markSurvived: !!pv.querySelector('[data-probe-mark]'),
       typedVisible: (pv.textContent ?? '').includes('Z#'),
       d2StillThere: pv.querySelectorAll('.language-d2 svg').length,
@@ -277,6 +308,11 @@ test('sv split: renders the battery, morph keeps diagram DOM, scroll + mode repo
   expect(morph.typedVisible).toBe(true) // the edit DID re-render its block
   expect(morph.markSurvived).toBe(true) // …without tearing the unchanged diagram down
   expect(morph.d2StillThere).toBeGreaterThan(0)
+  // Task 733 / 045: the first preview read includes the edit, and the edit was marked once, trusted.
+  expect(morph.wrapped).toBe(true)
+  expect(morph.firstReadHasEdit).toBe(true)
+  expect(morph.marksDelta).toBe(1)
+  expect(morph.trustedDelta).toBe(1)
 
   // ── back to IR: the editor returns to (near) where it was, not to the top ──
   await frame.locator('body').evaluate(async () => {

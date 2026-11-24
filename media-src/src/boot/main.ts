@@ -28,6 +28,7 @@ import {
 } from './live-config'
 import { configureDeferredEditView } from './deferred-edit-view'
 import { sessionState } from './editor-session-state'
+import { installSourceEditSignals } from './finish-init'
 import {
   configureMessageRouter,
   replayDeferredCheckboxHistory,
@@ -150,6 +151,12 @@ import '../vscode-chrome.css'
 // STALE intent before those handlers run and set a FRESH one in the same event — never the reverse,
 // which would wipe out the fresh intent immediately after those handlers set it. See caret.ts's
 // installCaretInvalidation doc comment.
+// Task 733 / 045 (Q-290): the first listener boot registers. It owns the user-input mark of every editor
+// input (a Source input's in the capture phase, before Vditor renders its preview), the Source
+// edit-render signal, and the window-capture `compositionend` listener whose no-op evidence relies on
+// running before any other window-capture `compositionend` listener (none is registered by an import;
+// test/backend/source-edit-wiring.test.ts checks both).
+installSourceEditSignals({ isEditorInput: isActiveEditorInput })
 // Task 294: establish the composition authority before any capture-phase key interceptor below can
 // observe an IME keydown; every handler then reads the same state instead of racing local flags.
 installCompositionState()
@@ -689,7 +696,6 @@ document.addEventListener('input', (event) => {
   if (!isActiveEditorInput(event)) return
   invalidateEmojiInsertion()
   ;(window as any).__vmdeInvalidatePreview?.('content')
-  sessionState.editSync?.markUserInput(event.isTrusted)
   // Task 677: only the user's own typing schedules an automatic wrap. A programmatic input (a
   // config change's re-render, an editor rebuild) is dispatched untrusted and used to schedule a new
   // attempt right after a config change had cancelled the pending one.

@@ -352,8 +352,175 @@ function installModeSwitchNotice(): () => void {
   return () => document.removeEventListener('click', onClick, true)
 }
 
+/** Task 733 / 045: see `installSourceEditSignals`. */
+export interface SourceEditSignalsOptions {
+  /** An `input` of the active editor (boot/main.ts `isActiveEditorInput`); a toolbar dialog's is not. */
+  isEditorInput(event: Event): boolean
+}
+
+/** Task 733 / 045: a Source composition start, the evidence its end may use (Q-289). */
+interface SourceCompositionStart {
+  root: Element
+  block: Element
+  text: string
+  inputs: number
+}
+
+/**
+ * Task 733 / 045: a Source start that gives no evidence (a selection, a caret outside its root, or a
+ * second start before an end). Its root lets its own end retire it, in every mode.
+ */
+interface AmbiguousSourceStart {
+  root: Element
+  ambiguous: true
+}
+
+/**
+ * Task 733 / 045 (F2): the user-input mark of every editor `input` and the two Source hooks.
+ * Vditor's Source handlers render the preview synchronously, before any document bubble listener, and
+ * the preview reads the exact source.
+ * - The mark (`EditSync.markUserInput(event.isTrusted)`) is made once per dispatch. A Source input is
+ *   marked in the capture phase, before Vditor's target handler renders, so a trusted edit keeps its
+ *   pre-edit bytes for the one-span rebase (Task 607, Q-284). Any other editor input (IR, WYSIWYG, or a
+ *   Source input whose capture found no controller) is marked in the bubble phase, as before. A per-event
+ *   record lets the bubble skip what capture marked: nested inputs count once each, and every dispatch
+ *   first drops a record an earlier dispatch of the same event object left (a stopped event dispatched
+ *   again).
+ * - `window.__vmdeSourceRenderEdit` is called by the patched Source `processAfterRender` before
+ *   `preview.render` for an edit-driven render (`patchSvRenderEditSignal`), so edit-sync hears of every
+ *   edit, including those without an `input` event: toolbar list, check and quote, Enter, Paste Plain and
+ *   `compositionend` (Q-283).
+ * - `window.__vmdeSourceCompositionEnd(event)` is called by Vditor's own Source `compositionend` handler
+ *   (`patchSvCompositionEndRebuild`) before its rebuild. It answers false only for a composition that
+ *   changed nothing, and the handler then skips the rebuild: no re-spin, no render, no post, and the
+ *   pending Task 601 checkpoint of an earlier edit stays armed (Q-285 b). Evidence (Q-286, Q-289): the
+ *   Source `compositionstart` of a collapsed caret in the current Source root records the caret's block
+ *   (or the root, for a caret on the root itself), its text and the Source input count; a selection, a
+ *   caret outside the current root, or a second start before an end records no evidence. The next Source
+ *   `compositionend` takes that record as its own evidence, keyed by the end event object, at window
+ *   capture; each observed dispatch first drops any evidence of that object. This listener is the first
+ *   window-capture `compositionend` listener (boot/main.ts registers it first; Q-290). Vditor's handler
+ *   uses only the evidence of the event it handles, and only when no Source input was counted since the
+ *   start (up to this decision), the root is still the current Source root and contains the block, and
+ *   the block's text is unchanged. Any other end (unmatched, displaced, nested, overlapping, or of a dialog
+ *   or IR) has no evidence and rebuilds. Q-288 (residual
+ *   risk R7): an equal-text structural change inside the block without an input is not checked.
+ * No subtree observer (test/backend/observer-registry.test.ts). The session is read at call time, so a
+ * re-init's edit-sync counts. Returns the uninstall.
+ */
+export function installSourceEditSignals(
+  options: SourceEditSignalsOptions,
+): () => void {
+  const { isEditorInput } = options
+  const marked = new WeakSet<Event>()
+  // Source editor inputs seen so far; a start records the count, its end's handler compares it.
+  let sourceInputs = 0
+  // The latest Source start not yet taken by an end.
+  let pending: SourceCompositionStart | AmbiguousSourceStart | null = null
+  const evidence = new WeakMap<Event, SourceCompositionStart>()
+  const sourceRoot = (): Element | null =>
+    innerVditor()?.currentMode === 'sv'
+      ? (innerVditor()?.sv?.element ?? null)
+      : null
+  const sourceEvent = (event: Event): Element | null => {
+    const root = sourceRoot()
+    return root && isEditorInput(event) ? root : null
+  }
+  const onCaptureInput = (event: Event): void => {
+    marked.delete(event)
+    if (!sourceEvent(event)) return
+    sourceInputs++
+    const sync = sessionState.editSync
+    if (!sync) return
+    sync.markUserInput(event.isTrusted)
+    marked.add(event)
+  }
+  const onBubbleInput = (event: Event): void => {
+    if (!isEditorInput(event) || marked.delete(event)) return
+    sessionState.editSync?.markUserInput(event.isTrusted)
+  }
+  // The evidence a Source start gives: its caret's block (or the root) and text, or none.
+  const startRecord = (
+    root: Element,
+  ): SourceCompositionStart | AmbiguousSourceStart => {
+    const selection = getSelection()
+    if (!selection?.isCollapsed || !selection.anchorNode)
+      return { root, ambiguous: true }
+    const node = selection.anchorNode
+    const element = node instanceof Element ? node : node.parentElement
+    // Only a caret inside the current Source root at start time is evidence (no foreign caret, and no
+    // root fallback for one).
+    if (!element || !root.contains(element)) return { root, ambiguous: true }
+    const inner = element.closest('[data-block]')
+    const block = inner && root.contains(inner) ? inner : root
+    return { root, block, text: block.textContent ?? '', inputs: sourceInputs }
+  }
+  const onCompositionStart = (event: Event): void => {
+    const root = sourceEvent(event)
+    if (!root) return
+    // Overlapping starts before an end are ambiguous (Q-289): that end rebuilds.
+    const overlapping = pending !== null
+    pending = overlapping ? { root, ambiguous: true } : startRecord(root)
+  }
+
+  // An end on the pending start's own Source surface, even while that surface is inactive.
+  const ownsPendingStart = (event: Event): boolean =>
+    pending !== null &&
+    event.target instanceof Node &&
+    pending.root.contains(event.target)
+  const onCompositionEndCapture = (event: Event): void => {
+    // Each observed dispatch starts without evidence, in every mode: a re-dispatched end object never
+    // reuses the old.
+    evidence.delete(event)
+    if (!sourceEvent(event)) {
+      // Source inactive: the end still retires its own pending start, an ambiguous one too; a dialog
+      // or IR end, or an end on another surface, leaves it.
+      if (ownsPendingStart(event)) pending = null
+      return
+    }
+    if (pending && !('ambiguous' in pending)) evidence.set(event, pending)
+    pending = null
+  }
+  const onCompositionEnd = (event?: Event): boolean => {
+    const start = event ? evidence.get(event) : undefined
+    if (event) evidence.delete(event)
+    return !(
+      start &&
+      start.inputs === sourceInputs &&
+      start.root === sourceRoot() &&
+      start.root.contains(start.block) &&
+      start.block.textContent === start.text
+    )
+  }
+  const onRender = (): void => sessionState.editSync?.noteSourceEdit()
+  document.addEventListener('input', onCaptureInput, true)
+  document.addEventListener('input', onBubbleInput)
+  window.addEventListener('compositionstart', onCompositionStart, true)
+  window.addEventListener('compositionend', onCompositionEndCapture, true)
+  window.__vmdeSourceRenderEdit = onRender
+  window.__vmdeSourceCompositionEnd = onCompositionEnd
+  return () => {
+    document.removeEventListener('input', onCaptureInput, true)
+    document.removeEventListener('input', onBubbleInput)
+    window.removeEventListener('compositionstart', onCompositionStart, true)
+    window.removeEventListener('compositionend', onCompositionEndCapture, true)
+    pending = null
+    if (window.__vmdeSourceRenderEdit === onRender)
+      delete window.__vmdeSourceRenderEdit
+    if (window.__vmdeSourceCompositionEnd === onCompositionEnd)
+      delete window.__vmdeSourceCompositionEnd
+  }
+}
+
 declare global {
   interface Window {
+    /** Task 733 / 045: called by the patched Source `processAfterRender` (`patchSvRenderEditSignal`). */
+    __vmdeSourceRenderEdit?(): void
+    /**
+     * Task 733 / 045: called by Vditor's patched Source `compositionend` handler
+     * (`patchSvCompositionEndRebuild`); false skips the rebuild of a composition that changed nothing.
+     */
+    __vmdeSourceCompositionEnd?(event: Event): boolean
     /** 036 core C2 (R4.3): called first by the patched `setEditMode` (`patchBeforeEditMode`). */
     __vmdeBeforeEditMode?(vditor: unknown, type: string, user: boolean): void
     /**
@@ -940,11 +1107,19 @@ export function runFinishInit(msg: InitPayload, deps: FinishInitDeps): void {
     'preview-state',
     // Task 607: the preview only displays; the rendering stands in when no exact source is owned.
     // Task 733 / 015 (D-6): the model text, when the model owns it, is the snapshot with no serialization.
-    installPreviewState(
-      innerVditor() ?? window.vditor,
-      () =>
-        sessionState.modelSession?.modeSwitchText() ?? legacyExactMarkdown(),
-    ),
+    installPreviewState(innerVditor() ?? window.vditor, () => {
+      // Task 733 / 045: e2e only, which route answered the preview read (the first-edit probe).
+      const modelText = sessionState.modelSession?.modeSwitchText()
+      const stats = (
+        window as { __vmdeIncrementalSeedStats?: Record<string, number> }
+      ).__vmdeIncrementalSeedStats
+      if (stats) {
+        const key =
+          modelText === undefined ? 'previewLegacyRoutes' : 'previewModelRoutes'
+        stats[key] = (stats[key] ?? 0) + 1
+      }
+      return modelText ?? legacyExactMarkdown()
+    }),
   )
   observers.set(
     'preview-task-checkboxes',

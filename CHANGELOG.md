@@ -72,6 +72,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/), versions follow
 
 ### Fixed
 
+- In Split, the preview shows the first edit made in the source pane right away, and that edit keeps the file's exact text.
 - In IR, one Undo after Replace or Replace All restores the exact Markdown, and Redo reapplies the replacement.
 - Typing after an external file change preserves the newer file contents. VMDE warns if an edit was based on an older version.
 - If VS Code refuses an IR replacement Undo or Redo, typing that could not be applied appears in a separate Recovered edits document.

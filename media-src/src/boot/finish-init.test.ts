@@ -9,6 +9,7 @@ import {
   it,
   vi,
 } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { Disposables } from '../util/disposables'
 import { sessionState } from './editor-session-state'
 
@@ -91,8 +92,10 @@ vi.mock('../diagrams/diagram-retheme', () => ({
 vi.mock('../util/inner-vditor', () => ({
   innerVditor: innerVditorMock,
 }))
+// Task 733 / 045: the Source consumer cases below point edit-sync at their Source root.
+const activeModeElementMock = vi.fn((): HTMLElement | undefined => undefined)
 vi.mock('../util/source-map', () => ({
-  activeModeElement: (): HTMLElement | undefined => undefined,
+  activeModeElement: () => activeModeElementMock(),
   blockModeElement: (): HTMLElement | null => null,
 }))
 vi.mock('../chrome/responsive-tables', () => ({ fixResponsiveTables: vi.fn() }))
@@ -1178,4 +1181,1533 @@ describe('036 core C4 replay admission for editor commands', () => {
       selection.mockRestore()
     }
   })
+})
+
+// Task 733 / 045 (F2): the installed consumer. A real edit-sync controller, the production installer
+// (the capture and bubble marks of every editor input and the two Source hooks), Vditor's own Source
+// editor listeners (`sv/index.ts`), input handler, mode switch (`toolbar/EditMode.ts`), `setValue` and
+// Undo engine, all bundled with the production patch registry, and real Lute. The browser's part (the
+// DOM change, then the event) is played by the case; a trusted event goes through jsdom's own dispatch.
+describe('045 Source edit signals (installed consumer)', () => {
+  // Vditor's Source modules as the bundle ships them: esbuild with the production `vditorSourceConfig`
+  // and every source patch of its registry for the files bundled (`patchSvRenderEditSignal` and
+  // `patchSvCompositionEndRebuild` among them). esbuild refuses the jsdom realm, so a child Node process
+  // bundles them, as undo-snapshot-neutral.test.ts does for Undo. A mocked module would not do: the test
+  // runner loads Vditor's own imports natively, unmocked.
+  const SOURCE_BUNDLE_SCRIPT = `
+import { build } from 'esbuild'
+import { readFile } from 'node:fs/promises'
+const shared = await import(new URL('./media-src/esbuild-shared.mjs', 'file://' + process.cwd() + '/').href)
+const { plugins, ...config } = shared.vditorSourceConfig
+const patches = { name: 'source-patches', setup(builder) {
+  builder.onLoad({ filter: /vditor[\\/\\\\]src[\\/\\\\].*\\.ts$/ }, async (args) => {
+    const entries = shared.VDITOR_TS_PATCHES.filter((entry) => entry.file.test(args.path))
+    if (entries.length === 0) return undefined
+    let contents = await readFile(args.path, 'utf8')
+    for (const entry of entries) contents = entry.transform(contents, args.path)
+    return { loader: 'ts', contents }
+  })
+} }
+const result = await build({
+  stdin: {
+    contents: "export { Editor } from './sv/index'; export { inputEvent } from './sv/inputEvent'; " +
+      "export { processAfterRender, processSpinVditorSVDOM, processToolbar } from './sv/process'; " +
+      "export { Undo } from './undo/index'; export { setEditMode } from './toolbar/EditMode'; " +
+      "export { default as Vditor } from '../index';",
+    resolveDir: process.cwd() + '/media-src/node_modules/vditor/src/ts',
+    loader: 'ts',
+    sourcefile: 'source-entry.ts',
+  },
+  bundle: true, write: false, format: 'cjs', platform: 'browser', logLevel: 'error',
+  ...config,
+  plugins: [plugins[0], patches],
+})
+process.stdout.write(result.outputFiles[0].text)
+`
+  type SourceModules = {
+    Editor: new (vditor: unknown) => { element: HTMLElement }
+    inputEvent(vditor: unknown, event?: Event): void
+    processAfterRender(vditor: unknown, options?: Record<string, boolean>): void
+    processSpinVditorSVDOM(markdown: string, vditor: unknown): string
+    processToolbar(
+      vditor: unknown,
+      button: Element,
+      prefix: string,
+      suffix: string,
+    ): void
+    Undo: new () => any
+    setEditMode(vditor: unknown, type: string, event: Event | string): void
+    Vditor: { prototype: { setValue(markdown: string): void } }
+  }
+  let bundled: SourceModules | undefined
+  const shippedSource = (): SourceModules => {
+    if (bundled) return bundled
+    const text = execFileSync(
+      process.execPath,
+      ['--input-type=module', '-e', SOURCE_BUNDLE_SCRIPT],
+      { cwd: process.cwd(), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+    )
+    const module = { exports: {} as SourceModules }
+    new Function('module', 'exports', text)(module, module.exports)
+    bundled = module.exports
+    return bundled
+  }
+  // jsdom marks `dispatchEvent` events untrusted (DOM standard); its own events go through the
+  // target's internal dispatch with the trusted flag set. Each case checks the flag it relied on.
+  const implOf = (object: object): any =>
+    (object as any)[
+      Object.getOwnPropertySymbols(object).find(
+        (symbol) => String(symbol) === 'Symbol(impl)',
+      ) as symbol
+    ]
+  const dispatchTrusted = (target: EventTarget, event: Event): void => {
+    implOf(event).isTrusted = true
+    implOf(target)._dispatch(implOf(event))
+  }
+  beforeEach(() => {
+    // The file's own hooks fake `setTimeout` and check that no timer is left after each case.
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+    // Vditor's caret marker (`Lute.Caret`), read from the global as in the webview.
+    vi.stubGlobal('Lute', { Caret: '‸' })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    compositionActive.mockReset()
+    compositionActive.mockImplementation(() => false)
+  })
+
+  type Pair = { exact: string | null; rendered: string }
+  const setup = async (o: {
+    opened: string
+    /** The Source text Vditor shows; the opened text with LF line endings when omitted. */
+    source?: string
+    trusted?: boolean
+    previewHidden?: boolean
+  }) => {
+    const { installSourceEditSignals } = await import('./finish-init')
+    const { createEditSync } = await import('../bridge/edit-sync')
+    const { createRealLute } = await import('../testing/real-lute')
+    const { Editor, processSpinVditorSVDOM } = shippedSource()
+    const previewElement = document.createElement('div')
+    previewElement.style.display = o.previewHidden ? 'none' : 'block'
+    const reads: Pair[] = []
+    const parented = () => {
+      const parent = document.createElement('div')
+      const element = document.createElement('div')
+      parent.append(element)
+      return { element }
+    }
+    const vditor: Record<string, any> = {
+      currentMode: 'sv',
+      lute: createRealLute('sv').lute,
+      options: {
+        placeholder: '',
+        debugger: false,
+        typewriterMode: false,
+        counter: { enable: false },
+        cache: { enable: false },
+        undoDelay: 800,
+        preview: { mode: 'both', maxWidth: 800 },
+        outline: { enable: false, position: 'left' },
+        // boot/vditor-init.ts `input()`: Vditor's input option schedules the edit-sync post.
+        input: () => sessionState.editSync?.schedule(),
+      },
+      hint: { render: () => undefined, element: document.createElement('div') },
+      // Vditor's Preview.render returns at once while the pane is hidden (preview/index.ts); the patched
+      // one reads `__vmdePreviewSnapshot` (finish-init: the model text, else `legacyExactMarkdown`).
+      preview: {
+        element: previewElement,
+        render: () => {
+          const sync = sessionState.editSync
+          if (sync && previewElement.style.display !== 'none')
+            reads.push(sync.snapshotPair())
+        },
+      },
+      toolbar: { elements: {}, element: document.createElement('div') },
+      outline: {
+        element: document.createElement('div'),
+        render: () => '',
+        toggle: () => undefined,
+      },
+      wysiwyg: parented(),
+      ir: parented(),
+      undo: { addToUndoStack: vi.fn(), resetIcon: () => undefined },
+    }
+    vditor.sv = new Editor(vditor as never)
+    const root = vditor.sv.element as HTMLElement
+    root.innerHTML = processSpinVditorSVDOM(
+      o.source ?? o.opened.replace(/\r\n?/g, '\n'),
+      vditor as never,
+    )
+    const dialog = document.createElement('input')
+    document.body.append(root, dialog)
+    innerVditorMock.mockImplementation(() => vditor as never)
+    activeModeElementMock.mockImplementation(() => root)
+    const post = vi.fn()
+    ;(window as unknown as { vscode: unknown }).vscode = { postMessage: post }
+    ;(window as unknown as { vditor: unknown }).vditor = {
+      getValue: () => root.textContent ?? '',
+      getCurrentMode: () => vditor.currentMode,
+    }
+    const es = createEditSync({
+      isSuppressed: () => false,
+      docMode: { cvActive: false, streamActive: false, docChars: 100 },
+      initialMarkdown: o.opened,
+    })
+    const previous = sessionState.editSync
+    sessionState.editSync = es
+    const marks = vi.spyOn(es, 'markUserInput')
+    const notes = vi.spyOn(es, 'noteSourceEdit')
+    const trust = { value: o.trusted ?? true }
+    // The production options: only the editor filter (boot/main.ts), read at call time like
+    // `isActiveEditorInput` (the active Source element may be replaced).
+    const uninstall = installSourceEditSignals({
+      isEditorInput: (event) =>
+        (vditor.sv.element as HTMLElement).contains(event.target as Node),
+    })
+    const edits = () =>
+      post.mock.calls
+        .filter((call) => call[0]?.command === 'edit')
+        .map((call) => call[0].content as string)
+    // The text node holding `text` in the Source DOM.
+    const textNode = (text: string): Text => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node; node = walker.nextNode())
+        if ((node as Text).data.includes(text)) return node as Text
+      throw new Error(`no text node holds ${JSON.stringify(text)}`)
+    }
+    const caret = (node: Node, offset: number, end?: number) => {
+      const range = document.createRange()
+      range.setStart(node, offset)
+      if (end === undefined) range.collapse(true)
+      else range.setEnd(node, end)
+      getSelection()!.removeAllRanges()
+      getSelection()!.addRange(range)
+    }
+    const dispatch = (event: Event, trusted = trust.value) => {
+      if (trusted) dispatchTrusted(root, event)
+      else root.dispatchEvent(event)
+      expect(event.isTrusted).toBe(trusted)
+    }
+    // A browser text insertion at the caret: the DOM change, the caret after it, then the `input`.
+    const type = (data: string, init: InputEventInit = {}) => {
+      const range = getSelection()!.getRangeAt(0)
+      const node = range.startContainer as Text
+      node.insertData(range.startOffset, data)
+      caret(node, range.startOffset + data.length)
+      const event = new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data,
+        ...init,
+      })
+      dispatch(event)
+      return event
+    }
+    const compose = (
+      type: 'compositionstart' | 'compositionend',
+      data = '',
+    ) => {
+      const event = new CompositionEvent(type, { bubbles: true, data })
+      dispatch(event)
+      return event
+    }
+    const cleanup = () => {
+      getSelection()?.removeAllRanges()
+      vi.clearAllTimers()
+      uninstall()
+      root.remove()
+      dialog.remove()
+      es.dispose()
+      sessionState.editSync = previous
+      activeModeElementMock.mockReset()
+      activeModeElementMock.mockImplementation(() => undefined)
+      innerVditorMock.mockReset()
+      innerVditorMock.mockImplementation(() => ({
+        currentMode: 'ir',
+        preview: { previewElement: undefined },
+      }))
+    }
+    return {
+      es,
+      vditor,
+      root,
+      dialog,
+      reads,
+      marks,
+      notes,
+      trust,
+      edits,
+      textNode,
+      caret,
+      dispatch,
+      type,
+      compose,
+      cleanup,
+      /** Source text as edit-sync reads it (without Vditor's editable terminal newline span). */
+      sourceText: () => es.snapshotMarkdown(),
+    }
+  }
+  type Harness = Awaited<ReturnType<typeof setup>>
+  const run = async (
+    o: Parameters<typeof setup>[0],
+    body: (t: Harness) => void | Promise<void>,
+  ) => {
+    const t = await setup(o)
+    try {
+      await body(t)
+    } finally {
+      t.cleanup()
+    }
+  }
+
+  describe('user-input marks', () => {
+    it('marks a trusted Source edit once, in capture, so the first preview read rebases it', () =>
+      run({ opened: '# T\r\n\r\nalpha beta\r\n' }, async (t) => {
+        t.caret(t.textNode('#'), 0)
+        t.type('Z')
+        expect(t.marks.mock.calls).toEqual([[true]])
+        expect(t.reads).toEqual([
+          {
+            exact: 'Z# T\r\n\r\nalpha beta\r\n',
+            rendered: 'Z# T\n\nalpha beta\n',
+          },
+        ])
+        expect(t.notes).toHaveBeenCalledTimes(1)
+        // After bubble and before the 250 ms post: the rebased exact bytes still stand.
+        expect(t.es.snapshotExactMarkdown()).toBe('Z# T\r\n\r\nalpha beta\r\n')
+        await vi.advanceTimersByTimeAsync(300)
+        expect(t.edits()).toEqual(['Z# T\n\nalpha beta\n'])
+      }))
+
+    it('marks an attached synthetic Source input once, untrusted; its first read never owns the pre-edit bytes', () =>
+      run(
+        { opened: '# T\r\n\r\nalpha beta\r\n', trusted: false },
+        async (t) => {
+          t.caret(t.textNode('alpha'), 0)
+          t.type('Z')
+          expect(t.marks.mock.calls).toEqual([[false]])
+          expect(t.reads).toEqual([
+            { exact: null, rendered: '# T\n\nZalpha beta\n' },
+          ])
+          await vi.advanceTimersByTimeAsync(300)
+          expect(t.edits()).toEqual(['# T\n\nZalpha beta\n'])
+        },
+      ))
+
+    it('marks a trusted IR input once, at bubble, with its trust', () =>
+      run({ opened: 'a\n' }, (t) => {
+        // The Source element stands in for the IR one; its own Vditor handler needs a caret.
+        t.caret(t.textNode('a'), 0)
+        t.vditor.currentMode = 'ir'
+        t.dispatch(new InputEvent('input', { bubbles: true }))
+        t.dispatch(new InputEvent('input', { bubbles: true }), false)
+        expect(t.marks.mock.calls).toEqual([[true], [false]])
+      }))
+
+    it('marks a trusted non-bubbling composing Source input once, in capture, without a render', () =>
+      run({ opened: '|a|\r\n|-|\r\n', source: '| a |\n| - |\n' }, (t) => {
+        t.caret(t.textNode('a'), 0)
+        t.compose('compositionstart')
+        t.dispatch(
+          new InputEvent('input', { bubbles: false, isComposing: true }),
+        )
+        expect(t.marks.mock.calls).toEqual([[true]])
+        expect(t.notes).not.toHaveBeenCalled()
+      }))
+
+    it('marks nested Source inputs once each', () =>
+      run({ opened: 'a\n' }, (t) => {
+        t.caret(t.textNode('a'), 0)
+        const nest = () => {
+          t.root.removeEventListener('input', nest)
+          t.type('Y')
+        }
+        t.root.addEventListener('input', nest)
+        t.type('X')
+        expect(t.marks.mock.calls).toEqual([[true], [true]])
+      }))
+
+    it('gives a stopped Source input dispatched again in IR its bubble mark', () =>
+      run({ opened: 'a\n' }, (t) => {
+        t.caret(t.textNode('a'), 0)
+        const stop = (event: Event) => event.stopPropagation()
+        t.root.addEventListener('input', stop)
+        const event = t.type('X')
+        t.root.removeEventListener('input', stop)
+        expect(t.marks).toHaveBeenCalledTimes(1)
+        t.vditor.currentMode = 'ir'
+        t.dispatch(event)
+        expect(t.marks.mock.calls).toEqual([[true], [true]])
+      }))
+
+    it('marks at bubble when no controller took the capture mark', () =>
+      run({ opened: 'a\n' }, (t) => {
+        t.caret(t.textNode('a'), 0)
+        const es = sessionState.editSync
+        sessionState.editSync = undefined
+        const restore = () => {
+          sessionState.editSync = es
+        }
+        // Back at the target, before Vditor's handler renders (capture listeners run first there).
+        t.root.addEventListener('input', restore, { capture: true, once: true })
+        t.type('X')
+        expect(t.marks.mock.calls).toEqual([[true]])
+      }))
+
+    it('does not mark a toolbar dialog input', () =>
+      run({ opened: 'a\n' }, (t) => {
+        dispatchTrusted(t.dialog, new InputEvent('input', { bubbles: true }))
+        t.dialog.dispatchEvent(new InputEvent('input', { bubbles: true }))
+        expect(t.marks).not.toHaveBeenCalled()
+      }))
+  })
+
+  describe('edits without an input event', () => {
+    it('signals a toolbar List edit before its preview read and publishes it', () =>
+      run({ opened: '# T\n\nalpha beta\n' }, async (t) => {
+        t.caret(t.textNode('alpha'), 2)
+        const button = document.createElement('button')
+        button.setAttribute('data-type', 'list')
+        shippedSource().processToolbar(t.vditor as never, button, '', '')
+        expect(t.marks).not.toHaveBeenCalled()
+        expect(t.notes).toHaveBeenCalledTimes(1)
+        expect(t.reads).toEqual([
+          { exact: null, rendered: '# T\n\n* alpha beta\n' },
+        ])
+        await vi.advanceTimersByTimeAsync(300)
+        expect(t.edits()).toEqual(['# T\n\n* alpha beta\n'])
+      }))
+
+    it('signals a Paste Plain insertion (Vditor `insertValue`: a Range write, then `inputEvent`)', () =>
+      run({ opened: '# T\n\nalpha beta\n' }, async (t) => {
+        t.caret(t.textNode('alpha'), 0)
+        // Vditor `src/index.ts` insertValue, Source branch.
+        const range = getSelection()!.getRangeAt(0)
+        range.insertNode(document.createTextNode('P'))
+        range.collapse(false)
+        shippedSource().inputEvent(t.vditor as never)
+        expect(t.marks).not.toHaveBeenCalled()
+        expect(t.notes).toHaveBeenCalledTimes(1)
+        expect(t.reads).toEqual([
+          { exact: null, rendered: '# T\n\nPalpha beta\n' },
+        ])
+        await vi.advanceTimersByTimeAsync(300)
+        expect(t.edits()).toEqual(['# T\n\nPalpha beta\n'])
+      }))
+  })
+
+  describe('IME composition', () => {
+    // Chromium: drafts are composing `input` events (Vditor's handler returns on its composing lock),
+    // then `compositionend`, whose Vditor handler calls `inputEvent` and renders.
+    const draft = (t: Harness, data: string) =>
+      t.type(data, { isComposing: true, inputType: 'insertCompositionText' })
+
+    it('posts nothing for the start and the drafts', () =>
+      run({ opened: 'a\r\nb\r\n' }, async (t) => {
+        t.caret(t.textNode('a'), 0)
+        t.compose('compositionstart')
+        draft(t, 'か')
+        await vi.advanceTimersByTimeAsync(300)
+        expect(t.notes).not.toHaveBeenCalled()
+        expect(t.reads).toEqual([])
+        expect(t.edits()).toEqual([])
+      }))
+
+    it('signals the end of a composition with drafts and publishes the committed text once', () =>
+      run({ opened: 'a\r\nb\r\n' }, async (t) => {
+        t.caret(t.textNode('a'), 0)
+        t.compose('compositionstart')
+        draft(t, '仮')
+        expect(t.notes).not.toHaveBeenCalled()
+        t.compose('compositionend', '仮')
+        expect(t.notes).toHaveBeenCalledTimes(1)
+        expect(t.reads.at(-1)).toEqual({
+          exact: '仮a\r\nb\r\n',
+          rendered: '仮a\nb\n',
+        })
+        await vi.advanceTimersByTimeAsync(300)
+        expect(t.edits()).toEqual(['仮a\nb\n'])
+      }))
+
+    it('signals a commit with no observed input and never pairs it with the pre-edit bytes', () =>
+      run({ opened: 'a\r\nb\r\n' }, async (t) => {
+        const a = t.textNode('a')
+        t.caret(a, 0)
+        t.compose('compositionstart')
+        a.insertData(0, '仮')
+        t.caret(a, 1)
+        t.compose('compositionend', '仮')
+        expect(t.notes).toHaveBeenCalledTimes(1)
+        expect(t.reads.at(-1)).toEqual({ exact: null, rendered: '仮a\nb\n' })
+        await vi.advanceTimersByTimeAsync(300)
+        expect(t.edits()).toEqual(['仮a\nb\n'])
+      }))
+
+    it('signals a cancel over a selected range, which leaves the selection deleted', () =>
+      run({ opened: 'alpha\n\nbravo\n' }, async (t) => {
+        const bravo = t.textNode('bravo')
+        t.caret(bravo, 0, 5)
+        t.compose('compositionstart')
+        // Chromium replaces the selection with the draft, and the cancel removes the draft again.
+        bravo.deleteData(0, 5)
+        t.caret(bravo, 0)
+        t.dispatch(
+          new InputEvent('input', {
+            bubbles: true,
+            isComposing: true,
+            inputType: 'insertCompositionText',
+            data: '',
+          }),
+        )
+        t.compose('compositionend', '')
+        expect(t.notes).toHaveBeenCalledTimes(1)
+        await vi.advanceTimersByTimeAsync(300)
+        expect(t.edits()).toEqual(['alpha\n\n\n'])
+      }))
+
+    describe('a composition that changed nothing (no draft, unchanged text)', () => {
+      const opened = '|a|\r\n|-|\r\n'
+      const source = '| a |\n| - |\n'
+      // The caret in the table block, or on the Source root (the split spec's
+      // `selectNodeContents(root)` collapsed to its start; no block).
+      const place = (t: Harness, at: 'block' | 'root') => {
+        if (at === 'block') t.caret(t.textNode('a'), 1)
+        else {
+          const range = document.createRange()
+          range.selectNodeContents(t.root)
+          range.collapse(true)
+          getSelection()!.removeAllRanges()
+          getSelection()!.addRange(range)
+        }
+      }
+      it.each([
+        ['block', false, false],
+        ['block', false, true],
+        ['block', true, false],
+        ['block', true, true],
+        ['root', false, false],
+        ['root', false, true],
+        ['root', true, false],
+        ['root', true, true],
+      ] as const)(
+        'keeps the pair (caret %s, read before %s, preview hidden %s) through natural settle and Save, and posts nothing',
+        (at, anchored, previewHidden) =>
+          run({ opened, source, previewHidden }, async (t) => {
+            const before = t.sourceText()
+            if (anchored)
+              expect(t.es.snapshotPair()).toEqual({
+                exact: opened,
+                rendered: before,
+              })
+            place(t, at)
+            t.compose('compositionstart')
+            t.compose('compositionend', '')
+            // Vditor's end handler skipped its rebuild: no re-spin, no render, no signal.
+            expect(t.reads).toEqual([])
+            expect(t.notes).not.toHaveBeenCalled()
+            expect(t.marks).not.toHaveBeenCalled()
+            expect(t.sourceText()).toBe(before)
+            expect(t.vditor.sv.composingLock).toBe(false)
+            await vi.advanceTimersByTimeAsync(900)
+            expect(t.edits()).toEqual([])
+            expect(t.es.snapshotPair()).toEqual({
+              exact: opened,
+              rendered: before,
+            })
+            t.es.flush()
+            expect(t.edits()).toEqual([])
+          }),
+      )
+
+      it('rebuilds an end after a draft the cancel erased again (the text is back)', () =>
+        run({ opened, source }, async (t) => {
+          const a = t.textNode('a')
+          t.caret(a, 1)
+          t.compose('compositionstart')
+          draft(t, 'か')
+          // The cancel removes the draft: another composing input, and the block text is back.
+          const node = t.textNode('か')
+          node.deleteData(node.data.indexOf('か'), 1)
+          t.caret(node, 1)
+          draft(t, '')
+          t.compose('compositionend', '')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(300)
+          // The trusted drafts left typing pending: the unchanged rendering is published (Task 628).
+          expect(t.edits()).toEqual([t.sourceText()])
+        }))
+
+      it('rebuilds an end whose draft input changed another block than the caret’s', () =>
+        run({ opened: 'alpha\n\nbravo\n' }, async (t) => {
+          t.caret(t.textNode('alpha'), 2)
+          t.compose('compositionstart')
+          t.textNode('bravo').appendData('!')
+          t.dispatch(
+            new InputEvent('input', {
+              bubbles: true,
+              isComposing: true,
+              inputType: 'insertCompositionText',
+              data: '',
+            }),
+          )
+          t.compose('compositionend', '')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(300)
+          expect(t.edits()).toEqual(['alpha\n\nbravo!\n'])
+        }))
+
+      // Rev 5 review binding 2: the evidence belongs to one composition, one end and this Source root.
+      it('signals a later changed end with no composition of its own, after a completed no-op', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          t.caret(t.textNode('first'), 2)
+          t.compose('compositionstart')
+          t.compose('compositionend', '')
+          expect(t.notes).not.toHaveBeenCalled()
+          const second = t.textNode('second')
+          second.insertData(2, '!')
+          t.caret(second, 3)
+          t.compose('compositionend', '!')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits()).toEqual(['first\n\nse!cond\n'])
+          // Save keeps it: nothing owns the old bytes.
+          t.es.flush()
+          expect(t.es.snapshotPair().exact).toBeNull()
+          expect(t.edits().at(-1)).toBe('first\n\nse!cond\n')
+        }))
+
+      it('signals a later changed end after a stopped no-op end', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          t.caret(t.textNode('first'), 2)
+          t.compose('compositionstart')
+          t.root.addEventListener(
+            'compositionend',
+            (event) => event.stopImmediatePropagation(),
+            { capture: true, once: true },
+          )
+          t.compose('compositionend', '')
+          expect(t.reads).toEqual([])
+          const second = t.textNode('second')
+          second.insertData(2, '!')
+          t.caret(second, 3)
+          t.compose('compositionend', '!')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits()).toEqual(['first\n\nse!cond\n'])
+        }))
+
+      it('takes no evidence from a start whose caret is in a block outside this Source root', () =>
+        run({ opened, source }, async (t) => {
+          const foreign = document.createElement('div')
+          foreign.setAttribute('data-block', '0')
+          foreign.textContent = 'elsewhere'
+          document.body.append(foreign)
+          try {
+            t.caret(foreign.firstChild as Text, 2)
+            t.compose('compositionstart')
+            // A commit inside Source with no observed input.
+            const node = t.textNode('a')
+            node.insertData(1, '!')
+            t.caret(node, 2)
+            t.compose('compositionend', '!')
+            expect(t.notes).toHaveBeenCalledTimes(1)
+            await vi.advanceTimersByTimeAsync(900)
+            expect(t.edits()).toEqual([t.sourceText()])
+          } finally {
+            foreign.remove()
+          }
+        }))
+
+      it('takes no evidence from a start over a selected range, even when nothing changed', () =>
+        run({ opened, source }, async (t) => {
+          t.caret(t.textNode('a'), 0, 1)
+          t.compose('compositionstart')
+          t.compose('compositionend', '')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+        }))
+
+      // Rev 6 review binding 2 (Q-289): evidence keyed by the end event, taken at window capture, used
+      // only by Vditor's handler of that event, voided by any Source input up to that decision.
+      it('rebuilds a changed outer end when a nested no-op end in another block is stopped', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          t.caret(t.textNode('first'), 2)
+          t.compose('compositionstart')
+          const first = t.textNode('first')
+          first.insertData(2, '!')
+          t.caret(first, 3)
+          t.root.addEventListener(
+            'compositionend',
+            () => {
+              t.caret(t.textNode('second'), 2)
+              t.compose('compositionstart')
+              const stopInner = (event: Event) =>
+                event.stopImmediatePropagation()
+              t.root.addEventListener('compositionend', stopInner, {
+                capture: true,
+                once: true,
+              })
+              t.compose('compositionend', '')
+              t.caret(t.textNode('fi!rst'), 3)
+            },
+            { capture: true, once: true },
+          )
+          t.compose('compositionend', '!')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits()).toEqual(['fi!rst\n\nsecond\n'])
+        }))
+
+      it('keeps an owned no-op at a root caret when a dialog end is dispatched during it', () =>
+        run({ opened, source }, async (t) => {
+          const before = t.sourceText()
+          expect(t.es.snapshotPair().exact).toBe(opened)
+          const range = document.createRange()
+          range.selectNodeContents(t.root)
+          range.collapse(true)
+          getSelection()!.removeAllRanges()
+          getSelection()!.addRange(range)
+          t.compose('compositionstart')
+          t.root.addEventListener(
+            'compositionend',
+            () => {
+              dispatchTrusted(
+                t.dialog,
+                new CompositionEvent('compositionend', { bubbles: true }),
+              )
+            },
+            { capture: true, once: true },
+          )
+          t.compose('compositionend', '')
+          expect(t.notes).not.toHaveBeenCalled()
+          await vi.advanceTimersByTimeAsync(900)
+          t.es.flush()
+          expect(t.edits()).toEqual([])
+          expect(t.es.snapshotPair()).toEqual({
+            exact: opened,
+            rendered: before,
+          })
+        }))
+
+      it('keeps a no-op whose start is followed by a dialog composition end before its own end', () =>
+        run({ opened, source }, async (t) => {
+          const before = t.sourceText()
+          expect(t.es.snapshotPair().exact).toBe(opened)
+          t.caret(t.textNode('a'), 1)
+          t.compose('compositionstart')
+          dispatchTrusted(
+            t.dialog,
+            new CompositionEvent('compositionend', { bubbles: true }),
+          )
+          t.compose('compositionend', '')
+          expect(t.notes).not.toHaveBeenCalled()
+          await vi.advanceTimersByTimeAsync(900)
+          t.es.flush()
+          expect(t.edits()).toEqual([])
+          expect(t.es.snapshotPair()).toEqual({
+            exact: opened,
+            rendered: before,
+          })
+        }))
+
+      // Rev 7 review binding 2: one dispatch, a start valid on the current root, no overlap.
+      it('rebuilds the same end object dispatched again after its first dispatch stopped before Vditor', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          t.caret(t.textNode('first'), 2)
+          t.compose('compositionstart')
+          t.root.addEventListener(
+            'compositionend',
+            (event) => event.stopImmediatePropagation(),
+            { capture: true, once: true },
+          )
+          const end = t.compose('compositionend', '')
+          expect(t.reads).toEqual([])
+          const second = t.textNode('second')
+          second.insertData(2, '!')
+          t.caret(second, 3)
+          t.dispatch(end)
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits()).toEqual(['first\n\nse!cond\n'])
+          const replies: string[] = []
+          t.es.flushForSave((outcome) => replies.push(outcome))
+          expect(replies).not.toEqual(['clean'])
+        }))
+
+      it('takes no evidence from a start whose caret block is moved into the Source root before the end', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          const foreign = document.createElement('div')
+          foreign.setAttribute('data-block', '0')
+          foreign.textContent = 'elsewhere'
+          document.body.append(foreign)
+          t.caret(foreign.firstChild as Text, 2)
+          t.compose('compositionstart')
+          t.root.append(foreign)
+          const first = t.textNode('first')
+          first.insertData(2, '!')
+          t.caret(first, 3)
+          t.compose('compositionend', '!')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits().at(-1)).toContain('fi!rst')
+        }))
+
+      it('takes no evidence from a foreign caret outside any block (no root fallback for it)', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          const foreign = document.createElement('span')
+          foreign.textContent = 'elsewhere'
+          document.body.append(foreign)
+          try {
+            t.caret(foreign.firstChild as Text, 2)
+            t.compose('compositionstart')
+            const first = t.textNode('first')
+            first.insertData(2, '!')
+            t.caret(first, 3)
+            t.compose('compositionend', '!')
+            expect(t.notes).toHaveBeenCalledTimes(1)
+            await vi.advanceTimersByTimeAsync(900)
+            expect(t.edits()).toEqual(['fi!rst\n\nsecond\n'])
+          } finally {
+            foreign.remove()
+          }
+        }))
+
+      it('rebuilds the end of a start whose caret is outside every block and the Source root', () =>
+        run({ opened: 'alpha\n' }, (t) => {
+          const foreign = document.createElement('span')
+          foreign.textContent = 'foreign'
+          document.body.append(foreign)
+          try {
+            t.caret(foreign.firstChild as Text, 1)
+            t.compose('compositionstart')
+            t.caret(t.textNode('alpha'), 1)
+            t.compose('compositionend', '')
+            expect(t.notes).toHaveBeenCalledTimes(1)
+          } finally {
+            foreign.remove()
+          }
+        }))
+
+      it('rebuilds the end of overlapping starts (a second start before any end)', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          t.caret(t.textNode('first'), 2)
+          t.compose('compositionstart')
+          const first = t.textNode('first')
+          first.insertData(2, '!')
+          t.caret(t.textNode('second'), 2)
+          t.compose('compositionstart')
+          t.caret(t.textNode('fi!rst'), 3)
+          t.compose('compositionend', '!')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits()).toEqual(['fi!rst\n\nsecond\n'])
+        }))
+
+      it('rebuilds a later changed end after a first end stopped at window capture', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          t.caret(t.textNode('first'), 2)
+          t.compose('compositionstart')
+          const stop = (event: Event) => event.stopImmediatePropagation()
+          window.addEventListener('compositionend', stop, { capture: true })
+          t.compose('compositionend', '')
+          window.removeEventListener('compositionend', stop, { capture: true })
+          const second = t.textNode('second')
+          second.insertData(2, '!')
+          t.caret(second, 3)
+          t.compose('compositionend', '!')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits()).toEqual(['first\n\nse!cond\n'])
+        }))
+
+      it('rebuilds an end when a Source input arrives after its window capture, before Vditor’s handler', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          t.caret(t.textNode('first'), 2)
+          t.compose('compositionstart')
+          t.root.addEventListener(
+            'compositionend',
+            () => {
+              const second = t.textNode('second')
+              t.caret(second, 2)
+              draft(t, '!')
+              t.caret(t.textNode('first'), 2)
+            },
+            { capture: true, once: true },
+          )
+          t.compose('compositionend', '')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits()).toEqual(['first\n\nse!cond\n'])
+        }))
+
+      it('rebuilds a changed end on a replacement Source root while the old root stays connected', () =>
+        run({ opened: 'first\n\nsecond\n' }, async (t) => {
+          const { Editor, processSpinVditorSVDOM } = shippedSource()
+          t.caret(t.textNode('first'), 2)
+          t.compose('compositionstart')
+          // A re-init that keeps the old Source element connected (hidden).
+          const replacement = new Editor(t.vditor as never)
+          replacement.element.innerHTML = processSpinVditorSVDOM(
+            'first\n\nse!cond\n',
+            t.vditor as never,
+          )
+          t.root.style.display = 'none'
+          document.body.append(replacement.element)
+          t.vditor.sv = replacement
+          activeModeElementMock.mockImplementation(() => replacement.element)
+          try {
+            const walker = document.createTreeWalker(
+              replacement.element,
+              NodeFilter.SHOW_TEXT,
+            )
+            let node = walker.nextNode() as Text | null
+            while (node && !node.data.includes('first'))
+              node = walker.nextNode() as Text | null
+            t.caret(node as Text, 2)
+            const end = new CompositionEvent('compositionend', {
+              bubbles: true,
+              data: '!',
+            })
+            dispatchTrusted(replacement.element, end)
+            expect(t.notes).toHaveBeenCalledTimes(1)
+            await vi.advanceTimersByTimeAsync(900)
+            expect(t.edits()).toEqual(['first\n\nse!cond\n'])
+          } finally {
+            replacement.element.remove()
+          }
+        }))
+
+      it('signals a changed composition that dispatches the same end event object again', () =>
+        run({ opened, source }, async (t) => {
+          t.caret(t.textNode('a'), 1)
+          t.compose('compositionstart')
+          const end = t.compose('compositionend', '')
+          expect(t.notes).not.toHaveBeenCalled()
+          t.caret(t.textNode('a'), 1)
+          t.compose('compositionstart')
+          const node = t.textNode('a')
+          node.insertData(1, '!')
+          t.caret(node, 2)
+          t.dispatch(end)
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          expect(t.reads.at(-1)?.exact).toBeNull()
+          await vi.advanceTimersByTimeAsync(300)
+          expect(t.edits()).toEqual([t.sourceText()])
+        }))
+
+      it('rebuilds the same end event object dispatched again without a new start, after a change', () =>
+        run({ opened, source }, async (t) => {
+          t.caret(t.textNode('a'), 1)
+          t.compose('compositionstart')
+          // Stopped at the target before Vditor's handler: nothing renders during this dispatch.
+          t.root.addEventListener(
+            'compositionend',
+            (event) => event.stopImmediatePropagation(),
+            { capture: true, once: true },
+          )
+          const end = t.compose('compositionend', '')
+          expect(t.reads).toEqual([])
+          const node = t.textNode('a')
+          node.insertData(1, '!')
+          t.caret(node, 2)
+          t.dispatch(end)
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(300)
+          expect(t.edits()).toEqual([t.sourceText()])
+        }))
+
+      it('rebuilds the end when an editor input arrives during it, before Vditor renders', () =>
+        run({ opened, source }, async (t) => {
+          t.caret(t.textNode('a'), 1)
+          t.compose('compositionstart')
+          // A target capture listener runs before Vditor's end handler; Vditor's input handler still
+          // holds its composing lock, so only the end handler's rebuild renders.
+          t.root.addEventListener(
+            'compositionend',
+            () => {
+              t.type('!')
+            },
+            { capture: true, once: true },
+          )
+          t.compose('compositionend', '')
+          expect(t.notes).toHaveBeenCalledTimes(1)
+          await vi.advanceTimersByTimeAsync(300)
+          expect(t.sourceText()).toContain('!')
+          expect(t.edits()).toEqual([t.sourceText()])
+        }))
+
+      it.each([
+        ['after Vditor’s end handler', false, false],
+        ['before Vditor’s end handler', true, false],
+        ['before Vditor’s end handler, with the end stopped', true, true],
+      ] as const)(
+        'signals an eventless in-block edit made %s, at its first preview read, and posts it',
+        (_order, capture, stop) =>
+          run({ opened, source }, async (t) => {
+            t.caret(t.textNode('a'), 1)
+            t.compose('compositionstart')
+            let first: { notes: number; pair: Pair | undefined } | undefined
+            t.root.addEventListener(
+              'compositionend',
+              (event) => {
+                t.textNode('a').appendData('!')
+                shippedSource().processAfterRender(t.vditor as never)
+                first = {
+                  notes: t.notes.mock.calls.length,
+                  pair: t.reads.at(-1),
+                }
+                if (stop) event.stopImmediatePropagation()
+              },
+              { capture, once: true },
+            )
+            t.compose('compositionend', '')
+            expect(first?.notes).toBeGreaterThanOrEqual(1)
+            expect(first?.pair?.exact).toBeNull()
+            await vi.advanceTimersByTimeAsync(900)
+            expect(t.sourceText()).toContain('!')
+            expect(t.edits()).toEqual([t.sourceText()])
+          }),
+      )
+
+      it('signals a toolbar List edit made before Vditor’s end handler, at its first preview read', () =>
+        run({ opened, source }, async (t) => {
+          t.caret(t.textNode('a'), 1)
+          t.compose('compositionstart')
+          let first: { notes: number; pair: Pair | undefined } | undefined
+          t.root.addEventListener(
+            'compositionend',
+            () => {
+              const button = document.createElement('button')
+              button.setAttribute('data-type', 'list')
+              shippedSource().processToolbar(t.vditor as never, button, '', '')
+              first = { notes: t.notes.mock.calls.length, pair: t.reads.at(-1) }
+            },
+            { capture: true, once: true },
+          )
+          t.compose('compositionend', '')
+          expect(first?.notes).toBe(1)
+          expect(first?.pair?.exact).toBeNull()
+          await vi.advanceTimersByTimeAsync(900)
+          expect(t.edits()).toEqual([t.sourceText()])
+        }))
+    })
+
+    // Task 601: a real edit's checkpoint is pending for `undoDelay`; a composition that changed nothing
+    // in that window must leave it armed, so the edit keeps its own Undo and Redo entry.
+    describe('the pending checkpoint of an earlier edit', () => {
+      const undoAround = async (
+        t: Harness,
+        between: (t: Harness) => void,
+      ): Promise<{
+        prior: number
+        prepared: number
+        undone: string
+        redone: string
+        redo: number
+      }> => {
+        const { installUndoBoundaries, preparePendingHistory } =
+          await vi.importActual<typeof import('../editing/undo-boundaries')>(
+            '../editing/undo-boundaries',
+          )
+        const undo = new (shippedSource().Undo)()
+        t.vditor.undo = undo
+        const dispose = installUndoBoundaries(
+          { vditor: t.vditor, getValue: () => t.sourceText() } as never,
+          window,
+          { flushHistoryInput: () => t.es.flushHistoryInput() } as never,
+        )
+        try {
+          t.caret(t.textNode('alpha'), 1)
+          undo.addToUndoStack(t.vditor)
+          const tail = t.textNode('lpha')
+          t.caret(tail, tail.data.indexOf('lpha'))
+          t.type('Z')
+          between(t)
+          const prior = undo.sv.undoStack.length
+          expect(preparePendingHistory(t.vditor, 'undo')).toBe(true)
+          const prepared = undo.sv.undoStack.length
+          undo.undo(t.vditor)
+          const undone = t.sourceText()
+          const redo = undo.sv.redoStack.length
+          undo.redo(t.vditor)
+          return { prior, prepared, undone, redone: t.sourceText(), redo }
+        } finally {
+          dispose()
+        }
+      }
+      const control = {
+        prepared: 2,
+        undone: 'alpha\n',
+        redone: 'aZlpha\n',
+        redo: 1,
+      }
+
+      it.each([
+        ['nothing', (_t: Harness) => undefined],
+        [
+          'a composition that changed nothing',
+          (t: Harness) => {
+            t.caret(t.textNode('Z'), 1)
+            t.compose('compositionstart')
+            t.compose('compositionend', '')
+          },
+        ],
+      ])(
+        'keeps one checkpoint for the edit, with %s in its window: Undo and Redo, and the host holds the edit',
+        (_name, between) =>
+          run({ opened: 'alpha\n' }, async (t) => {
+            const result = await undoAround(t, between)
+            expect(result).toMatchObject({ prior: 1, ...control })
+            // Task 601: the edit is published before the history move, once, with its full text.
+            expect(t.edits()).toEqual(['aZlpha\n'])
+          }),
+      )
+
+      it('still refuses the history move during an active composition', () =>
+        run({ opened: 'alpha\n' }, async (t) => {
+          const { installUndoBoundaries, preparePendingHistory } =
+            await vi.importActual<typeof import('../editing/undo-boundaries')>(
+              '../editing/undo-boundaries',
+            )
+          t.vditor.undo = new (shippedSource().Undo)()
+          const dispose = installUndoBoundaries(
+            { vditor: t.vditor, getValue: () => t.sourceText() } as never,
+            window,
+            { flushHistoryInput: () => t.es.flushHistoryInput() } as never,
+          )
+          try {
+            t.caret(t.textNode('alpha'), 1)
+            t.type('Z')
+            t.compose('compositionstart')
+            compositionActive.mockImplementation(() => true)
+            expect(preparePendingHistory(t.vditor, 'undo')).toBe(false)
+            expect(t.edits()).toEqual([])
+          } finally {
+            dispose()
+          }
+        }))
+    })
+  })
+
+  // The `@probe` marker resolver (sv-first-edit.spec.ts, design section 6.2): the one added element
+  // whose direct text children, joined, hold the marker. A typed key splits the span into two text
+  // nodes; a paste keeps one.
+  const directText = (element: Element): string[] =>
+    Array.from(element.childNodes)
+      .filter((child) => child.nodeType === Node.TEXT_NODE)
+      .map((child) => (child as Text).data)
+  const markerElement = (
+    records: MutationRecord[],
+    marker: string,
+  ): Element[] => {
+    const added = records
+      .flatMap((record) => Array.from(record.addedNodes))
+      .filter((node): node is Element => node instanceof Element)
+      .flatMap((element) => [element, ...element.querySelectorAll('*')])
+    return [...new Set(added)].filter((element) =>
+      directText(element).join('').includes(marker),
+    )
+  }
+  it.each([
+    ['key', 'zq045', ['z', 'q045 target paragraph']],
+    ['paste', 'q045p', ['q045p', 'q045 target paragraph']],
+  ] as const)(
+    'resolves the %s cell marker to one element and its direct text nodes',
+    (cell, marker, fragments) =>
+      run({ opened: '# T\n\nq045 target paragraph\n' }, async (t) => {
+        const records: MutationRecord[] = []
+        const observer = new MutationObserver((list) => records.push(...list))
+        observer.observe(t.root, { childList: true, subtree: true })
+        try {
+          t.caret(t.textNode('q045'), 0)
+          if (cell === 'key') t.type('z')
+          else {
+            const range = getSelection()!.getRangeAt(0)
+            range.insertNode(document.createTextNode('q045p'))
+            range.collapse(false)
+            shippedSource().inputEvent(t.vditor as never)
+          }
+          records.push(...observer.takeRecords())
+          const found = markerElement(records, marker)
+          expect(found).toHaveLength(1)
+          expect(directText(found[0])).toEqual(fragments)
+          expect(found[0].isConnected).toBe(true)
+        } finally {
+          observer.disconnect()
+        }
+      }),
+  )
+
+  describe('render-only paths', () => {
+    const opened = '|a|\r\n|-|\r\n'
+    const source = '| a |\n| - |\n'
+
+    it('keeps the pair of a clean canonicalized Source entry (Vditor setEditMode) through settle and Save', () =>
+      run({ opened, source: '' }, async (t) => {
+        t.vditor.currentMode = 'ir'
+        shippedSource().setEditMode(t.vditor as never, 'sv', source)
+        expect(t.vditor.currentMode).toBe('sv')
+        expect(t.notes).not.toHaveBeenCalled()
+        expect(t.reads).toEqual([{ exact: opened, rendered: `${source}\n` }])
+        await vi.advanceTimersByTimeAsync(900)
+        t.es.flush()
+        expect(t.edits()).toEqual([])
+      }))
+
+    it('owns the host bytes after a replacement through Vditor setValue, reseed and the visible refresh', () =>
+      run({ opened, source }, async (t) => {
+        expect(t.es.snapshotPair().exact).toBe(opened)
+        // message-router `applyHostUpdate`: Source `setValue`, the reseed with the host bytes, then the
+        // visible preview refresh (preview-state `refreshVisiblePreview` calls `preview.render`).
+        shippedSource().Vditor.prototype.setValue.call(
+          { vditor: t.vditor },
+          '| x |\n| - |\n',
+        )
+        t.es.reseed(undefined, '|x|\r\n|-|\r\n')
+        t.vditor.preview.render(t.vditor)
+        expect(t.notes).not.toHaveBeenCalled()
+        expect(t.reads.at(-1)).toEqual({
+          exact: '|x|\r\n|-|\r\n',
+          rendered: '| x |\n| - |\n\n',
+        })
+        await vi.advanceTimersByTimeAsync(900)
+        t.es.flush()
+        expect(t.edits()).toEqual([])
+      }))
+  })
+  // Rev 10 review binding 3: an inactive end retires its own start, an ambiguous one too, and no other.
+  it.each([
+    ['caret', 'inactive'],
+    ['range', 'inactive'],
+    ['range', 'active'],
+    ['overlap', 'inactive'],
+    ['overlap', 'active'],
+  ])(
+    'keeps a new genuine no-op after a prior %s start whose end came while Source was %s',
+    (shape, kind) =>
+      run({ opened: '|a|\r\n|-|\r\n', previewHidden: true }, async (t) => {
+        const vd = t.vditor,
+          ir = vd.ir.element as HTMLElement,
+          parent = ir.parentElement!,
+          panel = document.createElement('div')
+        vd.options.preview.markdown = { imageCaption: false }
+        vd.options.preview.hljs = {}
+        vd.options.preview.mode = 'editor'
+        document.body.append(parent, panel)
+        const switchMode = (mode: string) => {
+          shippedSource().setEditMode(
+            vd,
+            mode,
+            new MouseEvent('click', { cancelable: true }),
+          )
+          t.es.noteModeSwitch()
+        }
+        vd.currentMode = 'ir'
+        vd.lute.SetVditorSV(false)
+        vd.lute.SetVditorIR(true)
+        ir.innerHTML = vd.lute.Md2VditorIRDOM('|a|\r\n|-|\r\n')
+        activeModeElementMock.mockImplementation(
+          () => vd[vd.currentMode].element,
+        )
+        ;(window.vditor as any).getValue = () =>
+          vd.currentMode === 'ir'
+            ? vd.lute.VditorIRDOM2Md(ir.innerHTML)
+            : t.root.textContent
+        const delivery = [],
+          answers = []
+        const tap = (e) => delivery.push([vd.currentMode, e.target === t.root])
+        const hook = window.__vmdeSourceCompositionEnd
+        window.__vmdeSourceCompositionEnd = (e) => {
+          const answer = hook!(e)
+          answers.push([vd.currentMode, answer])
+          return answer
+        }
+        window.addEventListener('compositionend', tap, true)
+        try {
+          switchMode('sv')
+          const _prior = t.es.snapshotPair(),
+            _s0 = t.root.textContent
+          if (shape === 'range') {
+            const n = t.textNode('a')
+            t.caret(n, 0, 1)
+          } else t.caret(t.root, 0)
+          t.compose('compositionstart')
+          if (shape === 'overlap') t.compose('compositionstart')
+          if (kind === 'inactive') switchMode('ir')
+          t.root.addEventListener(
+            'compositionend',
+            (ev) => ev.stopImmediatePropagation(),
+            { once: true, capture: true },
+          )
+          t.root.dispatchEvent(
+            new CompositionEvent('compositionend', { bubbles: true }),
+          )
+          if (kind === 'active') switchMode('ir')
+          switchMode('sv')
+          const before = t.es.snapshotPair(),
+            _beforeDOM = t.root.innerHTML
+          t.caret(t.root, 0)
+          t.compose('compositionstart')
+          t.root.dispatchEvent(
+            new CompositionEvent('compositionend', { bubbles: true }),
+          )
+          await vi.advanceTimersByTimeAsync(900)
+          const after = t.es.snapshotPair(),
+            _idle = t.edits(),
+            save = []
+          t.es.flushForSave((x) => save.push(x))
+          expect.soft(answers).toEqual([['sv', false]])
+          expect.soft(after).toEqual(before)
+          expect(t.edits()).toEqual([])
+        } finally {
+          window.removeEventListener('compositionend', tap, true)
+          window.__vmdeSourceCompositionEnd = hook
+          parent.remove()
+          panel.remove()
+        }
+      }),
+  )
+
+  it.each(['source', 'source-child', 'ir', 'ir-child', 'dialog'])(
+    'retires a pending start only at its own Source surface while Source is inactive (%s target)',
+    (kind) =>
+      run({ opened: '|a|\r\n|-|\r\n', previewHidden: true }, async (t) => {
+        const vd = t.vditor,
+          ir = vd.ir.element as HTMLElement,
+          parent = ir.parentElement!,
+          panel = document.createElement('div')
+        vd.options.preview.markdown = { imageCaption: false }
+        vd.options.preview.hljs = {}
+        vd.options.preview.mode = 'editor'
+        document.body.append(parent, panel)
+        const switchMode = (mode: string) => {
+          shippedSource().setEditMode(
+            vd,
+            mode,
+            new MouseEvent('click', { cancelable: true }),
+          )
+          t.es.noteModeSwitch()
+        }
+        vd.currentMode = 'ir'
+        vd.lute.SetVditorSV(false)
+        vd.lute.SetVditorIR(true)
+        ir.innerHTML = vd.lute.Md2VditorIRDOM('|a|\r\n|-|\r\n')
+        activeModeElementMock.mockImplementation(
+          () => vd[vd.currentMode].element,
+        )
+        ;(window.vditor as any).getValue = () =>
+          vd.currentMode === 'ir'
+            ? vd.lute.VditorIRDOM2Md(ir.innerHTML)
+            : t.root.textContent
+        const delivery = [],
+          answers = []
+        const tap = (e) => delivery.push([vd.currentMode, e.target === t.root])
+        const hook = window.__vmdeSourceCompositionEnd
+        window.__vmdeSourceCompositionEnd = (e) => {
+          const answer = hook!(e)
+          answers.push([vd.currentMode, answer])
+          return answer
+        }
+        window.addEventListener('compositionend', tap, true)
+        try {
+          switchMode('sv')
+          const _prior = t.es.snapshotPair(),
+            _s0 = t.root.textContent
+          t.caret(t.root, 0)
+          t.compose('compositionstart')
+          switchMode('ir')
+          const targets: Record<string, () => Element | null> = {
+            source: () => t.root,
+            'source-child': () => t.root.querySelector('span'),
+            dialog: () => t.dialog,
+            ir: () => ir,
+            'ir-child': () => ir.querySelector('*'),
+          }
+          const target = targets[kind]()!
+          target.addEventListener(
+            'compositionend',
+            (ev) => ev.stopImmediatePropagation(),
+            { once: true, capture: true },
+          )
+          target.dispatchEvent(
+            new CompositionEvent('compositionend', { bubbles: true }),
+          )
+          switchMode('sv')
+          t.caret(t.root, 0)
+          t.root.dispatchEvent(
+            new CompositionEvent('compositionend', { bubbles: true }),
+          )
+          await vi.advanceTimersByTimeAsync(900)
+          expect(answers).toEqual([['sv', kind.startsWith('source')]])
+        } finally {
+          window.removeEventListener('compositionend', tap, true)
+          window.__vmdeSourceCompositionEnd = hook
+          parent.remove()
+          panel.remove()
+        }
+      }),
+  )
+
+  // Rev 9 review binding 2: an end observed while Source is inactive drops its dispatch key and retires
+  // its own pending start, so the next Source end has no stale evidence.
+  it.each([false, true])(
+    'rebuilds an end first observed while Source is inactive at its Source target (reused end object %s)',
+    (reuse) =>
+      run({ opened: '|a|\r\n|-|\r\n', previewHidden: true }, async (t) => {
+        const vd = t.vditor,
+          ir = vd.ir.element as HTMLElement,
+          parent = ir.parentElement!,
+          panel = document.createElement('div')
+        vd.options.preview.markdown = { imageCaption: false }
+        vd.options.preview.hljs = {}
+        vd.options.preview.mode = 'editor'
+        document.body.append(parent, panel)
+        const switchMode = (mode: string) => {
+          shippedSource().setEditMode(
+            vd,
+            mode,
+            new MouseEvent('click', { cancelable: true }),
+          )
+          t.es.noteModeSwitch()
+        }
+        vd.currentMode = 'ir'
+        vd.lute.SetVditorSV(false)
+        vd.lute.SetVditorIR(true)
+        ir.innerHTML = vd.lute.Md2VditorIRDOM('|a|\r\n|-|\r\n')
+        activeModeElementMock.mockImplementation(
+          () => vd[vd.currentMode].element,
+        )
+        ;(window.vditor as any).getValue = () =>
+          vd.currentMode === 'ir'
+            ? vd.lute.VditorIRDOM2Md(ir.innerHTML)
+            : t.root.textContent
+        const delivery = [],
+          answers = []
+        const tap = (e) => delivery.push([vd.currentMode, e.target === t.root])
+        const hook = window.__vmdeSourceCompositionEnd
+        window.__vmdeSourceCompositionEnd = (e) => {
+          const answer = hook!(e)
+          answers.push([vd.currentMode, answer])
+          return answer
+        }
+        window.addEventListener('compositionend', tap, true)
+        try {
+          switchMode('sv')
+          t.es.snapshotPair()
+          t.caret(t.root, 0)
+          t.compose('compositionstart')
+          const e = new CompositionEvent('compositionend', { bubbles: true })
+          t.root.addEventListener(
+            'compositionend',
+            (ev) => ev.stopImmediatePropagation(),
+            { once: true, capture: true },
+          )
+          t.root.dispatchEvent(e)
+          switchMode('ir')
+          expect(vd.currentMode).toBe('ir')
+          t.root.addEventListener(
+            'compositionend',
+            () => {
+              switchMode('sv')
+              t.caret(t.root, 0)
+            },
+            { once: true, capture: true },
+          )
+          t.root.dispatchEvent(
+            reuse
+              ? e
+              : new CompositionEvent('compositionend', { bubbles: true }),
+          )
+          await vi.advanceTimersByTimeAsync(900)
+          expect(delivery).toEqual([
+            ['sv', true],
+            ['ir', true],
+          ])
+          expect(answers).toEqual([['sv', true]])
+        } finally {
+          window.removeEventListener('compositionend', tap, true)
+          window.__vmdeSourceCompositionEnd = hook
+          parent.remove()
+          panel.remove()
+        }
+      }),
+  )
+
+  it.each([false, true])(
+    'rebuilds a fresh unmatched end after an end of the same start observed while Source is inactive (%s)',
+    (inactive) =>
+      run({ opened: '|a|\r\n|-|\r\n', previewHidden: true }, async (t) => {
+        const vd = t.vditor,
+          ir = vd.ir.element as HTMLElement,
+          parent = ir.parentElement!,
+          panel = document.createElement('div')
+        vd.options.preview.markdown = { imageCaption: false }
+        vd.options.preview.hljs = {}
+        vd.options.preview.mode = 'editor'
+        document.body.append(parent, panel)
+        const switchMode = (mode: string) => {
+          shippedSource().setEditMode(
+            vd,
+            mode,
+            new MouseEvent('click', { cancelable: true }),
+          )
+          t.es.noteModeSwitch()
+        }
+        vd.currentMode = 'ir'
+        vd.lute.SetVditorSV(false)
+        vd.lute.SetVditorIR(true)
+        ir.innerHTML = vd.lute.Md2VditorIRDOM('|a|\r\n|-|\r\n')
+        activeModeElementMock.mockImplementation(
+          () => vd[vd.currentMode].element,
+        )
+        ;(window.vditor as any).getValue = () =>
+          vd.currentMode === 'ir'
+            ? vd.lute.VditorIRDOM2Md(ir.innerHTML)
+            : t.root.textContent
+        const delivery = [],
+          answers = []
+        const tap = (e) => delivery.push([vd.currentMode, e.target === t.root])
+        const hook = window.__vmdeSourceCompositionEnd
+        window.__vmdeSourceCompositionEnd = (e) => {
+          const answer = hook!(e)
+          answers.push([vd.currentMode, answer])
+          return answer
+        }
+        window.addEventListener('compositionend', tap, true)
+        try {
+          switchMode('sv')
+          t.es.snapshotPair()
+          t.caret(t.root, 0)
+          t.compose('compositionstart')
+          const e = new CompositionEvent('compositionend', { bubbles: true })
+          if (inactive) switchMode('ir')
+          t.root.addEventListener(
+            'compositionend',
+            (ev) => ev.stopImmediatePropagation(),
+            { once: true, capture: true },
+          )
+          t.root.dispatchEvent(e)
+          if (!inactive) switchMode('ir')
+          switchMode('sv')
+          t.caret(t.root, 0)
+          t.root.dispatchEvent(
+            new CompositionEvent('compositionend', { bubbles: true }),
+          )
+          await vi.advanceTimersByTimeAsync(900)
+          expect(delivery).toEqual([
+            [inactive ? 'ir' : 'sv', true],
+            ['sv', true],
+          ])
+          expect(answers).toEqual([['sv', true]])
+        } finally {
+          window.removeEventListener('compositionend', tap, true)
+          window.__vmdeSourceCompositionEnd = hook
+          parent.remove()
+          panel.remove()
+        }
+      }),
+  )
 })

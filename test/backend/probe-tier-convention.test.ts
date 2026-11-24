@@ -63,6 +63,9 @@ const TAG_ONLY_PROBES = new Set<string>([
   'diagram-edit-scroll.spec.ts',
   'probe-cloudogu.spec.ts',
   'probe-pumlmode.spec.ts',
+  // Task 733 / 045: the first-Source-edit regression tests and their latency and return-to-IR
+  // flush probes share one fixture setup and one file; only the probe cells carry `@probe`.
+  'sv-first-edit.spec.ts',
 ])
 
 /** Every `test(<quoted title>` / `test.describe(<quoted title>` string literal in a spec file. */

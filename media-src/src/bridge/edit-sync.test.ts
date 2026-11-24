@@ -4428,3 +4428,951 @@ describe('036 core C6 Save', () => {
     expect(t.replies).toEqual(['clean'])
   })
 })
+
+// Task 733 / 045 (F2): an edit-driven Source render reads the preview before VMDE's document `input`
+// bubble listener. The render-boundary signal (`noteSourceEdit`, called by the patched Source
+// `processAfterRender`) and the capture-phase user-input mark must keep the first Source read from
+// pairing an edited rendering with the pre-edit bytes, without losing those bytes for one trusted edit.
+describe('045 Source edit before the first preview read', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 0),
+    )
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  // The design calls `es.noteSourceEdit()`; the optional call keeps the counterfactual run on the
+  // candidate (where the boundary has no signal) meaningful instead of a TypeError.
+  const signal = (es: unknown) =>
+    (es as { noteSourceEdit?: () => void }).noteSourceEdit?.()
+
+  // Source mode with the host bytes `opened` and the Source text `source` (what Vditor shows).
+  const bootSource = (opened: string, source: string) => {
+    const text = document.createTextNode(source)
+    const editor = document.createElement('div')
+    editor.append(text)
+    const booted = boot({
+      mode: 'sv',
+      getValue: () => editor.textContent ?? '',
+      initialMarkdown: opened,
+    })
+    h.activeEl = editor as unknown as { textContent: string }
+    return { ...booted, text, editor }
+  }
+
+  it('an eventless first edit (toolbar, Enter, Paste Plain) is never paired with the pre-edit bytes', () => {
+    const { es, text, edits } = bootSource('a\r\nb', 'a\nb')
+    const revision = es.snapshotRevision()
+    text.nodeValue = 'Za\nb'
+    // Patched `processAfterRender`, before `preview.render`; no `input` event follows.
+    signal(es)
+    expect(es.snapshotPair()).toEqual({ exact: null, rendered: 'Za\nb' })
+    expect(es.snapshotRevision()).not.toBe(revision)
+    // `options.input` schedules the post; Save must publish it, not cancel it as already held.
+    es.schedule()
+    es.flush()
+    expect(edits().at(-1)?.[0].content).toBe('Za\nb')
+  })
+
+  it('a trusted first edit marked before the preview read rebases one CRLF span, once', () => {
+    const { es, text } = bootSource('a\r\nb', 'a\nb')
+    text.nodeValue = 'Za\nb'
+    // Capture-phase mark, then the render-boundary signal and the synchronous preview read.
+    es.markUserInput(true)
+    signal(es)
+    expect(es.snapshotExactMarkdown()).toBe('Za\r\nb')
+    // `options.input`; the bubble listener does not mark the same event again.
+    es.schedule()
+    expect(es.snapshotPair()).toEqual({ exact: 'Za\r\nb', rendered: 'Za\nb' })
+  })
+
+  it('a mark after the preview read (the candidate order) never yields the pre-edit bytes', () => {
+    const { es, text } = bootSource('a\r\nb', 'a\nb')
+    text.nodeValue = 'Za\nb'
+    signal(es)
+    expect(es.snapshotExactMarkdown()).not.toBe('a\r\nb')
+    es.markUserInput(true)
+    expect(es.snapshotExactMarkdown()).not.toBe('a\r\nb')
+  })
+
+  describe('CRLF first trusted edit (Task 607 one-span mapper, unchanged)', () => {
+    const opened = '# T\r\n\r\nalpha beta\r\n'
+    const source = '# T\n\nalpha beta\n'
+    it.each([
+      [
+        'an insertion at the document start is provable',
+        'Z# T\n\nalpha beta\n',
+        'Z# T\r\n\r\nalpha beta\r\n',
+      ],
+      [
+        'an interior insertion declines (no identical raw prefix or suffix)',
+        '# T\n\nZalpha beta\n',
+        null,
+      ],
+    ])('%s', (_name, edited, expected) => {
+      const { es, text } = bootSource(opened, source)
+      text.nodeValue = edited
+      es.markUserInput(true)
+      signal(es)
+      // Read synchronously after bubble, before the 250 ms plain post retires the remembered pair.
+      es.schedule()
+      expect(es.snapshotPair()).toEqual({ exact: expected, rendered: edited })
+    })
+  })
+
+  it.each([
+    ['CRLF', 'a\r\nb\r\n', 'a\nb\n'],
+    ['lone CR', 'a\rb', 'a\nb'],
+    ['LF', 'a\nb', 'a\nb'],
+  ])(
+    'an edit-driven render that changed nothing keeps the %s exact bytes',
+    (_name, opened, source) => {
+      const { es } = bootSource(opened, source)
+      const revision = es.snapshotRevision()
+      // An IME cancel without an observed input, or a keyup re-render: the boundary still signals.
+      signal(es)
+      expect(es.snapshotPair()).toEqual({ exact: opened, rendered: source })
+      expect(es.snapshotRevision()).toBe(revision)
+    },
+  )
+
+  it.each([
+    ['one more line break', 'a\r\nb', 'a\n\nb'],
+    ['a lost terminal CR', 'a\r', 'a'],
+    ['a longer rendering', 'ab', 'ab\n'],
+  ])(
+    'the Source proof refuses %s after an edit signal',
+    (_name, opened, source) => {
+      const { es } = bootSource(opened, source)
+      signal(es)
+      expect(es.snapshotPair().exact).toBeNull()
+    },
+  )
+
+  describe('IME composition', () => {
+    // compositionstart has no edit-sync effect. Each composing input is marked in capture (trusted),
+    // and Vditor's target handler returns on its composing lock: no render, no schedule.
+    it('start and drafts post nothing and keep the pre-edit base', () => {
+      const { es, text, edits } = bootSource('a\r\nb', 'a\nb')
+      text.nodeValue = 'かa\nb'
+      es.markUserInput(true)
+      text.nodeValue = 'かなa\nb'
+      es.markUserInput(true)
+      vi.advanceTimersByTime(300)
+      expect(edits()).toHaveLength(0)
+    })
+
+    it('a cancel after drafts gives the exact bytes back and settles to the unchanged text', () => {
+      const { es, text, edits } = bootSource('a\r\nb', 'a\nb')
+      text.nodeValue = 'かa\nb'
+      es.markUserInput(true)
+      text.nodeValue = 'a\nb'
+      es.markUserInput(true)
+      // compositionend: Vditor calls `inputEvent` directly; the DOM changed during the composition.
+      signal(es)
+      expect(es.snapshotPair()).toEqual({ exact: 'a\r\nb', rendered: 'a\nb' })
+      es.schedule()
+      expect(es.snapshotExactMarkdown()).toBe('a\r\nb')
+      // The trusted drafts leave typing pending: settle publishes the rendering, whose text is
+      // the host's (the host keeps its bytes for a semantic no-op, Task 628).
+      es.flush()
+      expect(edits().map((call) => call[0].content)).toEqual(['a\nb'])
+    })
+
+    it('a true no-op cancel on canonicalized Source keeps the pair through settle (no signal)', () => {
+      // The installer ignores the compositionend render when no editor DOM changed (finish-init case).
+      const { es, edits } = bootSource('|a|\r\n|-|\r\n', '| a |\n| - |\n')
+      // Vditor's order: the preview read, then `options.input`.
+      expect(es.snapshotPair()).toEqual({
+        exact: '|a|\r\n|-|\r\n',
+        rendered: '| a |\n| - |\n',
+      })
+      es.schedule()
+      es.flush()
+      expect(edits()).toHaveLength(0)
+    })
+
+    it('a commit after drafts rebases onto the exact bytes and publishes once', () => {
+      const { es, text, edits } = bootSource('a\r\nb', 'a\nb')
+      text.nodeValue = 'かa\nb'
+      es.markUserInput(true)
+      text.nodeValue = '仮a\nb'
+      es.markUserInput(true)
+      signal(es)
+      expect(es.snapshotExactMarkdown()).toBe('仮a\r\nb')
+      es.schedule()
+      vi.advanceTimersByTime(300)
+      expect(edits()).toHaveLength(1)
+    })
+
+    it('a commit with no observed input is never paired with the pre-edit bytes and posts the text', () => {
+      const { es, text, edits } = bootSource('a\r\nb', 'a\nb')
+      text.nodeValue = '仮a\nb'
+      signal(es)
+      expect(es.snapshotPair()).toEqual({ exact: null, rendered: '仮a\nb' })
+      es.schedule()
+      es.flush()
+      expect(edits().at(-1)?.[0].content).toBe('仮a\nb')
+    })
+  })
+
+  describe('an existing anchor from another mode (Task 196)', () => {
+    const exact = '|A|B|\n|---|---|\n'
+    const irRendered = '| A | B |\n| --- | --- |\n'
+    const svSource = '| A | B |\n| --- | --- |\n'
+    // Anchored in IR, then switched to Source. The hidden IR DOM still serializes to the anchor.
+    const anchoredThenSource = () => {
+      let mode = 'ir'
+      const text = document.createTextNode(svSource)
+      const editor = document.createElement('div')
+      editor.append(text)
+      const booted = boot({
+        getValue: () => irRendered,
+        serialize: () => irRendered,
+        initialMarkdown: exact,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      expect(booted.es.snapshotPair()).toEqual({ exact, rendered: irRendered })
+      mode = 'sv'
+      h.activeEl = editor as unknown as { textContent: string }
+      return { ...booted, text }
+    }
+
+    it('a clean switch still reanchors the exact bytes (render-only entry, no signal)', () => {
+      const { es } = anchoredThenSource()
+      expect(es.snapshotPair()).toEqual({ exact, rendered: svSource })
+    })
+
+    it('an eventless first Source edit does not reanchor to the hidden IR DOM', () => {
+      const { es, text } = anchoredThenSource()
+      text.nodeValue = `Z${svSource}`
+      signal(es)
+      expect(es.snapshotPair()).toEqual({
+        exact: null,
+        rendered: `Z${svSource}`,
+      })
+    })
+
+    it('a trusted first Source edit marked in capture does not reanchor either', () => {
+      const { es, text } = anchoredThenSource()
+      text.nodeValue = `Z${svSource}`
+      es.markUserInput(true)
+      signal(es)
+      expect(es.snapshotPair().exact).not.toBe(exact)
+    })
+
+    it('a clean Source read equal to the anchor does not lift the guard for a later edit', () => {
+      const { es, text } = anchoredThenSource()
+      expect(es.snapshotPair()).toEqual({ exact, rendered: svSource })
+      text.nodeValue = `Z${svSource}`
+      signal(es)
+      expect(es.snapshotPair().exact).toBeNull()
+    })
+  })
+
+  it('an edited Source read equal to a different-mode anchor is proved again (task marker)', () => {
+    // Opened `- [x] task`; IR anchors `- [X]  task`; the Source entry took the model text, so no
+    // Source read anchored. Adding a space in the Source marker gives the IR anchor's string.
+    let mode = 'ir'
+    const opened = '- [x] task\n'
+    const irRendered = '- [X]  task\n'
+    const text = document.createTextNode('- [X] task\n')
+    const editor = document.createElement('div')
+    editor.append(text)
+    const { es, edits } = boot({
+      getValue: () => (mode === 'ir' ? irRendered : (editor.textContent ?? '')),
+      serialize: () => irRendered,
+      initialMarkdown: opened,
+    })
+    ;(window.vditor as any).getCurrentMode = () => mode
+    expect(es.snapshotPair()).toEqual({ exact: opened, rendered: irRendered })
+    mode = 'sv'
+    h.activeEl = editor as unknown as { textContent: string }
+    es.noteModeSwitch()
+    text.nodeValue = irRendered
+    signal(es)
+    expect(es.snapshotPair()).toEqual({ exact: null, rendered: irRendered })
+    es.schedule()
+    es.flush()
+    expect(edits().at(-1)?.[0].content).toBe(irRendered)
+  })
+
+  describe('a host seed pending at a switch to Source (binding 2)', () => {
+    // An admitted seed whose next frame the switch cancels: `exactSeedOwned` stays true.
+    const pendingSeedThenSource = () => {
+      let mode = 'ir'
+      const text = document.createTextNode('MD\n')
+      const editor = document.createElement('div')
+      editor.append(text)
+      const booted = boot({
+        mode: 'ir',
+        seed: true,
+        getValue: () => (mode === 'ir' ? 'MD\n' : (editor.textContent ?? '')),
+        initialMarkdown: 'MD\n',
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      booted.es.startIncrementalSeed()
+      mode = 'sv'
+      h.activeEl = editor as unknown as { textContent: string }
+      vi.advanceTimersByTime(20)
+      // The mode-switch notice (next task after `setEditMode`).
+      booted.es.noteModeSwitch()
+      text.nodeValue = 'ZMD\n'
+      signal(booted.es)
+      booted.es.schedule()
+      return booted
+    }
+
+    it('the idle post publishes the eventless edit', () => {
+      const { edits } = pendingSeedThenSource()
+      vi.advanceTimersByTime(300)
+      expect(edits().map((call) => call[0].content)).toEqual(['ZMD\n'])
+    })
+
+    it('flushHistoryInput publishes it before the history move', () => {
+      const { es, edits } = pendingSeedThenSource()
+      expect(es.flushHistoryInput()).toBe(true)
+      expect(edits().map((call) => call[0].content)).toEqual(['ZMD\n'])
+    })
+  })
+
+  it('a clean canonicalized Source entry keeps the exact bytes through the first read and settle', () => {
+    // Mode entry renders with `enableInput: false`: no signal.
+    const { es, edits } = bootSource('|a|\r\n|-|\r\n', '| a |\n| - |\n')
+    expect(es.snapshotPair()).toEqual({
+      exact: '|a|\r\n|-|\r\n',
+      rendered: '| a |\n| - |\n',
+    })
+    es.flush()
+    expect(edits()).toHaveLength(0)
+  })
+
+  it('a host replacement through setValue, reseed and the visible refresh owns the new bytes', () => {
+    const { es, text, edits } = bootSource('a\r\nb', 'a\nb')
+    // `setValue` renders with `enableInput: false` (no signal); the router reseeds, then refreshes.
+    text.nodeValue = '| x |\n| - |\n'
+    es.reseed(undefined, '|x|\r\n|-|\r\n')
+    expect(es.snapshotPair()).toEqual({
+      exact: '|x|\r\n|-|\r\n',
+      rendered: '| x |\n| - |\n',
+    })
+    es.flush()
+    expect(edits()).toHaveLength(0)
+  })
+
+  it('an exact action applying its own rendering is not an edit', () => {
+    // The Source text pads the table, so only the unconditional first-read anchor keeps the bytes.
+    const { es, text } = bootSource('a\r\nb', 'a\nb')
+    es.setActionApplying(true)
+    text.nodeValue = '| a |\n| - |\n'
+    es.postExact('|a|\r\n|-|\r\n')
+    signal(es)
+    es.setActionApplying(false)
+    expect(es.snapshotPair()).toEqual({
+      exact: '|a|\r\n|-|\r\n',
+      rendered: '| a |\n| - |\n',
+    })
+  })
+
+  // Rev 4 (binding 1): a trusted Source edit remembers the pair it revokes. When that pair's rendering
+  // is an IR anchor (Task 196 keeps it until the first Source pair read), an edited Source text equal
+  // to it proves nothing; the Source projection of the exact bytes stands in. Real Lute and Vditor's
+  // own Source input handler; the inner `preview.render` plays the patched order (signal, then read).
+  describe('a trusted Source edit and a remembered rendering from another mode', () => {
+    const sourceAfterIrAnchor = async (opened: string) => {
+      const { svFixture } = await import('../testing/real-lute')
+      vi.stubGlobal('Lute', { Caret: '\u2038' })
+      const ir = createRealLute('ir')
+      const irText = ir.serialize(ir.render(opened))
+      let mode = 'ir'
+      let editor: HTMLElement | null = null
+      const booted = boot({
+        initialMarkdown: opened,
+        getValue: () =>
+          mode === 'ir' ? irText : serializeSource(editor as HTMLElement),
+        serialize: ir.serialize,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      h.inner!.ir!.element!.innerHTML = ir.render(opened)
+      // An IR read anchors the pair (`anchorMode` 'ir').
+      expect(booted.es.snapshotPair()).toEqual({
+        exact: opened,
+        rendered: irText,
+      })
+      mode = 'sv'
+      editor = svFixture(irText)
+      h.activeEl = editor as unknown as { textContent: string }
+      // The switch notice; the Source entry took the model text, so no Source pair read anchored it.
+      booted.es.noteModeSwitch()
+      return { ...booted, editor, irText }
+    }
+    // Vditor's Source DOM minus its editable terminal newline span, as `serializeSvForHost` reads it.
+    const serializeSource = (root: HTMLElement): string => {
+      const clone = root.cloneNode(true) as HTMLElement
+      clone
+        .querySelector(
+          ':scope > [data-block]:last-child > [data-type="newline"]:last-child',
+        )
+        ?.remove()
+      return clone.textContent ?? ''
+    }
+    const typeInSource = async (
+      t: Awaited<ReturnType<typeof sourceAfterIrAnchor>>,
+      place: (editor: HTMLElement) => { node: Text; offset: number },
+      data: string,
+    ) => {
+      const { inputEvent } = await import('vditor/src/ts/sv/inputEvent')
+      const { node, offset } = place(t.editor)
+      node.insertData(offset, data)
+      const range = document.createRange()
+      range.setStart(node, offset + data.length)
+      range.collapse(true)
+      getSelection()!.removeAllRanges()
+      getSelection()!.addRange(range)
+      const reads: { exact: string | null; rendered: string }[] = []
+      const inner = {
+        currentMode: 'sv',
+        sv: { element: t.editor },
+        lute: createRealLute('sv').lute,
+        hint: { render: () => undefined },
+        preview: {
+          render: () => {
+            signal(t.es)
+            reads.push(t.es.snapshotPair())
+          },
+        },
+        options: {
+          counter: { enable: false },
+          cache: { enable: false },
+          input: t.es.schedule,
+          undoDelay: 800,
+        },
+      }
+      // The capture-phase mark of a trusted input (jsdom has no trusted events).
+      t.es.markUserInput(true)
+      inputEvent(
+        inner as never,
+        new InputEvent('input', { data, inputType: 'insertText' }),
+      )
+      return reads
+    }
+    afterEach(() => {
+      getSelection()?.removeAllRanges()
+      document.body.replaceChildren()
+    })
+
+    it('a space added to the task marker is not paired with the opened bytes (the IR anchor string)', async () => {
+      const t = await sourceAfterIrAnchor('- [x] task\n')
+      expect(t.irText).toBe('- [X]  task\n')
+      expect(serializeSource(t.editor)).toBe('- [X] task\n')
+      const reads = await typeInSource(
+        t,
+        (editor) => {
+          const marker = Array.from(
+            editor.querySelectorAll('[data-type="task-marker"]'),
+          ).at(-1)!.firstChild as Text
+          return { node: marker, offset: marker.length }
+        },
+        ' ',
+      )
+      // The Source projection of the opened bytes is `- [x] task`; the one-span rebase proves the
+      // edited text against it, so the pair names the Source text itself.
+      expect(reads).toEqual([
+        { exact: '- [X]  task\n', rendered: '- [X]  task\n' },
+      ])
+      t.es.flush()
+      expect(t.edits().at(-1)?.[0].content).toBe('- [X]  task\n')
+    })
+
+    it('keeps the valid CRLF rebase of an insertion at the document start', async () => {
+      const t = await sourceAfterIrAnchor('# T\r\n\r\nalpha beta\r\n')
+      const reads = await typeInSource(
+        t,
+        (editor) => ({
+          node: editor.querySelector('[data-type="heading-marker"]')!
+            .firstChild as Text,
+          offset: 0,
+        }),
+        'Z',
+      )
+      expect(reads.at(-1)).toEqual({
+        exact: 'Z# T\r\n\r\nalpha beta\r\n',
+        rendered: 'Z# T\n\nalpha beta\n',
+      })
+    })
+
+    it('keeps the same-mode Undo recall of a Source anchor', () => {
+      const { es, text } = bootSource('a\r\nb', 'a\nb')
+      // A Source read anchors the pair in Source.
+      expect(es.snapshotPair()).toEqual({ exact: 'a\r\nb', rendered: 'a\nb' })
+      text.nodeValue = 'Za\nb'
+      es.markUserInput(true)
+      signal(es)
+      expect(es.snapshotPair()).toEqual({ exact: 'Za\r\nb', rendered: 'Za\nb' })
+      // Vditor's Source Undo re-renders with `enableInput` on: the edit signal, then the read.
+      text.nodeValue = 'a\nb'
+      signal(es)
+      expect(es.snapshotPair()).toEqual({ exact: 'a\r\nb', rendered: 'a\nb' })
+    })
+
+    it('keeps the IR anchor for a return to IR before publication (typed and erased in Source)', async () => {
+      const { svFixture } = await import('../testing/real-lute')
+      const ir = createRealLute('ir')
+      const opened = '- [x] task\n'
+      let mode = 'ir'
+      let irHtml = ir.render(opened)
+      let irText = ir.serialize(irHtml)
+      const editor = svFixture(irText)
+      const source0 = serializeSource(editor)
+      const { es, edits } = boot({
+        initialMarkdown: opened,
+        getValue: () => (mode === 'sv' ? serializeSource(editor) : irText),
+        serialize: ir.serialize,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      h.inner!.ir!.element!.innerHTML = irHtml
+      expect(es.snapshotPair()).toEqual({ exact: opened, rendered: irText })
+      h.activeEl = editor as unknown as { textContent: string }
+      mode = 'sv'
+      es.noteModeSwitch()
+      const node = Array.from(editor.querySelectorAll('[data-type="text"]')).at(
+        -1,
+      )!.firstChild as Text
+      // A trusted edit and its erasure, each with the capture mark, the render signal and the read.
+      node.appendData('!')
+      es.markUserInput(true)
+      signal(es)
+      expect(es.snapshotPair().exact).not.toBe(opened)
+      es.schedule()
+      node.deleteData(node.length - 1, 1)
+      es.markUserInput(true)
+      signal(es)
+      const restored = es.snapshotPair()
+      es.schedule()
+      expect(restored.rendered).toBe(source0)
+      // Back to IR before the 250 ms post: the IR DOM renders like the IR anchor again.
+      const originalIr = irText
+      irHtml = ir.render(restored.rendered)
+      irText = ir.serialize(irHtml)
+      h.inner!.ir!.element!.innerHTML = irHtml
+      h.activeEl = h.inner!.ir!.element as unknown as { textContent: string }
+      mode = 'ir'
+      es.noteModeSwitch()
+      expect(es.snapshotPair()).toEqual({ exact: opened, rendered: originalIr })
+      expect(edits()).toEqual([])
+    })
+
+    // Rev 5 review binding 1: a rebase is proved by one mode; the cache must not hand it to another.
+    it('does not reuse an IR rebase in Source for an equal rendering (IR to Source)', async () => {
+      const { svFixture } = await import('../testing/real-lute')
+      const ir = createRealLute('ir')
+      const opened = '- [x] task\n'
+      let mode = 'ir'
+      let irHtml = ir.render(opened)
+      const { es } = boot({
+        initialMarkdown: opened,
+        getValue: () => ir.serialize(irHtml),
+        serialize: ir.serialize,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      // The IR proof is Lute's render and serialize of the exact bytes.
+      h.inner!.lute = ir.lute
+      h.inner!.ir!.element!.innerHTML = irHtml
+      expect(es.snapshotPair().exact).toBe(opened)
+      // A trusted IR edit, proved by IR: `!` after the task text.
+      irHtml = ir.render('- [x] task!\n')
+      h.inner!.ir!.element!.innerHTML = irHtml
+      es.markUserInput(true)
+      expect(es.snapshotPair()).toEqual({
+        exact: '- [x] task!\n',
+        rendered: '- [X]  task!\n',
+      })
+      // Source before publication shows `- [X] task!`; a synthetic edit adds a space to the closing
+      // marker, which gives the same rendering string as IR's.
+      const editor = svFixture('- [X] task!\n')
+      h.activeEl = editor as unknown as { textContent: string }
+      mode = 'sv'
+      es.noteModeSwitch()
+      const marker = Array.from(
+        editor.querySelectorAll('[data-type="task-marker"]'),
+      ).at(-1)!.firstChild as Text
+      marker.appendData(' ')
+      expect(serializeSource(editor)).toBe('- [X]  task!\n')
+      es.markUserInput(false)
+      signal(es)
+      expect(es.snapshotPair()).toEqual({
+        exact: '- [X]  task!\n',
+        rendered: '- [X]  task!\n',
+      })
+    })
+
+    it('does not reuse a Source decline in IR for an equal rendering (Source to IR)', async () => {
+      const { svFixture } = await import('../testing/real-lute')
+      const ir = createRealLute('ir')
+      const opened = 'alpha\r\n\r\n##   head\r\n'
+      let mode = 'ir'
+      let irHtml = ir.render(opened)
+      const irText = ir.serialize(irHtml)
+      const editor = svFixture(irText)
+      const { es, edits } = boot({
+        initialMarkdown: opened,
+        getValue: () =>
+          mode === 'sv' ? serializeSource(editor) : ir.serialize(irHtml),
+        serialize: ir.serialize,
+      })
+      ;(window.vditor as any).getCurrentMode = () => mode
+      h.inner!.lute = ir.lute
+      h.inner!.ir!.element!.innerHTML = irHtml
+      expect(es.snapshotPair()).toEqual({ exact: opened, rendered: irText })
+      h.activeEl = editor as unknown as { textContent: string }
+      mode = 'sv'
+      es.noteModeSwitch()
+      const first = editor.querySelector('[data-block]')!.firstElementChild!
+        .firstChild as Text
+      first.insertData(0, 'Z')
+      es.markUserInput(true)
+      signal(es)
+      const declined = es.snapshotPair()
+      // Source declines: the spelling and line-ending differences span the whole text.
+      expect(declined.exact).toBeNull()
+      // Back to IR before publication, rendering the same string; IR proves the insertion.
+      irHtml = ir.render(declined.rendered)
+      h.inner!.ir!.element!.innerHTML = irHtml
+      h.activeEl = h.inner!.ir!.element as unknown as { textContent: string }
+      mode = 'ir'
+      es.noteModeSwitch()
+      expect(es.snapshotPair()).toEqual({
+        exact: 'Zalpha\r\n\r\n##   head\r\n',
+        rendered: declined.rendered,
+      })
+      expect(edits()).toEqual([])
+    })
+
+    // Owner option A (rev 9): the history flush of a pending auto-wrap never reuses a rebase of another
+    // mode and proves nothing again. After a Source rebase and a return to IR, the typing goes out by the
+    // plain path, the same whether or not an IR pair read happened in between, and never as a wrong exact.
+    describe.each([
+      ['typing in Source', false, 'sv'],
+      ['typing in Source', true, 'sv'],
+      ['typing in IR and a Source read', false, 'ir'],
+      ['typing in IR and a Source read', true, 'ir'],
+    ])(
+      '%s, a return to IR, incidental IR pair read %s',
+      (_name, incidentalRead, typedIn) => {
+        const sourceRebaseThenIr = async (): Promise<{
+          es: ReturnType<typeof boot>['es']
+          post: ReturnType<typeof boot>['post']
+        }> => {
+          const { svFixture } = await import('../testing/real-lute')
+          const ir = createRealLute('ir')
+          const opened = '##   alpha\n'
+          let mode = 'ir'
+          let irHtml = ir.render(opened)
+          const irText = ir.serialize(irHtml)
+          let editor = svFixture(irText)
+          const { es, post } = boot({
+            initialMarkdown: opened,
+            getValue: () =>
+              mode === 'sv' ? serializeSource(editor) : ir.serialize(irHtml),
+            serialize: ir.serialize,
+            deferTypingPost: () => true,
+          })
+          ;(window.vditor as any).getCurrentMode = () => mode
+          h.inner!.lute = ir.lute
+          h.inner!.ir!.element!.innerHTML = irHtml
+          expect(es.snapshotPair()).toEqual({ exact: opened, rendered: irText })
+          if (typedIn === 'ir') {
+            // Typing in IR, proved there; then a visit to Source whose read rebases it in Source.
+            irHtml = ir.render('##   alpha!\n')
+            h.inner!.ir!.element!.innerHTML = irHtml
+            es.markUserInput(true)
+            es.schedule()
+            expect(es.snapshotPair().exact).toBe('##   alpha!\n')
+            editor = svFixture('## alpha!\n')
+            h.activeEl = editor as unknown as { textContent: string }
+            mode = 'sv'
+            es.noteModeSwitch()
+            expect(es.snapshotPair().rendered).toBe('## alpha!\n')
+          } else {
+            h.activeEl = editor as unknown as { textContent: string }
+            mode = 'sv'
+            es.noteModeSwitch()
+            const node = editor.querySelector('[data-type="text"]')!
+              .firstChild as Text
+            node.appendData('!')
+            es.markUserInput(true)
+            signal(es)
+            // The Source rebase.
+            expect(es.snapshotPair()).toEqual({
+              exact: '## alpha!\n',
+              rendered: '## alpha!\n',
+            })
+            es.schedule()
+          }
+          // Back to IR before publication; the IR DOM renders the same string.
+          irHtml = ir.render('## alpha!\n')
+          h.inner!.ir!.element!.innerHTML = irHtml
+          h.activeEl = h.inner!.ir!.element as unknown as {
+            textContent: string
+          }
+          mode = 'ir'
+          es.noteModeSwitch()
+          // The incidental read proves the typing in IR (a pair read keeps its rule).
+          if (incidentalRead)
+            expect(es.snapshotPair().exact).toBe('##   alpha!\n')
+          return { es, post }
+        }
+        const edits = (post: ReturnType<typeof boot>['post']) =>
+          post.mock.calls
+            .map((call) => call[0])
+            .filter((message) => message?.command === 'edit')
+
+        it('publishes the typing by the plain path (no exact edit)', async () => {
+          const { es, post } = await sourceRebaseThenIr()
+          expect(es.flushHistoryInput()).toBe(true)
+          const sent = edits(post)
+          expect(sent).toHaveLength(1)
+          expect(sent[0].exact).toBeFalsy()
+          expect(sent[0].content).toBe('## alpha!\n')
+        })
+
+        it('keeps the typing deferred for a recorded entry (no edit posted)', async () => {
+          const { es, post } = await sourceRebaseThenIr()
+          expect(es.flushHistoryInput({ recordedEntry: true })).toBe('deferred')
+          expect(edits(post)).toEqual([])
+        })
+      },
+    )
+
+    it('still flushes IR typing exactly with its own IR proof (no other mode involved)', () => {
+      const ir = createRealLute('ir')
+      const opened = '##   alpha\n'
+      let irHtml = ir.render(opened)
+      const { es, post } = boot({
+        initialMarkdown: opened,
+        getValue: () => ir.serialize(irHtml),
+        serialize: ir.serialize,
+        deferTypingPost: () => true,
+      })
+      ;(window.vditor as any).getCurrentMode = () => 'ir'
+      h.inner!.lute = ir.lute
+      h.inner!.ir!.element!.innerHTML = irHtml
+      es.snapshotPair()
+      irHtml = ir.render('##   alpha!\n')
+      h.inner!.ir!.element!.innerHTML = irHtml
+      es.markUserInput(true)
+      es.schedule()
+      expect(es.snapshotPair().exact).toBe('##   alpha!\n')
+      expect(es.flushHistoryInput()).toBe(true)
+      const sent = post.mock.calls
+        .map((call) => call[0])
+        .filter((message) => message?.command === 'edit')
+      expect(sent).toEqual([
+        expect.objectContaining({
+          content: '##   alpha!\n',
+          exact: true,
+          before: opened,
+        }),
+      ])
+    })
+
+    // Rev 7 review binding 1: a proven empty result is a result.
+    it.each([true, false])(
+      'flushes a proven empty exact result at a pending auto-wrap (recorded entry %s)',
+      async (recordedEntry) => {
+        const { createAutoWrapController } = await import(
+          '../editing/auto-wrap'
+        )
+        const ir = createRealLute('ir')
+        let pending = false
+        const wrap = createAutoWrapController({
+          captureTarget: () => ({}),
+          isTargetCurrent: () => true,
+          apply: () => undefined,
+          onError: () => undefined,
+          pendingChanged: (value) => {
+            pending = value
+          },
+        })
+        wrap.updateConfig({ enabled: true, column: 80, delayMs: 500 })
+        const { es, post } = boot({
+          initialMarkdown: 'x',
+          deferTypingPost: () => pending,
+          serialize: ir.serialize,
+          getValue: () => ir.serialize(h.inner!.ir!.element!.innerHTML),
+        })
+        try {
+          const root = h.inner!.ir!.element! as HTMLElement
+          h.inner!.lute = ir.lute
+          root.innerHTML = ir.render('x')
+          es.snapshotPair()
+          root.innerHTML = ir.render('xy')
+          es.markUserInput(true)
+          es.schedule()
+          wrap.handleInput({ inputType: 'insertText', isComposing: false })
+          expect(pending).toBe(true)
+          es.snapshotPair()
+          // An eventless removal of the text (the IR cut hook marks before its Range delete).
+          es.markUserInput(true)
+          const range = document.createRange()
+          range.selectNodeContents(root.querySelector('[data-block]')!)
+          range.deleteContents()
+          es.schedule()
+          expect(es.snapshotPair().exact).toBe('')
+          es.flushHistoryInput(
+            recordedEntry ? { recordedEntry: true } : undefined,
+          )
+          const sent = post.mock.calls
+            .map((call) => call[0])
+            .filter((message) => message?.command === 'edit')
+          expect(sent).toEqual([
+            expect.objectContaining({ content: '', exact: true, before: 'x' }),
+          ])
+        } finally {
+          wrap.dispose()
+        }
+      },
+    )
+
+    it('returns a same-mode known decline at a pending auto-wrap without a new snapshot', () => {
+      const win = window as unknown as Record<string, unknown>
+      win.__vmdeE2EReadiness = {}
+      const ir = createRealLute('ir')
+      const opened = 'alpha\r\n\r\nbeta\r\n'
+      const { es } = boot({
+        initialMarkdown: opened,
+        deferTypingPost: () => true,
+        serialize: ir.serialize,
+        getValue: () => ir.serialize(h.inner!.ir!.element!.innerHTML),
+      })
+      const root = h.inner!.ir!.element! as HTMLElement
+      document.body.append(root)
+      h.activeEl = root as unknown as { textContent: string }
+      h.inner!.lute = ir.lute
+      try {
+        root.innerHTML = ir.render(opened)
+        es.snapshotPair()
+        // An interior insertion in CRLF text: the one-span rebase declines.
+        root.innerHTML = ir.render('alpha\n\nZbeta\n')
+        es.markUserInput(true)
+        es.schedule()
+        expect(es.snapshotPair().exact).toBeNull()
+        // Any DOM change dirties the rendered memo, so a snapshot would serialize.
+        root.setAttribute('data-probe', 'memo-dirty')
+        const stats = win.__vmdeIncrementalSeedStats as {
+          snapshotCalls: number
+        }
+        const before = stats.snapshotCalls
+        expect(es.flushHistoryInput({ recordedEntry: true })).toBe('deferred')
+        expect(stats.snapshotCalls - before).toBe(0)
+      } finally {
+        root.remove()
+        delete win.__vmdeE2EReadiness
+      }
+    })
+
+    it('keeps the Task 607 host-base guard: a plain post ends the remembered pair', async () => {
+      const t = await sourceAfterIrAnchor('- [x] task\n')
+      const marker = Array.from(
+        t.editor.querySelectorAll('[data-type="task-marker"]'),
+      ).at(-1)!.firstChild as Text
+      await typeInSource(
+        t,
+        () => ({ node: marker, offset: marker.length }),
+        ' ',
+      )
+      t.es.flush()
+      // The host minimized the post; nothing the webview remembers names its bytes now.
+      marker.deleteData(marker.length - 1, 1)
+      signal(t.es)
+      expect(t.es.snapshotPair()).toEqual({
+        exact: null,
+        rendered: '- [X] task\n',
+      })
+    })
+  })
+
+  it('counts every user-input mark, the trusted ones, and the anchor mode a trusted mark remembered (e2e)', () => {
+    const win = window as unknown as Record<string, unknown>
+    win.__vmdeE2EReadiness = {}
+    try {
+      const { es } = bootSource('a\r\nb', 'a\nb')
+      const stats = win.__vmdeIncrementalSeedStats as Record<string, unknown>
+      expect(es.snapshotPair().exact).toBe('a\r\nb')
+      es.markUserInput(true)
+      es.markUserInput(false)
+      es.markUserInput(true)
+      expect(stats).toMatchObject({
+        userInputMarks: 3,
+        trustedInputMarks: 2,
+        // The first trusted mark remembered the Source pair; the last had nothing to remember.
+        lastRememberedAnchorMode: null,
+      })
+    } finally {
+      delete win.__vmdeE2EReadiness
+    }
+  })
+
+  it('records the anchor mode of the pair a trusted mark remembers (e2e)', () => {
+    const win = window as unknown as Record<string, unknown>
+    win.__vmdeE2EReadiness = {}
+    try {
+      const { es } = bootSource('a\r\nb', 'a\nb')
+      expect(es.snapshotPair().exact).toBe('a\r\nb')
+      es.markUserInput(true)
+      expect(
+        (win.__vmdeIncrementalSeedStats as Record<string, unknown>)
+          .lastRememberedAnchorMode,
+      ).toBe('sv')
+    } finally {
+      delete win.__vmdeE2EReadiness
+    }
+  })
+
+  describe('late host seed (Task 641)', () => {
+    const seedFor = (markdown: string) => ({
+      markdown,
+      source: {
+        chars: 94_533,
+        lines: 2_253,
+        blockHints: 585,
+        listItems: 0,
+        tableRows: 0,
+        inlineRich: 585 * 4,
+        fencedBlocks: 0,
+      },
+      reason: 'source-structure' as const,
+      hostMs: 966,
+    })
+    const bootUnseeded = () =>
+      boot({
+        mode: 'ir',
+        blocks: 585,
+        nested: true,
+        getValue: () => 'FULL SERIALIZATION',
+        serialize: (html: string) => html,
+        initialMarkdown: 'INIT BYTES',
+      })
+
+    it.each([
+      ['accepts it while untouched', false, true],
+      ['rejects it after an edit-driven Source render', true, false],
+    ])('%s', async (_name, edited, seeded) => {
+      const { es } = bootUnseeded()
+      es.startIncrementalSeed()
+      if (edited) signal(es)
+      const ir = h.inner!.ir!.element!
+      es.receiveDeferredSeed(seedFor(ir.innerHTML), 'INIT BYTES')
+      await vi.runAllTimersAsync()
+      expect(es.snapshotMarkdown()).toBe(
+        seeded ? ir.innerHTML : 'FULL SERIALIZATION',
+      )
+    })
+  })
+})

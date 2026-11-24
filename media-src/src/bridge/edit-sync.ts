@@ -145,6 +145,13 @@ export interface EditSync {
   /** Record a DOM change edit-sync did not schedule (Vditor's undo/redo engine), so an unanchored
    * exact transaction proves its bytes against the live DOM before trusting them. */
   markEditorChange(): void
+  /**
+   * Task 733 / 045: an edit-driven Source render is about to read the preview (the patched Source
+   * `processAfterRender`, before `preview.render`). Outside an exact action's apply window it is an
+   * editor change: it ends a host seed's ownership, and an anchor from another mode must be proved
+   * again against the edited Source text.
+   */
+  noteSourceEdit(): void
   /** Stable opaque identity for the current exact-source authority. */
   snapshotRevision(): object
   /** Flush live Markdown, then ask the host to return its authoritative bytes for rewrap. */
@@ -212,6 +219,22 @@ const EXACT_AUTHORITY_TIMEOUT_MS = 1500
 
 const normalizeEol = (text: string): string => text.replace(/\r\n?/g, '\n')
 
+/** Task 733 / 045: `normalizeEol(exact) === rendered`, without building the normalized copy. */
+const eolEquivalent = (exact: string, rendered: string): boolean => {
+  if (rendered.length > exact.length) return false
+  let i = 0
+  let j = 0
+  while (i < exact.length) {
+    let code = exact.charCodeAt(i++)
+    if (code === 13) {
+      if (exact.charCodeAt(i) === 10) i++
+      code = 10
+    }
+    if (j >= rendered.length || rendered.charCodeAt(j++) !== code) return false
+  }
+  return j === rendered.length
+}
+
 interface EditSyncDeps {
   /** IR auto-wrap must attempt its exact plan before an ordinary typing post retires the pair. */
   deferTypingPost?: () => boolean
@@ -276,6 +299,17 @@ interface IncrementalSeedE2EStats {
   fullFallbacks: number
   longTasks: number
   maxLongTaskMs: number
+  /** Task 733 / 045: every `markUserInput` call, and those that carried a trusted input. */
+  userInputMarks: number
+  trustedInputMarks: number
+  /** Task 733 / 045: the anchor mode of the pair the last trusted mark remembered (null: none). */
+  lastRememberedAnchorMode: string | null
+  /**
+   * Task 733 / 045: e2e only, the latest history flush outside a recorded entry (a host update, Undo,
+   * Redo): `pending` is the deferred-typing state at entry, the times are `performance.now()` around
+   * the body. The return-to-IR first-edit probe reads it; absent until such a flush runs.
+   */
+  historyFlush?: { pending: boolean; startedAt: number; endedAt: number }
 }
 
 type IncrementalSeedWindow = Window & {
@@ -328,6 +362,9 @@ function e2eSeedStats(
     fullFallbacks: 0,
     longTasks: 0,
     maxLongTaskMs: 0,
+    userInputMarks: 0,
+    trustedInputMarks: 0,
+    lastRememberedAnchorMode: null,
   }
   return win.__vmdeIncrementalSeedStats
 }
@@ -426,10 +463,25 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     mode: string | null
     projected: string | null
   } | null = null
-  let remembered: { exact: string; rendered: string | null } | null = null
+  // Task 733 / 045: `mode` is the edit mode whose DOM `rendered` was read in (the anchor's mode);
+  // `source` caches the Source projection that stands in for an anchor of another mode while in Source.
+  let remembered: {
+    exact: string
+    rendered: string | null
+    mode: string | null
+    source: string | null
+  } | null = null
   let ownedBase: string | null = deps.initialMarkdown ?? null
   // The one-span rebase result for the last rendering, so repeated reads reuse its projection.
-  let lastRebase: { rendered: string; exact: string | null } | null = null
+  // Task 733 / 045: `mode` is the edit mode that proved (or declined) it; another mode proves again.
+  let lastRebase: {
+    rendered: string
+    mode: string | null
+    exact: string | null
+  } | null = null
+  // Task 733 / 045 (Owner option A): the edit mode of the latest trusted user input, the typing a
+  // pending auto-wrap defers; `undefined` once a rebase of that typing was proved in another mode.
+  let typingMode: string | null | undefined
   let trustedInputs = 0
   let nextRequest = 0
   const newRequestId = (): string => `exact-${Date.now()}-${++nextRequest}`
@@ -919,8 +971,11 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       return null
     }
   }
+  // Task 733 / 045: in Source the projection is the EOL normalization, compared without a copy.
   const provesExact = (exact: string, rendered: string): boolean =>
-    projectRendered(exact) === rendered
+    window.vditor.getCurrentMode?.() === 'sv'
+      ? eolEquivalent(exact, rendered)
+      : projectRendered(exact) === rendered
   // Task 675: the host-request relation of Source mode. The Source text may carry what Lute or
   // Vditor changed (table padding, sequential list numbers, one more trailing line break), so a host
   // reply is also accepted when it derives that text. Only the reply check uses it: the rebase of
@@ -942,8 +997,22 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     editSequence === lastPlainPost.sequence &&
     hostReference === lastPlainPost.content &&
     rendered === lastPlainPost.content
+  // Task 733 / 045: a remembered rendering is one mode's anchor. A trusted Source edit can remember
+  // an IR anchor (Task 196 leaves it until the first Source pair read), and an edited Source text
+  // equal to that IR string proves nothing about the exact bytes. In Source the Source projection
+  // (the exact bytes with LF line endings) stands in, as for a pair that was never anchored. It is
+  // cached beside the anchor, so a return to the anchor's mode before publication still recalls it
+  // (an edit undone there). IR and WYSIWYG keep the stored rendering, as before.
   const rememberedRendering = (): string | null => {
     if (!remembered) return null
+    if (
+      remembered.rendered !== null &&
+      remembered.mode !== 'sv' &&
+      window.vditor.getCurrentMode?.() === 'sv'
+    ) {
+      remembered.source ??= normalizeEol(remembered.exact)
+      return remembered.source
+    }
     remembered.rendered ??= projectRendered(remembered.exact)
     return remembered.rendered
   }
@@ -953,10 +1022,14 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   // the span are carried along. The result stands only when it renders to the live rendering.
   const rebaseUnpublished = (rendered: string): string | null => {
     if (!remembered || remembered.exact !== hostBase) return null
-    if (lastRebase?.rendered === rendered) return lastRebase.exact
+    const mode = window.vditor.getCurrentMode?.() ?? null
+    if (lastRebase?.rendered === rendered && lastRebase.mode === mode)
+      return lastRebase.exact
     const before = rememberedRendering()
     const exact = before === null ? null : rebaseOneSpan(before, rendered)
-    lastRebase = { rendered, exact }
+    lastRebase = { rendered, mode, exact }
+    // A proof in another mode than the typing's ends the typing's exact flush (Owner option A).
+    if (mode !== typingMode) typingMode = undefined
     return exact
   }
   // Where `oldSpan` sits in `source`: after an identical prefix, or before an identical suffix.
@@ -1000,6 +1073,13 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       source.slice(0, start) + newSpan + source.slice(start + oldSpan.length)
     return provesExact(exact, rendered) ? exact : null
   }
+  // Task 733 / 045: the proof for an anchor after an edit. Source projects the exact bytes by EOL
+  // normalization alone, so a missing projection never stands in for it; IR and WYSIWYG keep their
+  // rule, including the first-read anchoring without a visual projection.
+  const anchorProves = (exact: string, rendered: string): boolean =>
+    window.vditor.getCurrentMode?.() === 'sv'
+      ? eolEquivalent(exact, rendered)
+      : renderedFromExact(exact, rendered)
   // The current pair's exact bytes while its rendering holds; a mismatch revokes the pair.
   const currentPairExact = (rendered: string): string | null => {
     if (exactTransactionMarkdown === null) return null
@@ -1008,7 +1088,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       exactTransactionRendered === null &&
       (!editBeforeAnchor ||
         rendered === exactTransactionMarkdown ||
-        renderedFromExact(exactTransactionMarkdown, rendered))
+        anchorProves(exactTransactionMarkdown, rendered))
     ) {
       exactTransactionRendered = rendered
       anchorMode = window.vditor.getCurrentMode?.() ?? null
@@ -2318,6 +2398,29 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
     postWholeExact(target, { ...opts, before })
     return 'applied'
   }
+  // Task 733 / 045: e2e only, every user-input mark, the trusted ones, and the anchor mode of the pair
+  // a trusted mark remembers (read before the mark clears it).
+  const countUserInputMark = (isTrusted: boolean): void => {
+    if (!seedStats) return
+    seedStats.userInputMarks++
+    if (!isTrusted) return
+    seedStats.trustedInputMarks++
+    seedStats.lastRememberedAnchorMode =
+      exactTransactionMarkdown !== null && exactTransactionRendered !== null
+        ? anchorMode
+        : null
+  }
+  // Task 733 / 045 (Owner option A): the proven exact bytes of the typing a pending auto-wrap still
+  // defers, while its rendering is the one last rebased. Only a rebase proved in the typing's own mode,
+  // with that mode active and no proof of the typing in another mode since, counts; nothing is proved
+  // again here (no Lute projection). After a Source rebase and a return to IR the typing therefore goes
+  // out by the plain path, whether or not an IR pair read happened in between.
+  const automaticTypingExact = (): string | null => {
+    const mode = window.vditor.getCurrentMode?.() ?? null
+    if (!lastRebase || lastRebase.exact === null) return null
+    if (lastRebase.mode !== mode || typingMode !== mode) return null
+    return snapshotMarkdown() === lastRebase.rendered ? lastRebase.exact : null
+  }
   const sync: EditSync = {
     deltaSync,
     reserveSequence: () => ++plainSequence,
@@ -2336,6 +2439,7 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       pendingEdit.schedule()
     },
     markUserInput: (isTrusted = true) => {
+      countUserInputMark(isTrusted)
       deferredSeedOpen = false
       if (exactTransactionRendered === null) editBeforeAnchor = true
       // Programmatic setValue emits an untrusted input while its known exact seed is settling.
@@ -2350,17 +2454,38 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
           remembered = {
             exact: exactTransactionMarkdown,
             rendered: exactTransactionRendered,
+            mode: anchorMode,
+            source: null,
           }
         exactTransactionMarkdown = null
         exactTransactionRendered = null
         ownedBase = null
         lastRebase = null
+        typingMode = window.vditor.getCurrentMode?.() ?? null
         trustedInputs++
         advanceSourceRevision()
       }
     },
     markEditorChange: () => {
       deferredSeedOpen = false
+      if (exactTransactionRendered === null) editBeforeAnchor = true
+    },
+    noteSourceEdit: () => {
+      // The action's own rendering of its exact bytes anchors at the next read, as before.
+      if (actionApplying) return
+      deferredSeedOpen = false
+      // Only a programmatic rebuild (render-only, never signalled) settles a host seed unposted.
+      exactSeedOwned = false
+      // Task 196 reanchors a clean switch from another mode's hidden DOM. After an edit that DOM no
+      // longer describes the Source text, and an equal string would not prove it either: the pair
+      // must be proved again against the edited text, as an unanchored one is.
+      if (
+        exactTransactionRendered !== null &&
+        anchorMode !== (window.vditor.getCurrentMode?.() ?? null)
+      ) {
+        exactTransactionRendered = null
+        anchorMode = null
+      }
       if (exactTransactionRendered === null) editBeforeAnchor = true
     },
     // Task 196: every save flushes too (save-flush.ts, on the host's will-save). Posting
@@ -2378,16 +2503,16 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
       // here would revoke that base before the wrap's guarded post. Publish the already-proven
       // typing as its own exact edit, preserving the host state that one Undo must reach. Reuse
       // the cached span only while its rendering is still live; no new Lute projection is needed.
-      const automatic = deps.deferTypingPost?.() ? lastRebase : null
+      const automatic = deps.deferTypingPost?.() ? automaticTypingExact() : null
+      // Every proven result counts, the empty string too.
       if (
         hostBase !== null &&
         remembered?.exact === hostBase &&
-        automatic?.exact != null &&
-        snapshotMarkdown() === automatic.rendered
+        automatic !== null
       ) {
-        sync.postExact(automatic.exact, { before: hostBase })
+        sync.postExact(automatic, { before: hostBase })
         // Both guarded edits use the same host queue: typing first, then the automatic action.
-        ownedBase = automatic.exact
+        ownedBase = automatic
         return true
       }
       // Task 677: Vditor's delayed undo entry (800 ms in IR) can run before the auto-wrap timer. A
@@ -2574,10 +2699,19 @@ export function createEditSync(deps: EditSyncDeps): EditSync {
   sync.flushHistoryInput = (options) => {
     if (options?.recordedEntry) return flushHistoryInputBody(options)
     setPublicationTraceCause('prepare')
+    // Task 733 / 045: e2e only, the flush's pending state and duration for the first-edit probe.
+    const pending = seedStats ? deps.deferTypingPost?.() === true : false
+    const startedAt = seedStats ? performance.now() : 0
     try {
       return flushHistoryInputBody(options)
     } finally {
       setPublicationTraceCause(undefined)
+      if (seedStats)
+        seedStats.historyFlush = {
+          pending,
+          startedAt,
+          endedAt: performance.now(),
+        }
     }
   }
   return sync

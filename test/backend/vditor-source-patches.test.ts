@@ -6679,3 +6679,134 @@ describe('patchWysiwygBackspaceRootRead (task 733 / 020 — test the child count
     expect(countOf(chained, ANCHOR)).toBe(0)
   })
 })
+
+// Task 733 / 045 (F2): the Source edit-render signal runs before `preview.render`, for an
+// edit-driven render only, and is chained once in the registry.
+describe('patchSvRenderEditSignal (task 733 / 045)', () => {
+  const ANCHOR = '    vditor.preview.render(vditor);'
+  const entry = () =>
+    VDITOR_TS_PATCHES.filter((e) => e.file.test('/vditor/src/ts/sv/process.ts'))
+  const body = (code: string) =>
+    code.slice(
+      code.indexOf('export const processAfterRender'),
+      code.indexOf('export const processHeading'),
+    )
+
+  it('signals an edit-driven render before the preview, once, in the shipped chain', () => {
+    const patch = sourcePatches.patchSvRenderEditSignal
+    expect(svProcessSource.split(ANCHOR)).toHaveLength(2)
+    const patched = patch(svProcessSource)
+    const render = body(patched)
+    const hook = render.indexOf('(window as any).__vmdeSourceRenderEdit?.();')
+    expect(hook).toBeGreaterThan(render.indexOf('if (options.enableInput) {'))
+    expect(hook).toBeLessThan(render.indexOf(ANCHOR))
+    expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+    expect(() => patch(patched)).toThrow(/already patched/)
+    expect(() => patch('')).toThrow(/found 0/)
+    expect(entry()).toHaveLength(1)
+    const chained = entry()[0].transform(
+      svProcessSource,
+      'vditor/src/ts/sv/process.ts',
+    )
+    expect(chained.split('__vmdeSourceRenderEdit')).toHaveLength(2)
+    expect(body(chained).indexOf('__vmdeSourceRenderEdit')).toBeLessThan(
+      body(chained).indexOf(ANCHOR),
+    )
+  })
+
+  it('calls the hook only when the render passes enableInput', () => {
+    const patched = body(sourcePatches.patchSvRenderEditSignal(svProcessSource))
+    const start = patched.indexOf('    if (options.enableHint) {')
+    const end = patched.indexOf(ANCHOR) + ANCHOR.length
+    const { code: js } = transformSync(patched.slice(start, end), {
+      loader: 'ts',
+    })
+    const run = new Function('vditor', 'options', 'window', js)
+    const order: string[] = []
+    const vditor = {
+      hint: { render: () => order.push('hint') },
+      preview: { render: () => order.push('preview') },
+    }
+    const win = { __vmdeSourceRenderEdit: () => order.push('signal') }
+    run(vditor, { enableHint: false, enableInput: true }, win)
+    run(vditor, { enableHint: false, enableInput: false }, win)
+    run(vditor, { enableHint: false, enableInput: true }, {})
+    expect(order).toEqual(['signal', 'preview', 'preview', 'preview'])
+  })
+})
+
+// Task 733 / 045 (F2): Vditor's Source `compositionend` handler asks the hook before its rebuild; a
+// `false` answer (a composition that changed nothing) skips `inputEvent`, and the composing lock is
+// released either way. Chained after `patchSvCopyGuard` in the one `sv/index.ts` entry.
+describe('patchSvCompositionEndRebuild (task 733 / 045)', () => {
+  const svIndexSource = read(
+    '../../media-src/node_modules/vditor/src/ts/sv/index.ts',
+  )
+  const LISTENER = 'this.element.addEventListener("compositionend", '
+  const entry = () =>
+    VDITOR_TS_PATCHES.filter((e) => e.file.test('/vditor/src/ts/sv/index.ts'))
+  const chained = () =>
+    entry()[0].transform(svIndexSource, 'vditor/src/ts/sv/index.ts')
+  // The shipped `compositionend` listener, compiled; `this`, `isFirefox` and `inputEvent` are its inputs.
+  const listener = () => {
+    const code = chained()
+    const at = code.indexOf(LISTENER) + LISTENER.length
+    const end = code.indexOf('\n        });', at)
+    const { code: js } = transformSync(
+      `const listener = ${code.slice(at, end)}\n};`,
+      { loader: 'ts' },
+    )
+    return new Function(
+      'self',
+      'isFirefox',
+      'inputEvent',
+      'vditor',
+      'window',
+      `${js.replace(/\bthis\b/g, 'self')}\nreturn listener`,
+    )
+  }
+
+  it('asks the hook before the rebuild, once, in the shipped chain', () => {
+    const patch = sourcePatches.patchSvCompositionEndRebuild
+    expect(svIndexSource.split(LISTENER)).toHaveLength(2)
+    const patched = patch(svIndexSource)
+    expect(() => transformSync(patched, { loader: 'ts' })).not.toThrow()
+    expect(() => patch(patched)).toThrow(/already patched/)
+    expect(() => patch('')).toThrow(/found 0/)
+    expect(entry()).toHaveLength(1)
+    expect(chained().split('__vmdeSourceCompositionEnd')).toHaveLength(2)
+    // The copy guard of the same entry is still applied.
+    expect(chained()).toContain('__vmdeExpandToLine')
+  })
+
+  it('skips only the rebuild of an end the hook answers false for', () => {
+    const run = (win: Record<string, unknown>, firefox = false) => {
+      const calls: string[] = []
+      const self = { composingLock: true }
+      listener()(
+        self,
+        () => firefox,
+        () => calls.push('inputEvent'),
+        {},
+        win,
+      )(new Event('compositionend'))
+      return { calls, lock: self.composingLock }
+    }
+    const answer = (value: boolean | undefined) => ({
+      __vmdeSourceCompositionEnd: () => value,
+    })
+    expect(run(answer(true))).toEqual({ calls: ['inputEvent'], lock: false })
+    expect(run(answer(undefined))).toEqual({
+      calls: ['inputEvent'],
+      lock: false,
+    })
+    expect(run({})).toEqual({ calls: ['inputEvent'], lock: false })
+    expect(run(answer(false))).toEqual({ calls: [], lock: false })
+    // Firefox (no rebuild at composition end upstream) asks nothing.
+    const asked: string[] = []
+    expect(
+      run({ __vmdeSourceCompositionEnd: () => asked.push('hook') !== 0 }, true),
+    ).toEqual({ calls: [], lock: false })
+    expect(asked).toEqual([])
+  })
+})
