@@ -6,506 +6,113 @@ Format based on [Keep a Changelog](https://keepachangelog.com/), versions follow
 
 ## [1.4.0] — 2026-09-04
 
-This release establishes VMDE as an independently published VS Code extension and combines the
-editing, navigation, performance, accessibility, renderer, security, and release-engineering work
-completed on `dev` since 1.3.0.
-
 <!-- brand-check: former-brand-explanation-start -->
 
 ### Breaking identity change
 
-- The public product name is now **VMDE**. The extension display name, command categories, custom
-  editor label, status and output channels, webview title, documentation, and support text use that
-  name consistently.
-- The extension now installs as `Laicasaane.vmde`. It is a separate Marketplace/Open VSX identity,
-  not an automatic upgrade of `spiochacz.vmarkd`.
-- Settings now use the `vmde` root (for example `vmde.editor.defaultMode`), commands use the
-  `vmde.` prefix, and the custom editor is `vmde.editor`. No deprecated `vmarkd` aliases or
-  dual-read migration paths are included.
-- Extension-local state and editor associations from the former installation do not transfer.
-  Install the new extension explicitly, reapply the settings and keybindings you still want, and
-  choose VMDE again for any saved editor associations.
+- Install VMDE (`Laicasaane.vmde`) separately from `spiochacz.vmarkd` and select it again as your Markdown editor.
+- Settings and commands now use `vmde.`, and the editor ID is `vmde.editor`. Reapply custom settings and keybindings. Saved extension state does not migrate.
 
 <!-- brand-check: former-brand-explanation-end -->
 
 ### Added
 
-- **Markdown-native editing commands.** `Ctrl/Cmd+F` opens a Find-only row and `Ctrl+H`
-  (`Cmd+Alt+F` on macOS) opens Replace, both source-accurate, with the Find widget keys mirroring
-  VS Code's and individual matches highlighted with configurable colors and opacity. Replace and
-  Replace All apply as one exact, single-step-Undo edit, and closing Find selects the current match
-  (or returns the caret or selection from before Find opened). **Rewrap Paragraph** rewraps a
-  paragraph or selection; **Rewrap Document** handles every eligible prose block in one
-  transaction; heading promote/demote can act on one heading or its complete section; and staged
-  structural selection supports block/document expansion without serializing editor chrome. Native
-  editor context menus expose selection-based commands through the same host routes.
-- **Optional authoring behavior.** Auto-wrap reuses the source-preserving formatter after a quiet
-  interval. Bundled Lute switches expose `[toc]`, `==mark==`, and superscript/subscript syntax;
-  visual editing also preserves source-faithful HTML `<sub>`, `<sup>`, and `<ins>`. Ordered lists
-  renumber after edits and drag moves in IR, WYSIWYG, and Split source mode while preserving
-  authored start numbers.
-- **GitHub Markdown additions.** Backtick-delimited inline math and fenced `math` blocks render
-  without changing source; a shared Math menu inserts supported math forms. Optional, default-off
-  HEX/RGB/HSL swatches preview inline color literals.
-- **Emoji picker.** The toolbar offers a searchable, categorized Emoji 17.0 catalog with variants
-  and local recent selections.
-- **HTML anchors and images.** Named HTML anchors support same-document and cross-file navigation.
-  Sanitized inline SVG data images render without widening the webview CSP; source-faithful
-  `<picture>` previews and insertion support local or HTTPS raster assets.
-- **GFM table editing.** Move rows and columns, select cell ranges for copy and range operations,
-  format one table in Split source mode, and resize columns in IR/WYSIWYG. Column widths are
-  session-only and reset when the document reopens; no width metadata is written to Markdown.
-  Columns are sized from their content in IR, WYSIWYG, and Preview: short columns such as IDs,
-  statuses, and dates stay on one line and long prose columns take the remaining width, so tables
-  wrap less and grow shorter. Similar columns keep roughly equal widths, widths settle after a
-  typing pause instead of shifting on each keystroke, and a manual resize still wins.
-- **Preview task-list checkboxes.** Full Preview and Split's right Preview pane can toggle one
-  exact source marker per click with one-step Undo/Redo and preserved scroll. The
-  `vmde.preview.interactiveCheckboxes` setting is on by default; non-writable sources stay disabled.
-- **Section workflows.** Persistent section/list folding, hierarchical section hoisting, section
-  reordering from the outline, source-owned block and list-item gutter handles for guarded moves,
-  restored reading position, viewport-owned outline highlighting, and source-line reveal work
-  across editor surfaces without removing hidden source from the document.
-- **Discoverable heading and list folds.** Expanded `▼` and collapsed `▶` heading controls remain
-  visible in IR and WYSIWYG; the 12 px glyph sits beneath each heading marker in a bounded 36×24 px
-  gutter target shared with the marker. List-fold glyphs sit visibly and directly beneath their
-  owning bullet, number, or task checkbox at each nesting depth, with bounded hit targets.
-- **Folds and Git change bars in Preview.** Preview shows the heading and list fold controls and
-  the Git change bars, read-only. A fold made in Preview also applies in IR and WYSIWYG for the same
-  document, and the reverse.
-- **Tooltips for outline entries, links, and images.** Each outline entry shows its full heading
-  text on hover, so entries cut off in a narrow panel can be read. A link shows its destination as
-  written, below its title when it has one (`[point 14](notes.md#L674)` shows `notes.md#L674`); an
-  image shows its title, its alt text, and its target, one to three lines. They appear in IR,
-  WYSIWYG, Split's preview pane, and Preview and never change the saved Markdown. In WYSIWYG, a link
-  or image that has its own Markdown title shows only that title.
-- **Selection editing.** A floating IR/WYSIWYG toolbar offers formatting and guarded Link, Wiki,
-  and Turn Into actions. An IR link and image balloon provides Open, Copy URL, Edit URL, and Unlink;
-  contextual quote, table, link, image, and selection controls stay clear of editable text.
-- **Details and callout authoring.** `<details>/<summary>` blocks remain interactive while editing,
-  selections can be wrapped or unwrapped from the toolbar, and callouts have shared add/change/
-  title/remove controls across IR, WYSIWYG, and Split.
-- **Unified diagram controls.** Registry-declared zoomable renderers receive Pan, zoom, reset, and
-  an optional full-screen stage without cloning the live renderer or its state.
-- **Mermaid problems show at the diagram.** A Mermaid diagram that fails, draws nothing, times out
-  after 30 s, or cannot load its renderer shows an error box in place in IR, WYSIWYG, Split's
-  preview pane, and Preview, and its source stays editable. A diagram drawn with dagre because ELK
-  layout could not load shows a warning, and so does a class diagram whose edge-end labels, such
-  as cardinalities, overlap; the layout itself is unchanged. ELK layout loads before every Mermaid
-  render.
-- **Accessibility.** Editor surfaces are named multiline textboxes, one polite live region reports
-  save/copy/mode/error state, link-like chips and diagrams have shared semantics, reduced-motion
-  disables VMDE and Vditor motion while preserving state, and VS Code high-contrast plus browser
-  forced-colors modes use visible borders, focus, and diagram palettes.
-- **Large-document rendering.** Split mode can stream source and Preview directly; semantic-local
-  mutation work avoids full-document helper/ToC passes; full Preview uses one immediate snapshot and
-  reuses a current hidden render; and host writeback baselines prewarm after first paint. Opening
-  files known to contain text avoids a redundant full-document serialization; code-copy text
-  preparation avoids forcing layout; block-handle movement no longer reserializes unchanged text on
-  every pointer move; table resizing measures visible or actively dragged headers; and Find on a
-  large file searches the exact source instead of re-parsing the document per keystroke. Across
-  three matched runs in real VS Code on a 175 KB synthetic file, median open-to-ready time fell
-  2.72→2.27 s and warmed 12-step pointer-and-wheel time fell 7.66→0.62 s. Exact source and
-  save/history fidelity held. Selecting text no longer does whole-document work while you drag or
-  press Shift+Arrow: Details and selection-toolbar state read a shared per-revision block index
-  instead of reserializing the document and inserting temporary source markers, and the first
-  block-handle hover serializes once instead of twice; plain IR clicks no longer discard the cached
-  block index, and the selection toolbar appears without waiting on index rebuilds. On the same
-  file, drag selection finished 82–85% faster (IR 11.6→1.7–2.1 s, WYSIWYG 10.2→1.5–1.6 s), keyboard
-  selection fell from 26 full-document reads to at most one per selection, and first-hover
-  serialization fell 318→126 ms in IR, with exact source and history intact. Drag-selection settle
-  time before the toolbar appears is 38–58 ms, down from a 186–270 ms stall, and a Find keystroke
-  fell from about 179–207 s to under 1 s. The first block-handle hover still verifies block source,
-  which takes about 0.9 s in IR on that file. The editor's delayed undo checkpoint no longer
-  discards the cached block index, so the next block-handle hover or Turn Into after typing does
-  not rebuild it. The first edit after opening no longer reads the whole document to record the
-  Undo base, and typing, drag selection, and block-handle hovers skip repeated whole-document
-  reads; the longest pause while a large structured file's edit view fills in fell from about
-  220 ms to under 50 ms. Typing or leaving the editor cancels a pending block-handle hover; the
-  handle returns on the next mouse move.
-- **Faster file open.** Opening a file no longer waits for the workspace wiki page scan: the editor
-  starts at once, wiki link styling and `[[` completion follow when the page list arrives, and the
-  scan is one workspace search that honors `files.exclude` and skips `node_modules`. In one large
-  workspace, open-to-ready time fell from 24–33 s to a median of 3.3 s cold and 2.1 s warm. Large
-  files also start sooner: the document reaches the editor before its incremental seed, the host
-  Markdown engine loads from a code cache, and fold-glyph alignment and the Undo base capture move
-  off the startup path. In a clean profile in real VS Code, median open-to-ready time for a 150 KB
-  file fell from 4.48 s to 2.06 s cold (2.46 s on the first launch after installation) and from
-  3.18 s to 1.52 s warm; small and mid-size files changed within run-to-run variation.
-- **Remembered wiki page list.** The wiki page list is stored per workspace and wiki root, so the
-  first open after a restart has it immediately; one background search then corrects pages added,
-  removed, or renamed while VS Code was closed, without an edit, dirty state, or Undo step. The new
-  `vmde.wiki.exclude` setting leaves folders, files, or glob matches out of the list in addition to
-  `files.exclude` and `node_modules`. Changing the wiki root, disabling the wiki, or changing the
-  exclude list discards the stored list.
-- **Wiki links to front-matter aliases.** A page's `aliases:` front matter (a list or a single
-  value) makes `[[Alias]]` resolve to that page, matched like file names regardless of case; a
-  file name wins over an equal alias. The `[[` completion list offers `alias → file` rows that
-  insert `[[file|alias]]`, and a changed alias list applies without reopening.
-- **Front matter as a properties table.** YAML front matter shows as a two-column table of
-  property names and values in IR, WYSIWYG, Split's preview pane, and Preview. Values show without
-  their YAML quotes, list items show as chips, nested maps as small inner tables, and block scalars
-  keep their line breaks. Every name and value cell has a visible copy button that copies the cell
-  (a list or map as YAML) and shows a checkmark for 1.5 s. In IR and WYSIWYG the YAML source shows
-  while the caret is in the block. Front matter that does not parse, or TOML between `+++` lines,
-  stays a code block with an in-place warning. Rows fit their text, the name column fits the
-  longest name, and the `vmde.editor.frontMatterFontSize` and `vmde.editor.frontMatterFontFamily`
-  settings set the table's font (default: the editor font). A fold button collapses the table to
-  one "Properties (N)" line in every view; each file keeps its own fold state, and
-  `vmde.editor.frontMatterFolded` sets the state for files that have none (default: expanded).
-- **Edit front matter in the properties table.** In IR and WYSIWYG, click a name or value cell to
-  edit it in place; Enter or Tab commits and Esc cancels. Lists, nested maps, and multi-line values
-  edit as YAML source in a box inside the cell. "+ Add property", just under the table, appends a
-  `property_<N>: ""` row and opens its name for typing; the number continues from the largest
-  existing `property_<N>`, so the front matter stays valid YAML, and several Adds in a row each add
-  one row. The always-visible drag handle at the left of each name, or Alt+Up/Alt+Down, reorders
-  rows; the × just right of the value removes a row and stays visible while the pointer moves onto
-  it. Each committed edit or row action is one Undo step, consecutive Undo presses undo one action
-  each, and each action changes only its own bytes, so comments, quotes, and the rest of the front
-  matter stay exactly as written. Rows with an empty or duplicate name stay editable and show
-  a marker. Other front matter that does not parse stays read-only; Preview and Split's preview
-  pane stay read-only. To reach the YAML source, press ArrowUp from the block below.
-- **Collapsible toolbar.** A chevron toggle at the end of the first toolbar row collapses the
-  toolbar to a single row of small buttons and expands it again by click, Enter, or Space; the
-  toggle stays in place in both states. Collapsing closes open toolbar menus and leaves the
-  document, dirty state, Undo history, caret, selection, and scroll position unchanged. The state is
-  shared by every VMDE editor and file and survives VS Code restarts; it is kept per profile and is
-  not synced. No toggle appears when `vmde.editor.toolbar` is off.
-- **Remembered Preview and Outline state.** Whether Preview is on is remembered per profile and
-  shared by every file, so documents opened afterwards, also after a restart, open in Preview
-  unless a path rule or an explicit `vmde.editor.defaultMode` decides; turning Preview off returns
-  to the last edit mode with the caret and selection where they were. The Outline panel's open
-  state and width apply from the first paint after a file change or restart, a drag stores exactly
-  the width shown, and `vmde.outline.defaultOpen` decides again after that setting changes. Rapid
-  toggles store the last value.
-- **Section indentation.** `vmde.editor.sectionIndent` (off by default) indents each block by its
-  heading depth in IR, WYSIWYG, Preview, and Split's preview pane, including headings inside raw
-  HTML blocks and `<details>`; `vmde.editor.sectionIndentSize` sets the step (4–64 px, default 24).
-  The indent is display-only: saved Markdown, dirty state, and Undo are unchanged, and Split's
-  source pane is not indented.
-- **HTML links look like links.** Inline `<a href>` anchors show as underlined link text in IR and
-  WYSIWYG, with the tags revealed when the caret enters, and open with `Ctrl/Cmd`+click or Activate
-  Link at Caret. Saved Markdown stays byte-identical.
-- **Bare URL autolinks.** Bare `https://`, `www.`, and email addresses show as links in IR,
-  WYSIWYG, Preview, and Split's preview pane, following GitHub's autolink rules (hosts without a dot
-  stay plain; a link ends at full-width CJK punctuation), including URLs long enough to wrap.
-  Saved Markdown is unchanged. The `vmde.markdown.autolinkBareUrls` setting (on by default) turns
-  this off live.
-- **Readable breaks in long words.** A word too wide for its line, such as a file path or an
-  identifier in inline code, a plain-text path, or a table cell, now breaks after punctuation
-  first, then between a letter and a digit, then between a lowercase and an uppercase letter, and
-  only then anywhere. It applies in IR, WYSIWYG, and Preview; saved Markdown, dirty state, Undo, and
-  copied text are unchanged. `vmde.editor.wrapHints.minLastPiece` (default 3, 0 to 20, applies live)
-  keeps the last piece of a word from being shorter than that.
-- **Actions right after typing.** Details, Insert Picture, Insert ID, emoji, callouts, the link
-  popover and outline section moves now change only their own span of the file when you use them
-  right after typing, and they never overwrite an edit made outside the editor. The selection
-  toolbar Link applies after typing on documents that Markdown rendering leaves unchanged. On
-  documents the renderer rewrites it still does nothing (no write); that case is planned.
-- **File links with line numbers.** Links such as `src/foo.ts:42`, `src/foo.ts:42:5`,
-  `src/foo.ts#L42`, `src/foo.ts#L42-L45`, and `src/foo.ts#L42C3` open the file at that line and
-  column from IR, WYSIWYG, Split, and Preview instead of reporting `File not found`. Markdown targets open in VMDE
-  and reveal the line in IR or WYSIWYG. Plain links and `file.md#heading` work as before, and
-  targets outside the workspace are still refused.
-- **Split View source font.** Split's source pane uses a monospace font stack by default, set by
-  `vmde.editor.sourceFontFamily` and applied without reopening; VS Code's `editor.fontFamily` does
-  not change it. A value that is not a plain list of font family names falls back to the default.
-- **Split View source pane settings.** Split's source pane has its own font size
-  (`vmde.editor.sourceFontSize`, which leaves the rendered pane's `fontSize` alone), background
-  color (`vmde.editor.sourceBackground`), line numbers (`vmde.editor.sourceLineNumbers`, with a `↳`
-  mark and a sub-number on every wrapped row), a current-row highlight
-  (`vmde.editor.sourceHighlightCurrentLine` and `vmde.editor.sourceCurrentLineBackground`), and a
-  width for the space between the source and preview panes (`vmde.editor.splitGap`). All apply
-  without reopening, never change the document, and an invalid value falls back to the default.
-- **Preview renders without building an edit view.** Full Preview is now rendered by VMDE from the
-  document text. A file that opens in Preview (by a preview rule or a remembered Preview) builds no
-  edit view until you leave Preview, and Preview checkbox toggles made before that each become one
-  Undo step. Documents over 50,000 characters stream into Preview in chunks with link and footnote
-  definitions resolved across chunks; diagrams, math and code render as they come near the screen.
-  Find searches the rendered text (Replace is unavailable in Preview), and switching modes keeps
-  the reading position. On larger documents Preview shows content and finishes rendering sooner
-  than an IR open of the same file. Turning Preview on paints the view first and renders right
-  after, so on a large document the switch paints in about 86 ms instead of 231 ms.
-- **Release tooling.** Guarded local preview packaging, production version contracts, GitHub and
-  Azure pipeline validation, deterministic archive inspection, and commit-identifying preview
-  filenames are available without pushing or publishing from the local tools. The build fails when
-  a bundled input resolves outside the repository, so a linked dependency folder can no longer add
-  a second copy of a renderer such as PlantUML.
+- In edit modes, `vmde.find` and `vmde.findReplace` search Markdown. In full Preview, Find searches rendered text.
+- Find highlights are customizable. Close Find in an edit mode to select the current match.
+- Rewrap a paragraph, a selection or the whole document, or enable `vmde.editor.autoWrap` to wrap prose after a typing pause.
+- Promote or demote a heading on its own or with its entire section.
+- Expand a text selection to its block or the whole document and use selection commands from the editor context menu.
+- Enable `[toc]`, `==mark==` and super/subscript syntax, or edit HTML `<sub>`, `<sup>` and `<ins>` without losing the tags.
+- Instant Rendering (IR) and WYSIWYG renumber ordered lists after edits and moves, keeping the starting number. Split offers manual renumbering.
+- The Math menu inserts GitHub-style inline and fenced math, including around a selection in Split’s source pane.
+- Enable `vmde.github.colorLiterals` to preview HEX, RGB and HSL colors beside their text.
+- Search Emoji 17.0 by name or browse by category, choose a variant and reuse recent selections.
+- Preview sanitized inline SVG data images and insert `<picture>` elements with local or HTTPS raster images.
+- Move table rows and columns, and copy or clear a range of cells.
+- Table columns fit their contents. Drag a column edge in IR or WYSIWYG to set its width until the file reopens.
+- Toggle tasks in Preview or Split’s preview pane with one Undo per checkbox (`vmde.preview.interactiveCheckboxes`, on by default).
+- Fold headings and lists from their gutter controls in IR, WYSIWYG or full Preview. Each file remembers its folds across these views.
+- Full Preview shows Git change bars beside modified blocks.
+- Hoist a section to read it on its own, reorder sections from the Outline, or move blocks and list items by their handles.
+- Hover for full Outline headings and link or image destinations. Titled WYSIWYG links and images show their title.
+- Format selections, add links or wiki links, or use Turn Into from the floating toolbar. Turn Into also works in Split’s source pane.
+- The IR popover lets you open, copy or edit a link or image URL, or unlink it, even just after typing.
+- Wrap or unwrap selected blocks in `<details>` and expand or collapse them while editing.
+- Add, retitle, change or remove callouts in IR, WYSIWYG and Split, with one Undo per change.
+- Zoomable diagrams have pan, zoom, reset and full-screen controls. Press `0` to reset a focused mindmap.
+- Mermaid shows errors at the diagram and warns when it falls back to another layout or class-diagram labels overlap.
+- Wiki completion remembers pages across restarts and updates live for `vmde.wiki.root`, `vmde.wiki.enabled` and exclusions in `vmde.wiki.exclude`.
+- Wiki links and completion recognize front-matter aliases. A matching filename takes priority.
+- Copy cells or fold the YAML properties table. In IR and WYSIWYG, edit, add, remove or reorder properties with one Undo per change.
+- Set the properties font with `vmde.editor.frontMatterFontFamily` and `vmde.editor.frontMatterFontSize`, or start the table folded with `vmde.editor.frontMatterFolded`.
+- Indent rendered sections by heading depth with `vmde.editor.sectionIndent` and choose the step with `vmde.editor.sectionIndentSize`.
+- Rendered links are underlined, including HTML links. `vmde.markdown.autolinkBareUrls` turns bare URLs and email addresses into links.
+- Long paths and identifiers wrap at punctuation and word boundaries. `vmde.editor.wrapHints.minLastPiece` keeps short endings together.
+- Open text files at `file.ts:42:5`. In Markdown, `#L42-L50` selects the lines in IR, WYSIWYG and Split, and reveals the start in Preview.
+- Set Split’s source font and background with `vmde.editor.sourceFontFamily`, `vmde.editor.sourceFontSize` and `vmde.editor.sourceBackground`.
+- Configure Split’s line numbers and active line with `vmde.editor.sourceLineNumbers`, `vmde.editor.sourceHighlightCurrentLine` and `vmde.editor.sourceCurrentLineBackground`.
+- Set the distance between Split’s source and preview panes with `vmde.editor.splitGap`.
 
 ### Changed
 
-- **File uploads follow VS Code.** With `vmde.image.saveFolder` left at `assets`, VMDE honors the
-  first matching `markdown.copyFiles.destination`, including documented variables, transforms,
-  workspace roots, per-file directories, and renames. Explicit non-default VMDE folders still win.
-  Images and WAV files retain their specialized markup; other dropped files insert escaped-label
-  Markdown links.
-- **Theme pairing follows the active workbench.** `vmde.theme.content: auto` recognizes VS Code
-  Modern and GitHub themes, otherwise follows live editor tokens, including the real four-value
-  high-contrast kind. Prose on the variable-driven path uses `markdown.preview.fontFamily`.
-- **Shortcuts follow VS Code and are fully rebindable (breaking for custom habits).** Every VMDE
-  shortcut is now a VMDE command you can rebind in Keyboard Shortcuts, and default keys apply only
-  while a VMDE editor has focus outside the Side Bar, Panel, and input boxes. VMDE ships a default
-  key only where VS Code has the same action, using VS Code's key; Bold (`Ctrl/Cmd+B`) and Italic
-  (`Ctrl/Cmd+I`) are the exceptions. Kept: Indent/Outdent, Undo/Redo, Select All, and Move Block
-  Up/Down. Moved: Toggle Fold is `Ctrl+K Ctrl+L` / `Cmd+K Cmd+L`; Fold/Unfold follow VS Code;
-  Expand Selection is `Shift+Alt+Right`. Removed, with every command still available: the VMDE-only
-  keys for formatting (Strikethrough, Headings, lists, Checklist, Blockquote, Code Block, Inline
-  Code, Heading 1–6, Promote/Demote), Rewrap (`Alt+Q`), Paste as Plain Text, Activate Link or
-  Callout, Edit in Text Editor, table commands, mode switching, and Toggle Task Checkbox; a freed
-  key now does VS Code's own action, such as `Ctrl+E` Quick Open. A few WYSIWYG popover keys and
-  macOS `Cmd+Y` redo have no replacement (use Move Block and `Cmd+Shift+Z`). To restore a key, open
-  Keyboard Shortcuts (`Ctrl+K Ctrl+S` / `Cmd+K Cmd+S`), search for **VMDE**, and assign it to the
-  command. Toolbar tooltips show action names only because an extension cannot read your remaps.
-- **Formatting, toolbar, and keybinding metadata share one source.** Discoverable VS Code commands,
-  tooltips, context actions, and webview dispatch no longer drift or execute twice. Toolbar
-  controls follow one order grouped like established editors: Undo/Redo, Headings, inline formats,
-  Link, lists, and indentation, then block inserts, media, insert-before/after, view, wiki
-  navigation, and mode controls, with Preview beside Edit Mode. Settings, Insert ID (after Link),
-  and Insert Picture (after Upload) are toolbar controls instead of More rows. The toolbar follows
-  the editor width: controls fill the first row and continue on a second, and in narrow windows
-  controls move into More while Preview, Edit Mode, Settings, and More stay last on the row, with
-  exactly one separator between visible groups; keyboard traversal follows the visual order and
-  starts at Undo. Rows sit close together and the toolbar is laid out before first paint, so it no
-  longer jumps when a file opens. Every button and More item has a tooltip that says what it does
-  and a visible label in More; Preview and Wiki Pages have clearer icons, Insert anchor is now
-  Insert ID, and Math has a visible theme-colored icon. The Undo tooltip and overflow label no
-  longer show `undefined`.
-- **Readable, consistent tooltips.** Toolbar tooltips use VS Code's UI font size and hover colors
-  instead of Vditor's 11 px text, and rows in More and the Math menu show the same tooltip instead
-  of the browser's own small native one. The `vmde.editor.tooltipFontSize` setting sets a fixed
-  size from 8 to 32 px and applies live; 0 (the default) follows VS Code.
-- **Every link is underlined.** Links in Preview, Split's preview, WYSIWYG, and IR share one solid
-  underline in the link color, at rest and on hover, including inline code used as link text, for
-  visited links, and under forced colors. The IR source look with the caret inside a link is
-  unchanged.
-- **The editor and renderer stack is security-maintained.** Vditor is 3.11.3, Mermaid 11.17.2,
-  KaTeX 0.18.11, ECharts 6.1.0, abc.js 6.7.0, smiles-drawer 2.4.1, three.js 0.185.1,
-  Vega 7.1.0, and D2 0.1.33. Optional renderer clusters remain lazy-loaded.
-- **A VMDE-specific logo and Marketplace hero** represent the independent extension.
-- **Real-VS-Code verification uses lifecycle readiness instead of broad fixed waits.** Generated
-  privacy-safe large fixtures and focused no-retry recovery evidence keep release tests repeatable.
-- **Insert ID writes HTML `id` targets.** Insert ID inserts `<a id="NAME"></a>` instead of
-  `<a name="NAME">`. Same-document and cross-file `#NAME` links reach an `id` on any element outside
-  code, and existing `<a name>` targets keep working. When a heading and an `id` share a name, the
-  first in the document wins, and Insert ID refuses a name already used by a heading, an `id` or a
-  `name` target.
-- **A `|` inside a code span in a table cell stays in that cell.** A row such as
-  `` | `a | b` | c | `` keeps the whole code span in its cell in IR, WYSIWYG, Split View, Preview,
-  Format Table, and the row and column commands, instead of splitting there and hiding the rest of
-  the row as GitHub does. An edit elsewhere no longer deletes that hidden text from the file:
-  unedited rows keep their source bytes, including `\|`, and a pipe typed inside a code span is
-  saved as `|`. Split View's source pane shows such a pipe as `\|`.
+- Most default shortcuts now match VS Code. Bold and Italic keep their usual keys. Restore a removed binding such as Rewrap’s `Alt+Q` in Keyboard Shortcuts.
+- IR handles Undo and Redo on keypress by default, so a character typed immediately after Undo is kept.
+- Rebind IR Undo and Redo with `vmde.editor.undoRedoKeys.undo` and `vmde.editor.undoRedoKeys.redo`.
+- Turn off `vmde.editor.undoRedoKeys.inEditor` to use VS Code’s Undo and Redo keybindings in IR. WYSIWYG and Source always use them.
+- The toolbar (`vmde.editor.toolbar`) moves controls into More as space narrows and remembers when you collapse it to one row.
+- Toolbar and Outline tooltips follow VS Code’s appearance. `vmde.editor.tooltipFontSize` sets their size.
+- Preview remembers your preference unless a path rule or `vmde.editor.defaultMode` overrides it. Reopening a file restores your reading position.
+- The Outline remembers its width and visibility across restarts and honors changes to `vmde.outline.defaultOpen`.
+- Large files open faster. Full Preview streams long documents and loads diagrams near the viewport.
+- Typing, selecting text and undoing edits in large, table-heavy IR documents are more responsive.
+- With `vmde.image.saveFolder` set to `assets`, uploads follow `markdown.copyFiles.destination`. Dropped documents become Markdown links.
+- With `vmde.theme.content` set to `auto`, VMDE pairs Modern and GitHub themes and uses `markdown.preview.fontFamily` on the fallback theme.
+- Screen readers announce editor status and identify editing surfaces. The editor respects reduced motion and shows controls and diagrams in high contrast.
+- Insert ID creates an HTML `id` and rejects duplicate names. Links to IDs and older `<a name>` targets work across files.
 
 ### Fixed
 
-- An external change to an open file is no longer reverted by typing in VMDE. An edit the editor
-  made from older text is refused with a warning and the current file text is shown instead; a
-  clean external change appears in IR, WYSIWYG and Split (also when the tab was hidden) and
-  survives the next key, Save, Undo and Redo.
-- Typing reaches VS Code (dirty state, Save) without multi-second delays when the webview's timers
-  run late: a pending edit that is overdue is published at once.
-- Turn Into works in Source mode (Split View's source pane) on blocks it can prove against the file,
-  from a direct open and after switching from IR or WYSIWYG. Only the target block changes, one
-  Undo reverses it, and selections it cannot prove decline without writing.
-- In IR, ArrowLeft and ArrowRight step one character at a time through the revealed Markdown markers
-  of bold, italic, code, links and other inline formatting (for example every position in
-  `**Confirm**`), and Shift+Arrow keeps the formatting at both selection ends revealed.
-- In IR, PageUp and PageDown next to inline code move about a page instead of leaving the caret in
-  place, with Shift extending the selection and typing landing outside the formatting markers.
-
-- Documents beginning with `---`-delimited front matter now support Rewrap Paragraph, auto-wrap,
-  Rewrap Document, heading shifts and body block actions in IR and WYSIWYG while preserving the
-  metadata and its blank-line separator. Display math pairs as its own block, and automatic
-  wrapping keeps typed text, saved bytes and Undo aligned.
-- Undoing back to the opening bytes now clears VS Code's dirty indicator while VMDE and native undo/
-  redo remain aligned across IR, WYSIWYG, and Split. Undo of an exact action, such as Format Table
-  in Split View's source pane, back to the saved text also clears it, and Redo applies the action
-  again.
-- The first edit after opening a document can be undone in IR, WYSIWYG, and Split. Undo pressed
-  right after typing, before the editor's delayed checkpoint, now publishes the edit first, so
-  Undo, Redo, Save, and the host stay in step; when one editor Undo spans several host edits, VMDE
-  steps VS Code's history until it matches, so Undo then Save writes the right bytes and Split
-  stays clean at the saved state. Undo and Redo leave a visible caret at the change site even when
-  the restored state has no caret marker. A Mermaid diagram that was still rendering when the first
-  edit was made draws again after that edit is undone.
-- `Ctrl/Cmd+Z` and `Ctrl/Cmd+Y` in the Find, Replace, and popover inputs undo only that field
-  instead of the document; Replace and popover fields take one Undo press per character. An
-  external file change leaves a single undo base and no caret-only step.
-- Toolbar buttons and hotkeys act on the live selection, so a selection changed a moment earlier no
-  longer causes no-ops or corrupt markup (such as `****India****`, a rewritten code span, `>>`
-  quotes, or removed WYSIWYG bold). Heading marker navigation stays inside its block, and inline
-  formats, list toggles, Headings, and Link are refused when the IR caret is not inside a block,
-  while Code Block and Table insert a new top-level block there with one Undo step. Clicking a
-  disabled format button no longer moves the caret.
-- `Ctrl+Home` in IR on a document that starts with a horizontal rule or `[toc]` places the caret in
-  an editable gap before it. A restored caret, for example after Turn Into or a Details toggle,
-  lands at the start of the visible content instead of at the end of a hidden Markdown marker.
-- Select All shortly after an edit, or within a moment of typing, no longer collapses to the
-  document start. In Split, a collapsed `Ctrl+X` or `Ctrl+C` cuts or copies the current source line
-  and its newline instead of deleting or copying the whole document.
-- Deleting or typing over a whole-document selection in IR replaces the whole document, including
-  on a freshly opened file, on a large file after an edit and its Undo, and when the document ends
-  in a code block; one Undo restores the exact source.
-- In Split's source pane, Delete, Backspace, type-over, word or line deletes, and cut of a selection
-  that starts at a line start remove only the selected characters instead of joining the previous
-  line, and whole-document type-over leaves exactly the typed text. Enter over a selection replaces
-  it with a line break, Backspace over a selection that starts in column 1 keeps the character
-  before it, and cancelling an input-method composition over a line-start selection keeps the
-  lines apart. One Undo restores the exact source.
-- In IR, the first character typed after Enter at the end of a paragraph lands in the new paragraph
-  instead of a neighbouring block. Enter at the end of the document opens a new paragraph to type
-  in, and Enter with the caret at the end of a code block's preview adds a line inside the code.
-  After Enter and a key in a list item or table cell, two Undos return VS Code to the opened bytes
-  with a clean document, and Redo is symmetric.
-- Turn Into on documents whose Markdown does not round-trip through the editor changes only the
-  selected block and keeps the rest of the source, saved bytes, and Undo exact. After typing, Turn
-  Into, Find Replace, table actions, and Move Block (`Alt+Up`/`Alt+Down`) also keep every byte
-  outside their target exact or decline without writing, and Move Block after an edit and its Undo
-  applies again. One Undo reverses a Turn Into, with no caret-only step.
-- More menu labels line up: each row keeps its icon in one column with the label 8 px after it,
-  instead of the label touching an icon of a different visual width. The Split View row is named
-  **Split View** instead of `editor & preview`.
-- The Outline toggle and other view-only toolbar controls (Preview, edit mode, More, Emoji, Math,
-  Wiki Pages, Navigate Back, Edit in VS Code, Settings, About) no longer add an Undo step, so
-  `Ctrl/Cmd+Z` undoes the previous edit.
-- Escape from the toolbar no longer widens the caret into a selection, and `Ctrl+Tab` or `Alt+Tab`
-  in the editor no longer indents.
-- Expand Selection on a freshly opened IR document widens from inline text to the block and the
-  document instead of re-selecting the same inline text.
-- Clicking a code block's copy button in IR copies the code instead of expanding the block or
-  moving the caret.
-- Cut and Backspace keep selection/caret state stable; IME composition avoids editor transforms;
-  source markers reveal before navigation edits; and ordinary typing no longer triggers global
-  marker/helper work.
-- Trusted pointer activation now opens IR links after their source markers expand, arrow keys retain
-  native movement inside fenced-code sources, and double Enter exits the final ordered or unordered
-  list item into a writable paragraph.
-- Wiki-shaped text inside inline code survives unrelated list edits as literal code, and
-  modifier-click opens inline links, autolinks, and reference-link destinations from Split's
-  source pane without changing source bytes.
-- Changing `vmde.wiki.enabled` or `vmde.wiki.root` updates wiki link styling and `[[` completion in
-  open editors without reopening them, and without an edit, dirty state, or Undo step. The wiki
-  page watcher honors `files.exclude` and `node_modules` and recognizes upper-case extensions.
-- Split view aligns by heading identity even with its one-wrapper source DOM, and switching between
-  edit and Preview preserves the active section.
-- Image replacement and reference-style image assets refresh when their files change without
-  changing Markdown or history. Git gutters, toolbar overflow, paste-over-link, list indentation,
-  code copy, and same-document navigation also refresh without reloading the editor.
-- Task-list prose in IR wraps at word boundaries without moving checkbox alignment.
-- Mermaid C4 labels, D2 caches, theme flips, diagram sizing, renderer controls, and code/table/
-  callout palettes retain readable colors across content and workbench themes.
-- Link in the floating selection toolbar now works in IR and WYSIWYG on documents whose rendering
-  differs from their Markdown source: only the selected text gains the link markup, and an outside
-  change to the file is never overwritten.
-- On such documents, Details and callout actions no longer change the wrong block when a paragraph
-  repeats, ends in spaces or is indented; a selection the editor cannot match to the file declines
-  without writing. Callout controls in the IR block quote panel keep their target.
-- After typing, Edit and Unlink in the link popover are available at once instead of only after
-  reopening the popover.
-- Dragging a heading in the Outline view while typing is still being saved no longer moves the wrong
-  section; a drop whose headings moved is refused.
-- In Split View's source pane, Format Table and list renumbering work on tables and lists the editor
-  has reformatted, change only the targeted table or list (also when an identical one exists), and
-  keep CRLF line endings.
-- A selection that VMDE sets (for example after inserting an emoji or toggling Details) is no longer
-  replaced a moment later by an older caret position.
-- Typing after an exact action, such as Format Table in Split View's source pane, no longer reverts
-  the padding or other neutral bytes that action wrote.
-- One Undo after applying a callout restores the text as it was typed, and Redo applies the callout
-  again, in IR and WYSIWYG.
-- Format Table and list renumbering in Split View's source pane now apply after switching from IR or
-  WYSIWYG and on a document opened directly in Source mode, and Rewrap Document there applies on a
-  direct open; one Undo restores the typed text.
-- Redo reapplies an action used right after opening a document: moving an Outline section in IR,
-  Rewrap Paragraph/Selection, Rewrap Document, Promote and Demote Heading Level, Paste as Plain
-  Text (whose Undo also works), duplicating a block from its handle, Unlink in the link popover,
-  callout Apply, Find Replace, Turn Into, and a code fence language edit.
-- Repeated emoji insertions in Split View's source pane each reach the document, with one Undo and
-  Redo step per insertion.
-- Auto-wrap now changes the document in Split View's source pane, in IR with a long auto-wrap
-  delay, and in IR right after switching from Split View's source pane. Changing a setting cancels
-  a pending auto-wrap, and the re-render that follows no longer starts a new one.
-- Link in the floating selection toolbar is faster on large documents whose rendering differs from
-  their Markdown source: it reads the document once instead of twice (about 87 to 270 ms per use on
-  45 to 175 KB documents in WYSIWYG).
-- Format Table in Split View's source pane works with the caret in a table cell's padding or in an
-  empty cell.
-- The Headings and Link toolbar actions with the caret outside any block no longer move it into a
-  block while an edit is still pending.
-- Link on the toolbar over a selected bare URL in WYSIWYG is saved to the file every time, instead
-  of sometimes showing the link in the editor while the file kept the plain URL.
-- After switching from IR to WYSIWYG soon after opening, a delayed IR history entry no longer lands
-  in the WYSIWYG history, so one Undo reverses an action such as Insert ID and Redo still works.
-- In IR, Home or End next to bold text, a link, or inline code no longer moves the caret back into
-  the hidden closing marker a moment later, also right after typing in another paragraph.
-- Inline and fenced math from the Math menu apply to the selection in Split View's source pane
-  instead of doing nothing.
-- Cancelling an input-method composition in IR or WYSIWYG, for example `Ctrl+Shift+U` then Escape
-  with IBus, no longer marks the document dirty or rewrites it in the editor's own Markdown form.
-- Find and Replace work after an edit and its Undo on documents whose tables are not padded: Find
-  in Split View's source pane finds text that is in the file instead of reporting No results, and
-  Replace and Replace All in WYSIWYG apply at once instead of doing nothing.
-- In Preview, wide tables fit the editor width again, also when they were first laid out in a
-  wider pane, and wide raw HTML stays within the view (a raw HTML block scrolls inside its own
-  box). Display math in every mode, and raw HTML block previews in IR and WYSIWYG, scroll inside
-  their own box instead of widening the page.
-- Shift+Arrow, Shift+Home/End, and word selection keys extend a text selection inside table cells
-  and every other construct in IR and WYSIWYG. In a table, a cell range starts only once the
-  selection reaches the cell edge in that direction, or when a range is already active.
-  Shift+ArrowUp and Shift+ArrowDown at the first or last line of a code, diagram, math, HTML, or
-  front-matter block, or a block quote, no longer move the caret out or insert a paragraph, and
-  they extend the selection across a horizontal rule.
-- Rewrap Document in IR or WYSIWYG keeps the caret in place on a document with front matter.
-- Escape in the IR callout panel's type list returns focus to the editor. In WYSIWYG, a heading's
-  block popover no longer stays below that heading after the caret moves to a plain paragraph,
-  where it covered the next line and took its clicks.
-- WaveDrom diagrams in Preview match the edit view: they use the content theme and reuse the
-  cached render. Table sizing and code-block context menus no longer reach into D2 diagram labels,
-  so those labels keep the layout measured when the diagram was drawn.
-- After a paste in IR, the caret stays at the end of the pasted text, also when a key was typed just
-  before Ctrl+V. Pasting into inline code no longer stops the rest of the paste handling.
-- IR Undo and Redo restore only the blocks that changed instead of rebuilding the whole view, so
-  the view no longer flickers and large files respond faster (on a 112 KB file, Undo fell from
-  about 870 ms to 200 ms and Redo from about 1200 ms to 120 ms).
-- A list item's fold triangle sits on the same vertical line as the centre of its painted bullet at
-  every font size.
-- Links with a line location (`notes.md#L674`, `#L120`, `#L42-L50`) land on that source line in
-  IR, WYSIWYG, Split, and Preview, for the same document or another file, open or not. Long lists
-  with blank lines between items no longer push the target past the end, a same-document `#L`
-  link now works, and a range selects its lines. A heading or HTML ID with the same name still
-  wins. Reveal in Visual Editor uses the same path and is now line-precise in every mode.
+- In IR, one Undo after Replace or Replace All restores the exact Markdown, and Redo reapplies the replacement.
+- Typing after an external file change preserves the newer file contents. VMDE warns if an edit was based on an older version.
+- If VS Code refuses an IR replacement Undo or Redo, typing that could not be applied appears in a separate Recovered edits document.
+- Undo works immediately after the first edit, restores the caret and clears the modified indicator when you return to the saved text.
+- Undo in Find, Replace and popover text fields stays in the field. View-only toolbar buttons no longer add a document Undo step.
+- Toolbar actions use the current selection. Link also works when the editor displays the surrounding Markdown differently from its source.
+- After typing, moving a block, applying a callout or wrapping a selection in Details preserves the surrounding Markdown.
+- In Split, Format Table and list renumbering preserve surrounding text after a mode switch. Format Table also works in empty or padded cells.
+- Rewrap and heading changes preserve YAML front matter and its separator. Rewrap Document keeps the caret in place.
+- Select All stays selected in IR. Deleting or typing over a selection in IR or Split removes only the selected text.
+- With no selection, Copy and Cut act on the current line, including in Split’s source pane.
+- IR arrow keys step through formatting markers. Home and End reach the visible line boundaries, and page keys move past inline code.
+- In IR, typing after Enter stays in the new paragraph or code line. Press Enter twice in the last list item to continue below the list.
+- In IR, the caret stays at the end of pasted inline text, even when you paste immediately after typing.
+- Canceling input-method composition leaves the document and its modified state unchanged.
+- The IR code-copy button copies the code without moving the caret or expanding the block.
+- Links open after their IR markers expand, and modifier-click follows inline and reference links from Split’s source pane.
+- Text such as `[[page]]` inside inline code stays literal when you edit a list elsewhere.
+- Split keeps its panes on the same section, and leaving Preview restores the editing selection.
+- Replacing an image on disk refreshes it in the editor, including images referenced through Markdown definitions.
+- Opening a table with `|` inside an inline code span keeps the span in one cell. Editing elsewhere preserves the rest of the row.
+- Wide tables fit Preview, and oversized math and HTML scroll within their blocks.
+- Shift+Arrow extends text selections inside table cells. At a cell edge it can select adjacent cells.
+- Escape returns focus from the IR callout menu, and the WYSIWYG heading popover closes when the caret leaves its heading.
+- WaveDrom follows the content theme in Preview, Mermaid C4 labels stay legible and D2 labels keep their layout.
 
 ### Security
 
-- Replaced advisory-affected vendored assets with SHA-pinned Mermaid 11.17.2 and KaTeX 0.18.11
-  (KaTeX 0.16 has no fix for a prototype-pollution advisory that bypasses trust restrictions),
-  and rebuilt Markmap 0.18.12 with markdown-it 14.3.3 / linkify-it 5.0.2. Architecture, XY, radar,
-  math, mhchem, macro, and long-link security families are covered in the real VS Code webview.
-- Updated the pinned webview DOMPurify to 3.4.17, which fixes two DOM cross-site scripting
-  advisories and clears the advisory a later audit reported against 3.4.16.
-- Added exact vendor-component OSV auditing, recursive asset hash/provenance checks, npm signature
-  verification, and a target-aware D2 `govulncheck` gate. The release closes with zero known npm
-  vulnerabilities and no reachable D2 advisory in the shipped `js/wasm` call graph.
-- Updated the transitive `qs` dependency used by the local VSIX toolchain to 6.16.0 after the final
-  audit exposed its newly published denial-of-service advisories. The toolchain now uses
-  `@vscode/vsce` 4.0.0, which drops the remaining unpatched `braces` advisory chain, with its
-  `minimatch` raised to 11.0.4, and transitive host packages are updated to clear the other npm
-  audit advisories.
+- Mermaid 11.17.2 and KaTeX 0.18.11 fix security issues in diagram and math rendering.
+- Markmap 0.18.12 uses markdown-it 14.3.3 and linkify-it 5.0.2 to prevent excessive processing of long links.
+- DOMPurify 3.4.17 fixes cross-site scripting vulnerabilities in rendered content.
 
 ### Known limitations
 
-- The in-editor outline and resize separator are keyboard-operable once focused, but the shipped
-  Escape-to-toolbar path does not provide an end-to-end keyboard-only route onward to the outline.
-- Static SVG, Markmap, and Leaflet diagram zoom/reset have focused real-webview coverage. ECharts
-  mindmap keyboard reset is intentionally unavailable, and its keyboard zoom lacks the same focused
-  real-webview evidence. These are accepted accessibility residuals, not claims of full support.
-- Editing in Split View's source pane rewrites a `---` thematic break as `***` in the saved file.
-- A cross-file link to an `id` target reveals it in an IR or WYSIWYG target editor; it does not yet
-  scroll a Split or Preview target pane to it.
-- In WYSIWYG, the block popover shown below a heading while the caret is in it covers the first
-  line of the next block.
-- An edit elsewhere in IR or WYSIWYG can drop the blank line after the closing `---` of front
-  matter from the saved file.
+- The keyboard route from the editor through the toolbar stops before the in-editor Outline.
+- Editing in Split’s source pane can change a `---` thematic break to `***` when saved.
+- In WYSIWYG, the heading popover can cover the next line while the caret is in the heading.
+- Saving an ordinary body edit in WYSIWYG can remove the blank line after YAML front matter.
+- On large documents, some edits, Undo and Select All can still take longer than 50 ms.
+- In IR, a second Undo can be refused while a replacement Undo or Redo is still running.
+- Undoing an older replacement can take longer when VMDE has to restore the whole document.
 
 <!-- brand-check: former-brand-explanation-start -->
 
